@@ -4,6 +4,26 @@
 `native-quota-v1`。日常套餐、override 和 ledger 维护继续走运营意图，
 不得调用本 conductor。
 
+## 与 3.3 → 4.0 存储升级的边界
+
+旧事件/配额迁移不等于 datastore 格式升级。3.3 native-quota marker 32771
+升级到 4.0 marker 32772 需要停写、完整 snapshot 与隔离 restore drill；普通启动
+不自动迁移。生产采用旧 3.3 容器导出全部库，在全新 4.0 数据目录导入后比对行数与
+capability，再切换 systemd drop-in。旧 RocksDB 目录不交给新 binary。
+fork 的显式 `datastore migrate` 属于另一条要求匹配引擎/认证的离线路径，此 workflow 不调用它。
+完整步骤与 `SurrealDB maintenance` 的 check → upgrade 审批入口见
+[发布切换手册](native-quota-release-cutover.md#33--40-存储升级独立维护窗)。
+SDK 为 2.2.2，manifest 为 `native-quota-v2.0`，quota major 仍为 1。
+
+`sck-4.0.1-native-quota.1-artifacts.1` 当前 CLI 缺 RocksDB；支持的 SurrealKV
+也被 manifest 标为非生产、未通过 hard-quota 认证。`storage_engine=surrealkv`
+可检查和做隔离导入验证，但不能通过应用生产门禁；upgrade 在 runner 失败关闭。
+优先使用已晋升 receipt 对应的 `target_image` digest 与受认证引擎，不能认证豁免。
+新格式目录绝不能交给旧 binary；尚未开放 4.0 写入时，可以重启旧 unit 与未变的原目录。
+若恢复旧 snapshot，只能放到另一个新的数据路径，
+新格式业务写入开放后以 forward-fix 为默认策略。此流程不调用 conductor，也不改变
+旧事件迁移的 approval、assignment 或 public-reopen 门禁。
+
 ## 不可突破的门
 
 - 旧 `resource_quota_plan`、`workspace_resource_quota` 和
@@ -208,4 +228,3 @@ pnpm quota:migration cleanup-ready --run nq-cutover-2026-07
 
 随后普通 capability-aware workspace migration runner 才能执行 v21，删除旧
 events/tables。清理后只能 forward-fix 或恢复完整 snapshot。
-

@@ -52,9 +52,11 @@ describe("workbooksStore.importCsvWorkbook — CSV 新工作簿原子导入", ()
     });
     expect(queries.filter((query) => /BEGIN TRANSACTION/i.test(query.sql))).toHaveLength(1);
     expect(queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql))!.sql).toMatch(/^BEGIN TRANSACTION;/);
-    expect(queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql))!.sql).toContain("CREATE ent_1111111111111111_main:3333333333333333 CONTENT $sampleRecord0");
+    expect(queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql))!.sql).toContain("CREATE $target CONTENT $sample.content");
     expect(queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql))!.sql).toMatch(/COMMIT TRANSACTION;$/);
-    expect(queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql))!.bindings?.sampleRecord0).toEqual({
+    const samples = queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql))!.bindings?.sampleRecords as Array<{ target: unknown; content: Record<string, unknown> }>;
+    expect(String(samples[0]!.target)).toBe("ent_1111111111111111_main:3333333333333333");
+    expect(samples[0]!.content).toEqual({
       field_1: "甲公司",
       field_2: 1000,
       field_3: new Date("2026-07-01T00:00:00.000Z"),

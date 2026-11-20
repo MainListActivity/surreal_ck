@@ -112,6 +112,24 @@ async function resetTemporaryRows(): Promise<void> {
 }
 
 describe("endpoint probe temporary grant against company fork", () => {
+  localTest("固定参数化请求记录保留 NONE、日期、唯一索引冲突和两种操作", async () => {
+    const store = new SurrealTemporaryGrantStore(async () => root, "main");
+    const common = { subject: GRANTEE, capability: ENDPOINT_PROBE_TEMPORARY_CAPABILITY };
+    await store.recordRequest({ ...common, idempotencyKey: "empty", operation: "revoke" });
+    const empty = await store.getRequest(GRANTEE, common.capability, "empty");
+    expect(empty?.operation).toBe("revoke");
+    expect(empty?.result_version).toBeUndefined();
+    expect(empty?.result_not_after).toBeUndefined();
+    const date = new Date("2026-11-02T09:00:00Z");
+    const input = { ...common, idempotencyKey: "full", operation: "grant" as const, resultVersion: 4, resultNotAfter: date };
+    await store.recordRequest(input);
+    const full = await store.getRequest(GRANTEE, common.capability, "full");
+    expect(full?.operation).toBe("grant");
+    expect(full?.result_version).toBe(4);
+    expect(new Date(String(full?.result_not_after)).toISOString()).toBe(date.toISOString());
+    await expect(store.recordRequest(input)).rejects.toThrow();
+  });
+
   beforeAll(async () => {
     if (!enabled) return;
     const { env } = await import("../env");

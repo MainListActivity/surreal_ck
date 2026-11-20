@@ -430,24 +430,20 @@ export class SurrealTemporaryGrantStore implements TemporaryGrantStore {
 
   async recordRequest(input: TemporaryGrantRecordRequestInput): Promise<void> {
     const db = await this.db();
-    const fields = [
-      "subject: $subject",
-      "capability: $capability",
-      "idempotency_key: $key",
-      `operation: "${input.operation}"`,
-      input.resultVersion === undefined ? "result_version: NONE" : "result_version: $resultVersion",
-      input.resultNotAfter === undefined ? "result_not_after: NONE" : "result_not_after: $resultNotAfter",
-    ];
     const params: Record<string, unknown> = {
       subject: input.subject,
       capability: input.capability,
       key: input.idempotencyKey,
+      operation: input.operation,
+      resultVersion: input.resultVersion,
+      resultNotAfter: input.resultNotAfter,
     };
-    if (input.resultVersion !== undefined) params.resultVersion = input.resultVersion;
-    if (input.resultNotAfter !== undefined) params.resultNotAfter = input.resultNotAfter;
     try {
       await db.query(
-        `INSERT INTO platform_operator_temporary_grant_request { ${fields.join(", ")} };`,
+        `INSERT INTO platform_operator_temporary_grant_request {
+          subject: $subject, capability: $capability, idempotency_key: $key,
+          operation: $operation, result_version: $resultVersion, result_not_after: $resultNotAfter
+        };`,
         params,
       );
     } catch (cause) {

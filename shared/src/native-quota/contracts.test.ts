@@ -11,13 +11,13 @@ import {
 function compatibleCapability() {
   return {
     format_version: 1,
-    manifest_revision: "native-quota-v1.0",
+    manifest_revision: "native-quota-v2.0",
     fork: {
       id: "mainlistactivity/surrealdb-native-quota",
-      release: "3.3.0-native-quota.1",
+      release: "4.0.1-native-quota.1",
     },
     build: {
-      engine_version: "3.3.0",
+      engine_version: "4.0.1",
       git_sha: "0123456789abcdef",
     },
     quota: {
@@ -30,17 +30,17 @@ function compatibleCapability() {
     storage: {
       format_version: 1,
       backend: "rocksdb",
-      storage_version: 32771,
+      storage_version: 32772,
       state: "ready",
       ready: true,
       migration_required: false,
       marker: {
         format_revision: 1,
         fork_id: "mainlistactivity/surrealdb-native-quota",
-        upstream_storage_major: 3,
+        upstream_storage_major: 4,
         quota_policy_format_revision: 1,
         quota_usage_format_revision: 1,
-        minimum_compatible_fork_release: "3.3.0-native-quota.1",
+        minimum_compatible_fork_release: "4.0.1-native-quota.1",
         migration_state: "clean",
       },
     },
@@ -65,7 +65,7 @@ function compatibleCapability() {
       network_fault_model: "not-applicable-embedded",
     },
     cli: {
-      release: "3.3.0-native-quota.1",
+      release: "4.0.1-native-quota.1",
       requires_exact_release_for_destructive_operations: true,
     },
   };
@@ -77,6 +77,28 @@ describe("native quota capability contract", () => {
       production: true,
     });
     expect(result.ok).toBe(true);
+  });
+
+  test("accepts the manifest-certified TiKV backend", () => {
+    const capability = compatibleCapability();
+    capability.storage.backend = "tikv";
+    capability.backend.name = "tikv";
+    capability.backend.network_fault_model = "optimistic-write-conflict-and-commit-outcome-unknown";
+    expect(validateNativeQuotaCapability(capability, { production: true }).ok).toBe(true);
+  });
+
+  test("rejects the previous fork release and storage generation", () => {
+    const capability = compatibleCapability();
+    capability.fork.release = "3.3.0-native-quota.1";
+    expect(validateNativeQuotaCapability(capability, { production: true })).toMatchObject({
+      ok: false, code: "incompatible_fork",
+    });
+    capability.fork.release = "4.0.1-native-quota.1";
+    capability.storage.marker.upstream_storage_major = 3;
+    capability.storage.storage_version = 32771;
+    expect(validateNativeQuotaCapability(capability, { production: true })).toMatchObject({
+      ok: false, code: "storage_not_ready",
+    });
   });
 
   test("rejects an unknown capability document major", () => {
@@ -124,9 +146,9 @@ describe("native quota capability contract", () => {
         digest: `sha256:${"a".repeat(64)}`,
       },
       sdk: { package: "surrealdb", version: "2.2.2" },
-      cli: { release: "3.3.0-native-quota.1" },
+      cli: { release: "4.0.1-native-quota.1" },
       contracts: { quota_major: 1, error_wire_code: -32010 },
-      formats: { fork_storage_major: 32771, quota_catalog: 1, quota_usage: 1 },
+      formats: { fork_storage_major: 32772, quota_catalog: 1, quota_usage: 1 },
       backend: { name: "rocksdb", certification_revision: "native-quota-contract-v1" },
     });
   });

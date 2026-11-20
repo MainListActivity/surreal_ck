@@ -242,7 +242,7 @@ jobs:
             --arg sha "$EXPECTED_SHA" \
             '.build.git_sha == $sha
              and .fork.id == "mainlistactivity/surrealdb-native-quota"
-             and .fork.release == "3.3.0-native-quota.1"
+             and .fork.release == "4.0.1-native-quota.1"
              and .quota.name == "native-quota-v1"
              and .storage.backend == "rocksdb"
              and .storage.ready == true
@@ -272,11 +272,11 @@ jobs:
           set -euo pipefail
           container="native-quota-vanilla-${GITHUB_RUN_ID}"
           docker run -d --name "$container" \
-            -p 18082:8000 \
+            -p 18083:8000 \
             surrealdb/surrealdb:v3.2.3 \
             start --no-banner --log none --user root --pass root memory
           for attempt in $(seq 1 60); do
-            if curl --fail --silent http://127.0.0.1:18082/health >/dev/null; then
+            if curl --fail --silent http://127.0.0.1:18083/health >/dev/null; then
               break
             fi
             test "$attempt" -lt 60
@@ -288,7 +288,7 @@ jobs:
         env:
           NATIVE_QUOTA_E2E_BINARY: ${{ steps.cli.outputs.binary }}
           NATIVE_QUOTA_E2E_EXPECTED_GIT_SHA: ${{ inputs.expected_git_sha }}
-          NATIVE_QUOTA_E2E_VANILLA_URL: ws://127.0.0.1:18082/rpc
+          NATIVE_QUOTA_E2E_VANILLA_URL: ws://127.0.0.1:18083/rpc
           SURREAL_BINARY: ${{ steps.cli.outputs.binary }}
         run: |
           set -euo pipefail
@@ -440,7 +440,7 @@ jobs:
           gh api --method POST repos/MainListActivity/surrealdb/dispatches \
             -f event_type=native-quota-stable-accepted \
             -f "client_payload[candidate_tag]=$CANDIDATE_TAG" \
-            -f "client_payload[release]=3.3.0-native-quota.1" \
+            -f "client_payload[release]=4.0.1-native-quota.1" \
             -f "client_payload[git_sha]=$EXPECTED_SHA" \
             -f "client_payload[digest]=$EXPECTED_DIGEST" \
             -f "client_payload[acceptance_statement_b64]=$statement" \
