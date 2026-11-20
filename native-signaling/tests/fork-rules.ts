@@ -32,7 +32,7 @@ try {
     await root.use({ namespace: 'local', database: db });
     if (fullTemplate) {
       const scripts = await loadTemplateScripts({ oidcJwksUrl: 'http://127.0.0.1:18737/jwks' });
-      assert.equal(scripts.at(-1)?.version, 62);
+      assert.equal(scripts.at(-1)?.version, 64);
       for (const script of scripts) await root.query(script.sql);
       for (const name of ['a', 'b', 'c', 'd', 'e', 'f']) {
         await root.query("CREATE type::record('user',$name) SET kind='human', email=$email, subject=$subject, is_admin=false;", { name, email: `${name}@invalid.local`, subject: `fixture-${name}` });
@@ -94,7 +94,7 @@ try {
   await denied(f,`SELECT * FROM type::record('native_signal',$id);`,expired);
   await denied(f,create,{...expired,id:hex()}); // 保留记录阻断nonce/generation重放。
   const afterCooldown = payload('f'); assert.equal((await rows(f,create,afterCooldown)).length,1); checks++;
-  console.log(`PASS ${checks} real-fork checks; template=${fullTemplate ? '001-062' : 'minimal+061+062'}`);
+  console.log(`PASS ${checks} real-fork checks; template=${fullTemplate ? '001-064' : 'minimal+061+062'}`);
 } finally {
   for (const c of clients) await c.close(); await root.close(); child.kill(); await child.exited;
 }

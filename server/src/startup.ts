@@ -14,6 +14,7 @@ import { seedPlatformOperators } from "./db/platform-operator-seed";
 import { seedQuotaPlans } from "./db/quota-plan-seed";
 import { migrateAllWorkspaces } from "./db/migration-runner";
 import { startReconcileLoop, type ReconcileLoopHandle } from "./db/reconciler";
+import { startNativeMeetingGc } from "./db/native-meeting-gc";
 import { runTestSubjectReaper } from "./test-subjects/reaper";
 import { startFunnelLoop, type FunnelLoopHandle } from "./funnel/loop";
 import {
@@ -253,6 +254,7 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
     fetch: app.fetch,
     websocket: app.websocket,
   });
+  const nativeMeetingGc = envName === "test" ? undefined : startNativeMeetingGc();
 
   console.info("[server] listening", { host, port, env: envName });
 
@@ -314,6 +316,7 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
       server.stop();
       reconcileLoop?.stop();
       funnelLoop?.stop();
+      await nativeMeetingGc?.stop();
       quotaRuntime.stop();
       testSubjectReaper?.stop();
       await claimsRiskDispatcher?.stop();
