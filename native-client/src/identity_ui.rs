@@ -1191,7 +1191,7 @@ mod enterprise_chat {
         pub pending: bool,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub(super) struct Invitation {
+    pub(crate) struct Invitation {
         id: String,
         sender: String,
         name: String,
