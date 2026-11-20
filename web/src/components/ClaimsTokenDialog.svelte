@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Copy, Link2, X } from "@lucide/svelte";
+  import { Copy, Download, Link2, X } from "@lucide/svelte";
   import { onMount } from "svelte";
   import { getToken } from "../lib/auth";
   import { getSurreal } from "../lib/surreal";
@@ -29,8 +29,13 @@
   let lastPlaintext = $state<string | null>(null);
   let lastPath = $state<string | null>(null);
   let lastRosterId = $state<string | null>(null);
+  let selectedIds = $state<string[]>([]);
+  let status = $state("");
 
   const workspace = $derived(getCurrentWorkspace());
+  const tokenEndpoint = $derived(workspace?.slug
+    ? `${apiBase()}/api/workspaces/${encodeURIComponent(workspace.slug)}/claims-portal/tokens`
+    : "");
 
   function apiBase(): string {
     return import.meta.env.VITE_API_BASE_URL?.replace(/\/+$/, "") ?? "";
@@ -55,10 +60,9 @@
   }
 
   async function loadTokens() {
-    const slug = workspace?.slug;
     const bearer = getToken();
-    if (!slug || !bearer) return;
-    const res = await fetch(`${apiBase()}/api/workspaces/${encodeURIComponent(slug)}/claims-portal/tokens`, {
+    if (!tokenEndpoint || !bearer) return;
+    const res = await fetch(tokenEndpoint, {
       headers: { Authorization: `Bearer ${bearer}` },
     });
     if (!res.ok) {
@@ -84,14 +88,14 @@
   async function mint(rosterId: string) {
     const slug = workspace?.slug;
     const bearer = getToken();
-    if (!slug || !bearer || busy) return;
+    if (!slug || !tokenEndpoint || !bearer || busy) return;
     busy = true;
     error = null;
     lastPlaintext = null;
     lastPath = null;
     lastRosterId = rosterId;
     try {
-      const res = await fetch(`${apiBase()}/api/workspaces/${encodeURIComponent(slug)}/claims-portal/tokens`, {
+      const res = await fetch(tokenEndpoint, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${bearer}`,
@@ -110,6 +114,68 @@
       }
       lastPlaintext = body.tokenPlaintext ?? null;
       lastPath = body.portalPath ?? (body.tokenPlaintext ? claimsPortalPath(slug, body.tokenPlaintext) : null);
+      await loadTokens();
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function downloadBatch() {
+    const bearer = getToken();
+    if (busy || !tokenEndpoint || !bearer || selectedIds.length === 0 || selectedIds.length > 500) return;
+    busy = true;
+    error = null;
+    status = "";
+    lastPlaintext = null;
+    lastPath = null;
+    try {
+      const res = await fetch(`${tokenEndpoint}:batch`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${bearer}`, "content-type": "application/json" },
+        body: JSON.stringify({ rosterIds: selectedIds }),
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null) as { error?: { message?: string } } | null;
+        throw new Error(body?.error?.message ?? `批量生成失败（${res.status}）`);
+      }
+      const url = URL.createObjectURL(await res.blob());
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "claims-portal-links.csv";
+      link.click();
+      URL.revokeObjectURL(url);
+      selectedIds = [];
+      status = "已发起下载。请妥善保管 CSV，系统不会保留明文链接。";
+      await loadTokens();
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function revoke(existing: TokenRow) {
+    const bearer = getToken();
+    if (busy || !tokenEndpoint || !bearer || !window.confirm("作废后，旧链接和已经打开的会话都将失效。确定作废？")) return;
+    busy = true;
+    error = null;
+    status = "";
+    if (lastRosterId === existing.rosterId) {
+      lastPlaintext = null;
+      lastPath = null;
+    }
+    try {
+      const res = await fetch(`${tokenEndpoint}/${encodeURIComponent(existing.id)}`, {
+        method: "DELETE", headers: { Authorization: `Bearer ${bearer}` },
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null) as { error?: { message?: string } } | null;
+        throw new Error(body?.error?.message ?? `作废失败（${res.status}）`);
+      }
+      status = "链接已作废。";
       await loadTokens();
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
@@ -154,7 +220,7 @@
     </header>
 
     <p class="hint">
-      为名册中的债权人生成专属链接。明文令牌只在生成当下显示一次；请立即复制后自行转发。系统不发邮件或短信。
+      为名册中的债权人生成专属链接。换发后旧链接即失效；批量生成的明文只在本次 CSV 下载中提供。
     </p>
 
     {#if lastPlaintext && lastPath}
@@ -174,26 +240,33 @@
     {#if error}
       <div class="status error" role="alert">{error}</div>
     {/if}
+    {#if status}<p role="status">{status}</p>{/if}
+    <button type="button" class="secondary" disabled={busy || selectedIds.length === 0 || selectedIds.length > 500} onclick={() => void downloadBatch()}>
+      <Download size={14} />批量生成并下载 CSV（已选 {selectedIds.length} / 500）
+    </button>
 
     <div class="list">
       {#each roster as row}
         {@const existing = tokenForRoster(row.id)}
         <div class="row">
           <div>
-            <strong>{row.name}</strong>
+            <label>
+              <input type="checkbox" bind:group={selectedIds} value={row.id} disabled={busy} />
+              <strong>{row.name}</strong>
+            </label>
             <small>{row.identity_code}</small>
             {#if existing}
               <span class="badge">{existing.status}{existing.openedAt ? " · 已打开" : ""}</span>
             {/if}
           </div>
-          <button
-            type="button"
-            class="primary"
-            disabled={busy}
-            onclick={() => void mint(row.id)}
-          >
-            {existing ? "重新生成" : "生成链接"}
-          </button>
+          <div class="actions">
+            {#if existing?.status === "active"}
+              <button type="button" class="secondary" disabled={busy} onclick={() => void revoke(existing)}>作废</button>
+            {/if}
+            <button type="button" class="primary" disabled={busy} onclick={() => void mint(row.id)}>
+              {existing?.status === "active" ? "重新生成" : "生成链接"}
+            </button>
+          </div>
         </div>
       {:else}
         <p class="empty">名册为空。请先通过「债权对账导入」导入债权人名册。</p>
@@ -270,6 +343,10 @@
   .row small {
     display: block;
     color: var(--text-2, #64748b);
+  }
+  .actions {
+    display: flex;
+    gap: 6px;
   }
   .badge {
     display: inline-block;

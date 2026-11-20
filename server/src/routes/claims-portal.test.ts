@@ -48,29 +48,21 @@ function createMemoryDb(store: Store): ClaimsQueryable {
         const token = store.tokens.find((row) => String(row.id) === idStr);
         return [[token].filter(Boolean)];
       }
-      if (sql.includes("UPDATE claim_access_token SET status = \"revoked\"")) {
-        for (const token of store.tokens) {
-          if (String(token.roster_id) === rosterStr && token.status === "active") token.status = "revoked";
+      if (sql.includes("FROM creditor_roster WHERE id INSIDE")) {
+        return [[store.roster].filter((row) => (vars.rosterIds as unknown[]).map(String).includes(row.id))];
+      }
+      if (sql.includes("CREATE $entry.token")) {
+        for (const entry of vars.entries as { roster: unknown; token: unknown; hash: string }[]) {
+          for (const old of store.tokens) {
+            if (old.roster_id === String(entry.roster) && old.status === "active") old.status = "revoked";
+          }
+          store.tokens.push({
+            id: String(entry.token), roster_id: String(entry.roster), token_hash: entry.hash,
+            status: "active", opened_at: null, last_attempt_at: null, failure_count: 0, locked_until: null,
+            created_by: vars.createdBy, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+          });
         }
         return [[]];
-      }
-      if (sql.includes("CREATE claim_access_token CONTENT")) {
-        store.seq += 1;
-        const row = {
-          id: `claim_access_token:t${store.seq}`,
-          roster_id: rosterStr,
-          token_hash: vars.tokenHash,
-          status: "active",
-          opened_at: null,
-          last_attempt_at: null,
-          failure_count: 0,
-          locked_until: null,
-          created_by: vars.createdBy,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        };
-        store.tokens.push(row);
-        return [[row]];
       }
       if (sql.includes("FROM claim_access_token ORDER BY")) return [[...store.tokens]];
       if (sql.includes("FROM claim_access_token WHERE token_hash")) {
@@ -159,6 +151,7 @@ function createMemoryDb(store: Store): ClaimsQueryable {
         const row = store.attachments.find((item) => String(item.id) === idStr);
         return [[row].filter(Boolean)];
       }
+      if (sql.includes("FROM claim_progress_event") || sql.includes("FROM claim_decision")) return [[]];
       if (sql.includes("FROM claim_supplement WHERE submission_id")) {
         const rows = store.supplements
           .filter((item) => String(item.submission_id) === submissionStr)

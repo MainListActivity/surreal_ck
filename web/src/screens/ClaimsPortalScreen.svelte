@@ -1,5 +1,6 @@
 <script lang="ts">
   import { parseRateSegmentsJson } from "../lib/claims-interest";
+  import { CLAIM_PROGRESS_LABELS, type ClaimProgressEvent, type ClaimProgressStage, type PublishedClaimDecision } from "@surreal-ck/shared/claims-portal";
 
   /**
    * 债权人令牌填报公开页：打开会话 → 申报草稿 → 附件（本轮 fail-closed）→ 提交。
@@ -18,6 +19,9 @@
     body?: string | null;
     actor?: string | null;
     createdAt?: string | null;
+    dueAt?: string | null;
+    requestId?: string | null;
+    attachmentIds?: string[];
   };
 
   type SubmissionRow = {
@@ -49,9 +53,19 @@
   let submission = $state<SubmissionRow | null>(null);
   let attachments = $state<AttachmentRow[]>([]);
   let supplements = $state<SupplementRow[]>([]);
+  let progress = $state<{ stage: ClaimProgressStage | null; events: ClaimProgressEvent[] }>({ stage: null, events: [] });
+  let decisions = $state<PublishedClaimDecision[]>([]);
+  let requestId = $state("");
+  let replyAttachments = $state<string[]>([]);
   let supplementReply = $state("");
   let supplementBusy = $state(false);
   let submitted = $state(false);
+  const managerRequests = $derived(supplements.filter((row) => row.direction === "manager_request" && row.id));
+  const attachmentNames = $derived(new Map(attachments.map((row) => [row.id, row.fileName])));
+
+  function displayTime(iso: string | null | undefined): string {
+    return iso ? new Date(iso).toLocaleString("zh-CN") : "—";
+  }
 
   function apiBase(): string {
     return import.meta.env.VITE_API_BASE_URL?.replace(/\/+$/, "") ?? "";
@@ -107,10 +121,17 @@
       submission?: SubmissionRow | null;
       attachments?: AttachmentRow[];
       supplements?: SupplementRow[];
+      progress?: typeof progress;
+      decisions?: PublishedClaimDecision[];
     };
     submission = body.submission ?? null;
     attachments = body.attachments ?? [];
     supplements = body.supplements ?? [];
+    progress = body.progress ?? { stage: null, events: [] };
+    decisions = body.decisions ?? [];
+    if (!managerRequests.some((row) => row.id === requestId)) {
+      requestId = managerRequests.at(-1)?.id ?? "";
+    }
     if (submission) {
       principal = submission.principal != null ? String(submission.principal) : "";
       interestStart = submission.interestStart?.slice(0, 10) ?? "";
@@ -123,7 +144,7 @@
       if (Array.isArray(submission.rateSegments) && submission.rateSegments.length > 1 && rateSegmentsJson === "") {
         rateSegmentsJson = JSON.stringify(submission.rateSegments, null, 2);
       }
-      if (submission.status === "submitted") submitted = true;
+      submitted = submission.status !== "draft";
     }
   }
 
@@ -172,7 +193,7 @@
 
   async function sendSupplementReply() {
     const text = supplementReply.trim();
-    if (supplementBusy || text.length === 0) return;
+    if (busy || supplementBusy || !requestId || text.length === 0) return;
     supplementBusy = true;
     error = null;
     try {
@@ -180,13 +201,14 @@
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ body: text }),
+        body: JSON.stringify({ body: text, requestId, attachmentIds: replyAttachments }),
       });
       if (!res.ok) {
         error = await readError(res);
         return;
       }
       supplementReply = "";
+      replyAttachments = [];
       await loadSubmission();
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
@@ -195,8 +217,8 @@
     }
   }
 
-  async function uploadAttachment(file: File | undefined) {
-    if (!file || busy) return;
+  async function uploadAttachment(file: File | undefined, includeInReply = false) {
+    if (!file || busy || supplementBusy) return;
     busy = true;
     error = null;
     try {
@@ -211,6 +233,10 @@
       if (!res.ok) {
         error = await readError(res);
         return;
+      }
+      if (includeInReply) {
+        const body = await res.json() as { attachment?: AttachmentRow };
+        if (body.attachment?.id) replyAttachments = [...replyAttachments, body.attachment.id];
       }
       await loadSubmission();
     } catch (cause) {
@@ -266,9 +292,39 @@
       </button>
     </section>
   {:else}
+    {#if progress.stage}
+      <section class="card" aria-label="申报进度">
+        <h2>申报进度：{CLAIM_PROGRESS_LABELS[progress.stage]}</h2>
+        {#if progress.events.length > 0}
+          <ol class="thread">
+            {#each progress.events as event}
+              <li>{CLAIM_PROGRESS_LABELS[event.stage]} · {event.actor} · <time datetime={event.createdAt}>{displayTime(event.createdAt)}</time></li>
+            {/each}
+          </ol>
+        {/if}
+      </section>
+    {/if}
+    {#if decisions.length > 0}
+      <section class="card" aria-label="已发布审查结论">
+        <h2>审查结论</h2>
+        {#each decisions as decision, index (decision.version)}
+          <details open={index === 0}>
+            <summary>第 {decision.version} 版{index === 0 ? "（最新）" : ""} · {displayTime(decision.publishedAt)}</summary>
+            <dl>
+              <dt>确认本金</dt><dd>{decision.confirmedPrincipal.toFixed(2)}</dd>
+              <dt>确认利息</dt><dd>{decision.confirmedInterest.toFixed(2)}</dd>
+              <dt>确认违约金</dt><dd>{decision.confirmedPenalty.toFixed(2)}</dd>
+              <dt>未确认金额</dt><dd>{decision.unconfirmedAmount.toFixed(2)}</dd>
+              <dt>理由</dt><dd>{decision.reason}</dd>
+            </dl>
+          </details>
+        {/each}
+      </section>
+    {/if}
     <section class="card" aria-label="申报表单">
       {#if submitted}
         <p class="ok">已提交。如需补充材料，请等待管理人联系。</p>
+        <a href={portalUrl("/submission.pdf")} rel="noreferrer" download="claim-record.pdf">下载我的申报与往来记录（PDF）</a>
       {/if}
       <label>
         本金
@@ -347,20 +403,55 @@
                 <li class={msg.direction === "manager_request" ? "from-manager" : "from-creditor"}>
                   <div class="meta">
                     {msg.direction === "manager_request" ? "管理人要求" : "本人回复"}
-                    · {msg.actor ?? "?"} · {(msg.createdAt ?? "").replace("T", " ").slice(0, 19)}
+                    · {displayTime(msg.createdAt)}
                   </div>
                   <div class="msg">{msg.body}</div>
+                  {#if msg.dueAt}
+                    <p class="hint">补正截止：<time datetime={msg.dueAt}>{displayTime(msg.dueAt)}</time></p>
+                  {/if}
+                  {#if msg.attachmentIds?.length}
+                    <p class="hint">关联附件：{msg.attachmentIds.map((id) => attachmentNames.get(id) ?? id).join("、")}</p>
+                  {/if}
                 </li>
               {/each}
             </ul>
           {/if}
-          <label>
-            回复补充要求（可另传附件作补充材料）
-            <textarea rows="3" maxlength="4000" bind:value={supplementReply} disabled={supplementBusy}></textarea>
-          </label>
-          <button type="button" class="secondary" disabled={supplementBusy || supplementReply.trim().length === 0} onclick={() => void sendSupplementReply()}>
-            {supplementBusy ? "发送中…" : "发送回复"}
-          </button>
+          {#if managerRequests.length > 0 && submission?.status !== "closed" && progress.stage !== "final"}
+            <label>
+              回复哪条补正要求
+              <select bind:value={requestId} disabled={busy || supplementBusy}>
+                {#each managerRequests as request}
+                  <option value={request.id}>{displayTime(request.createdAt)} · {request.body?.slice(0, 40)}</option>
+                {/each}
+              </select>
+            </label>
+            <label>
+              回复补充要求
+              <textarea rows="3" maxlength="4000" bind:value={supplementReply} disabled={supplementBusy}></textarea>
+            </label>
+            <label>
+              上传并关联到本次回复
+              <input type="file" accept=".pdf,image/png,image/jpeg,application/pdf"
+                disabled={busy || supplementBusy || replyAttachments.length >= 20}
+                onchange={(event) => {
+                  const input = event.currentTarget;
+                  void uploadAttachment(input.files?.[0], true);
+                  input.value = "";
+                }} />
+            </label>
+            {#each attachments as item}
+              {#if item.id}
+                <label>
+                  <input type="checkbox" value={item.id} bind:group={replyAttachments}
+                    disabled={busy || supplementBusy || (replyAttachments.length >= 20 && !replyAttachments.includes(item.id))} />
+                  {item.fileName ?? item.id}
+                </label>
+              {/if}
+            {/each}
+            <button type="button" class="secondary" disabled={busy || supplementBusy || !requestId || supplementReply.trim().length === 0} onclick={() => void sendSupplementReply()}>
+              {supplementBusy ? "发送中…" : "发送回复"}
+            </button>
+          {/if}
         </div>
       {/if}
 

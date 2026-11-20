@@ -2,21 +2,31 @@
   import { Download, GitCompareArrows, RefreshCw, Send, X } from "@lucide/svelte";
   import { onMount } from "svelte";
   import { DateTime } from "surrealdb";
+  import { CLAIM_PROGRESS_LABELS } from "@surreal-ck/shared/claims-portal";
   import { recalculateSubmission } from "../lib/claims-interest";
   import {
+    CLAIM_FOLLOW_UP_LABELS,
     FINDING_STATE_LABELS,
     RECON_CATEGORY_LABELS,
+    advanceClaimProgress,
+    buildClaimCorrespondenceCsv,
     buildReconciliationCsv,
     loadReconciliation,
+    loadSupplementTemplates,
+    publishClaimDecision,
     saveFinding,
+    saveSupplementTemplate,
     sendSupplementRequest,
+    type ClaimFollowUpState,
     type ClaimSupplement,
     type ReconCategory,
     type ReconFinding,
     type ReconRow,
+    type SupplementTemplate,
   } from "../lib/claims-reconcile";
   import { loadCurrentUser } from "../lib/profile-data";
   import { getSurreal } from "../lib/surreal";
+  import { downloadCsvFile } from "../lib/workbook-csv-export";
 
   let { onclose }: { onclose?: () => void } = $props();
 
@@ -27,7 +37,10 @@
   let supplements = $state<ClaimSupplement[]>([]);
   let selected = $state<ReconRow | null>(null);
   let actorName = $state("管理人");
+  let isAdmin = $state(false);
   let filter = $state<"all" | ReconCategory>("all");
+  let followUpFilter = $state<"all" | ClaimFollowUpState>("all");
+  let followUp = $state<Awaited<ReturnType<typeof loadReconciliation>>["followUp"]>(new Map());
   let recalcBusy = $state(false);
   let actionBusy = $state(false);
 
@@ -36,6 +49,24 @@
   let findingNote = $state("");
   // 补充要求表单
   let supplementBody = $state("");
+  let supplementDueAt = $state("");
+  let supplementTemplates = $state<SupplementTemplate[]>([]);
+  let supplementTemplateKey = $state("");
+  let confirmedPrincipal = $state<number | undefined>();
+  let confirmedInterest = $state<number | undefined>();
+  let confirmedPenalty = $state<number | undefined>();
+  let unconfirmedAmount = $state<number | undefined>();
+  let decisionReason = $state("");
+  const canPublish = $derived(isAdmin && selected?.portal_stage != null &&
+    ["under_review", "decision_published", "objected"].includes(selected.portal_stage));
+  const nextStage = $derived(
+    selected?.portal_stage === "submitted" ? "accepted"
+      : selected?.portal_stage === "accepted" || selected?.portal_stage === "needs_info" ? "under_review"
+      : selected?.portal_stage === "decision_published" ? "final" : null,
+  );
+  const canRequestSupplement = $derived(selected?.portal_stage != null &&
+    ["submitted", "accepted", "needs_info", "under_review"].includes(selected.portal_stage));
+  const selectedTemplate = $derived(supplementTemplates.find((entry) => entry.key === supplementTemplateKey));
 
   function fmtAmount(value: number | null | undefined): string {
     return typeof value === "number" && Number.isFinite(value) ? value.toFixed(2) : "—";
@@ -70,7 +101,10 @@
   }
 
   const filteredRows = $derived(
-    filter === "all" ? rows : rows.filter((r) => r.categories.includes(filter as ReconCategory)),
+    rows.filter((row) =>
+      (filter === "all" || row.categories.includes(filter))
+      && (followUpFilter === "all" || followUp.get(row.roster_id ?? "")?.states.includes(followUpFilter)),
+    ),
   );
 
   const categoryCounts = $derived.by(() => {
@@ -84,9 +118,37 @@
   function selectRow(row: ReconRow) {
     selected = row;
     supplementBody = "";
+    supplementDueAt = "";
+    supplementTemplateKey = "";
+    resetDecision();
     const finding = findingFor(row);
     findingState = (finding?.state as typeof findingState) ?? "open";
     findingNote = typeof finding?.manager_note === "string" ? finding.manager_note : "";
+  }
+
+  function resetDecision() {
+    confirmedPrincipal = undefined;
+    confirmedInterest = undefined;
+    confirmedPenalty = undefined;
+    unconfirmedAmount = undefined;
+    decisionReason = "";
+  }
+
+  async function publishDecision() {
+    if (!selected?.submission_id || !canPublish || actionBusy) return;
+    actionBusy = true;
+    error = null;
+    try {
+      await publishClaimDecision(getSurreal(), selected.submission_id, {
+        confirmedPrincipal, confirmedInterest, confirmedPenalty, unconfirmedAmount, reason: decisionReason,
+      });
+      resetDecision();
+      await reload();
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      actionBusy = false;
+    }
   }
 
   async function reload() {
@@ -98,6 +160,7 @@
       rows = data.rows;
       findings = data.findings;
       supplements = data.supplements;
+      followUp = data.followUp;
       if (selected) {
         selected = rows.find((r) => r.identity_code === selected!.identity_code) ?? null;
       }
@@ -148,7 +211,7 @@
   }
 
   async function sendRequest() {
-    if (!selected?.submission_id || actionBusy) return;
+    if (!selected?.submission_id || actionBusy || !canRequestSupplement) return;
     actionBusy = true;
     error = null;
     try {
@@ -156,8 +219,45 @@
         submission_id: selected.submission_id,
         body: supplementBody,
         actor: actorName,
+        dueAt: supplementDueAt ? new Date(supplementDueAt).toISOString() : undefined,
+        templateKey: supplementTemplateKey || undefined,
       });
       supplementBody = "";
+      supplementDueAt = "";
+      supplementTemplateKey = "";
+      await reload();
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      actionBusy = false;
+    }
+  }
+
+  async function saveTemplate() {
+    if (!selectedTemplate || actionBusy || !isAdmin) return;
+    actionBusy = true;
+    error = null;
+    try {
+      const db = getSurreal();
+      await saveSupplementTemplate(db, { ...selectedTemplate, body: supplementBody });
+      supplementTemplates = await loadSupplementTemplates(db);
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      actionBusy = false;
+    }
+  }
+
+  async function updateProgress() {
+    if (!selected?.submission_id || !nextStage || actionBusy) return;
+    actionBusy = true;
+    error = null;
+    try {
+      await advanceClaimProgress(getSurreal(), {
+        submissionId: selected.submission_id,
+        stage: nextStage,
+        actor: actorName,
+      });
       await reload();
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
@@ -167,24 +267,44 @@
   }
 
   function exportCsv() {
-    const csv = buildReconciliationCsv(rows, findings);
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `claims-reconciliation-${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadCsvFile({
+      content: buildReconciliationCsv(rows, findings),
+      fileName: `claims-reconciliation-${new Date().toISOString().slice(0, 10)}.csv`,
+    });
+  }
+
+  async function exportCorrespondence(submissionId?: string) {
+    if (actionBusy || !isAdmin) return;
+    actionBusy = true;
+    error = null;
+    try {
+      const content = await buildClaimCorrespondenceCsv(getSurreal(), submissionId);
+      downloadCsvFile({ content, fileName: submissionId ? "债权往来-单人.csv" : "债权往来-全案.csv" });
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      actionBusy = false;
+    }
   }
 
   onMount(async () => {
     try {
       const me = await loadCurrentUser(getSurreal());
-      if (me) actorName = me.displayName ?? me.email;
+      if (me) {
+        actorName = me.displayName ?? me.email;
+        isAdmin = me.isAdmin;
+      }
     } catch {
       // actor 解析失败不阻塞加载，落库仍记录「管理人」。
     }
     await reload();
+    if (isAdmin) {
+      try {
+        supplementTemplates = await loadSupplementTemplates(getSurreal());
+      } catch (cause) {
+        error = cause instanceof Error ? cause.message : String(cause);
+      }
+    }
   });
 </script>
 
@@ -208,6 +328,11 @@
         <button type="button" class="primary sm" disabled={busy || rows.length === 0} onclick={exportCsv}>
           <Download size={13} />导出 CSV
         </button>
+        {#if isAdmin}
+          <button type="button" class="ghost sm" disabled={busy || actionBusy} onclick={() => void exportCorrespondence()}>
+            <Download size={13} />导出全案往来
+          </button>
+        {/if}
         <button type="button" class="icon-btn" aria-label="关闭" disabled={busy} onclick={() => onclose?.()}>
           <X size={16} />
         </button>
@@ -235,6 +360,18 @@
       {/each}
     </div>
 
+    <div class="filters">
+      <label>
+        门户催办
+        <select bind:value={followUpFilter}>
+          <option value="all">所有状态</option>
+          {#each Object.entries(CLAIM_FOLLOW_UP_LABELS) as [state, label] (state)}
+            <option value={state}>{label}</option>
+          {/each}
+        </select>
+      </label>
+    </div>
+
     {#if error}
       <div class="status error" role="alert">{error}</div>
     {/if}
@@ -249,6 +386,7 @@
           <thead>
             <tr>
               <th>债权人</th>
+              <th>催办状态</th>
               <th class="num">申报本金</th>
               <th class="num">申报违约金</th>
               <th class="num">账面本金</th>
@@ -260,12 +398,23 @@
           </thead>
           <tbody>
             {#each filteredRows as row (row.identity_code)}
+              {@const reminder = followUp.get(row.roster_id ?? "")}
               <tr class:selected={selected?.identity_code === row.identity_code} onclick={() => selectRow(row)}>
                 <td>
                   <div class="creditor">
                     <span class="name">{row.name ?? "（无名册）"}</span>
                     <span class="code">{row.identity_code}</span>
                   </div>
+                </td>
+                <td>
+                  {#each reminder?.states ?? [] as state (state)}
+                    <span class="badge">{CLAIM_FOLLOW_UP_LABELS[state]}</span>
+                  {:else}
+                    —
+                  {/each}
+                  {#if reminder?.dueAt}
+                    <time class="meta" datetime={reminder.dueAt}>{fmtTime(reminder.dueAt)} UTC</time>
+                  {/if}
                 </td>
                 <td class="num">{row.submission_id ? fmtAmount(row.declared_principal) : "未申报"}</td>
                 <td class="num">{row.submission_id ? fmtAmount(row.declared_penalty) : ""}</td>
@@ -292,6 +441,13 @@
     {#if selected}
       <section class="panel detail">
         <h3>明细 · {selected.name ?? selected.identity_code}</h3>
+        {#if isAdmin && selected.submission_id}
+          <button type="button" class="ghost sm" disabled={actionBusy || busy} onclick={() => {
+            if (selected?.submission_id) void exportCorrespondence(selected.submission_id);
+          }}>
+            <Download size={13} />导出此人往来
+          </button>
+        {/if}
         <div class="detail-grid">
           <div>
             <h4>重算分段 {selected.calculation ? `（${selected.calculation.rule_version}）` : ""}</h4>
@@ -357,6 +513,27 @@
               </p>
             {/if}
 
+            <h4>对外申报进度</h4>
+            <p>{selected.portal_stage ? CLAIM_PROGRESS_LABELS[selected.portal_stage] : "未提交"}</p>
+            {#if nextStage && isAdmin}
+              <button type="button" class="secondary sm" disabled={actionBusy} onclick={() => void updateProgress()}>
+                {nextStage === "accepted" ? "受理申报" : nextStage === "under_review" ? "进入审查" : "确认结案"}
+              </button>
+            {/if}
+
+            {#if canPublish}
+              <h4>对外审查结论</h4>
+              <p class="muted">发布后债权人可见。已发布的版本不能修改。</p>
+              <label>确认本金 <input type="number" min="0" step="0.01" bind:value={confirmedPrincipal} /></label>
+              <label>确认利息 <input type="number" min="0" step="0.01" bind:value={confirmedInterest} /></label>
+              <label>确认违约金 <input type="number" min="0" step="0.01" bind:value={confirmedPenalty} /></label>
+              <label>未确认金额 <input type="number" min="0" step="0.01" bind:value={unconfirmedAmount} /></label>
+              <label>对外理由 <textarea rows="3" maxlength="4000" bind:value={decisionReason}></textarea></label>
+              <button type="button" class="primary sm" disabled={actionBusy || !decisionReason.trim()} onclick={() => void publishDecision()}>
+                发布新版本
+              </button>
+            {/if}
+
             <h4>补充往返</h4>
             {#if selected.submission_id}
               {@const thread = supplementsFor(selected)}
@@ -369,21 +546,46 @@
                         · {msg.actor ?? "?"} · {fmtTime(msg.created_at)}
                       </div>
                       <div class="body">{msg.body}</div>
+                      {#if msg.due_at}
+                        <div class="meta">补正截止：{fmtTime(msg.due_at)} UTC</div>
+                      {/if}
                     </li>
                   {/each}
                 </ul>
               {:else}
                 <p class="muted">暂无往返记录。</p>
               {/if}
-              <textarea
-                rows="2"
-                maxlength="4000"
-                placeholder="向债权人发出的补充要求（债权人可在其门户看到并回复）"
-                bind:value={supplementBody}
-              ></textarea>
-              <button type="button" class="primary sm" disabled={actionBusy || supplementBody.trim().length === 0} onclick={() => void sendRequest()}>
-                <Send size={13} />发出补充要求
-              </button>
+              {#if canRequestSupplement && isAdmin}
+                {#if supplementTemplates.length > 0}
+                  <label>补正模板
+                    <select value={supplementTemplateKey} onchange={(event) => {
+                      supplementTemplateKey = event.currentTarget.value;
+                      const entry = supplementTemplates.find((item) => item.key === supplementTemplateKey);
+                      if (entry) supplementBody = entry.body;
+                    }}>
+                      <option value="">不使用模板</option>
+                      {#each supplementTemplates as template (template.key)}
+                        <option value={template.key}>{template.label}</option>
+                      {/each}
+                    </select>
+                  </label>
+                {/if}
+                <textarea
+                  rows="2"
+                  maxlength="4000"
+                  placeholder="向债权人发出的补充要求（债权人可在其门户看到并回复）"
+                  bind:value={supplementBody}
+                ></textarea>
+                <label>补正截止（本地时间）<input type="datetime-local" bind:value={supplementDueAt} /></label>
+                {#if selectedTemplate}
+                  <button type="button" class="ghost sm" disabled={actionBusy || !supplementBody.trim() || supplementBody.trim() === selectedTemplate.body} onclick={() => void saveTemplate()}>
+                    保存为模板默认正文
+                  </button>
+                {/if}
+                <button type="button" class="primary sm" disabled={actionBusy || supplementBody.trim().length === 0} onclick={() => void sendRequest()}>
+                  <Send size={13} />发出补充要求
+                </button>
+              {/if}
             {:else}
               <p class="muted">无申报行，无法发起补充往返。</p>
             {/if}
