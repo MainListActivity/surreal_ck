@@ -376,6 +376,23 @@ describe("ClaimsPortalService", () => {
     ).rejects.toMatchObject({ status: 400, code: "attachment-bytes-required" });
   });
 
+  test("已确认申报不能再上传附件，即使旧状态仍为 submitted", async () => {
+    const { service, store, memoryStorage } = makeService({ attachmentConfigured: true });
+    store.submissions.push({
+      id: "claim_submission:s1", roster_id: store.roster.id, status: "submitted", portal_stage: "final",
+    });
+    const input = {
+      workspaceDb: "ws_case_a", rosterId: store.roster.id, attachmentType: "contract",
+      fileName: "合同.pdf", contentType: "application/pdf", byteSize: 10,
+    };
+    await expect(service.uploadBytes({ ...input, bytes: new Uint8Array(10) }))
+      .rejects.toMatchObject({ status: 409, code: "claims-submission-locked" });
+    await expect(service.registerAttachmentMetadata(input))
+      .rejects.toMatchObject({ status: 409, code: "claims-submission-locked" });
+    expect(memoryStorage.objects.size).toBe(0);
+    expect(store.attachments).toHaveLength(0);
+  });
+
   test("mint 明文只返回一次；list 不含明文/hash", async () => {
     const { service, store } = makeService();
     const minted = await service.mintToken({

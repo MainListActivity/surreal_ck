@@ -60,6 +60,7 @@
   let supplementReply = $state("");
   let supplementBusy = $state(false);
   let submitted = $state(false);
+  const attachmentsLocked = $derived(submission?.status === "closed" || progress.stage === "final");
   const managerRequests = $derived(supplements.filter((row) => row.direction === "manager_request" && row.id));
   const attachmentNames = $derived(new Map(attachments.map((row) => [row.id, row.fileName])));
 
@@ -218,7 +219,7 @@
   }
 
   async function uploadAttachment(file: File | undefined, includeInReply = false) {
-    if (!file || busy || supplementBusy) return;
+    if (!file || busy || supplementBusy || attachmentsLocked) return;
     busy = true;
     error = null;
     try {
@@ -372,7 +373,7 @@
 
       <div class="attachments">
         <h2>附件</h2>
-        <p class="hint">至少一份（合同 / 对账单 / 判决书）。提交后仍可补传作为补充材料。本轮若未配置对象存储，上传会返回明确错误。</p>
+        <p class="hint">{attachmentsLocked ? "申报已结案，不能再上传附件。" : "至少一份（合同 / 对账单 / 判决书）。提交后仍可补传作为补充材料。"}</p>
         <ul>
           {#each attachments as item}
             <li>{item.attachmentType ?? "—"} · {item.fileName ?? item.id}</li>
@@ -383,7 +384,7 @@
         <input
           type="file"
           accept=".pdf,image/png,image/jpeg,application/pdf"
-          disabled={busy}
+          disabled={busy || attachmentsLocked}
           onchange={(event) => {
             const input = event.currentTarget as HTMLInputElement;
             void uploadAttachment(input.files?.[0]);
@@ -416,7 +417,7 @@
               {/each}
             </ul>
           {/if}
-          {#if managerRequests.length > 0 && submission?.status !== "closed" && progress.stage !== "final"}
+          {#if managerRequests.length > 0 && !attachmentsLocked}
             <label>
               回复哪条补正要求
               <select bind:value={requestId} disabled={busy || supplementBusy}>

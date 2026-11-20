@@ -736,7 +736,7 @@ export class ClaimsPortalService {
     const db = await this.getSession(input.workspaceDb);
     const existing = firstRow<SubmissionRow>(
       await db.query(
-        `SELECT id, status FROM claim_submission WHERE roster_id = $roster LIMIT 1;`,
+        `SELECT id, status, portal_stage FROM claim_submission WHERE roster_id = $roster LIMIT 1;`,
         { roster: new StringRecordId(input.rosterId) },
       ),
     );
@@ -864,7 +864,7 @@ export class ClaimsPortalService {
     if (!submission?.id) {
       throw new HttpError(404, "claims-submission-not-found", "Submission not found");
     }
-    if (submission.status === "closed") {
+    if (submission.status === "closed" || submission.portal_stage === "final") {
       throw new HttpError(409, "claims-submission-locked", "Closed submissions cannot accept attachments");
     }
     const submissionId = idOf(submission.id)!;
@@ -936,14 +936,14 @@ export class ClaimsPortalService {
     const db = await this.getSession(input.workspaceDb);
     const submission = firstRow<SubmissionRow>(
       await db.query(
-        `SELECT id, status FROM claim_submission WHERE roster_id = $roster LIMIT 1;`,
+        `SELECT id, status, portal_stage FROM claim_submission WHERE roster_id = $roster LIMIT 1;`,
         { roster: new StringRecordId(input.rosterId) },
       ),
     );
     if (!submission?.id) {
       throw new HttpError(404, "claims-submission-not-found", "Submission not found");
     }
-    if (submission.status === "closed") {
+    if (submission.status === "closed" || submission.portal_stage === "final") {
       throw new HttpError(409, "claims-submission-locked", "Closed submissions cannot accept attachments");
     }
     const submissionId = idOf(submission.id)!;
