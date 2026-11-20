@@ -90,6 +90,13 @@ def local_endpoint(argv):
     return "http://127.0.0.1:" + bind.rsplit(":", 1)[1]
 
 
+def container_entrypoint(container):
+    binary = container.get("Path")
+    if not isinstance(binary, str) or not binary.startswith("/"):
+        raise RuntimeError("container executable must be absolute")
+    return binary
+
+
 def inspect():
     container = json.loads(run(PODMAN, "inspect", CONTAINER))[0]
     if not container.get("State", {}).get("Running"):
@@ -107,9 +114,7 @@ def inspect():
         raise RuntimeError("unexpected container data mount; operator review required")
     image = container.get("ImageName") or container["Config"].get("Image")
     validate_image(image)
-    binary = container["Path"]
-    if not binary.startswith("/"):
-        raise RuntimeError("container executable must be absolute")
+    binary = container_entrypoint(container)
     endpoint = local_endpoint(database_args)
     exec_start = run("systemctl", "show", SERVICE, "--property=ExecStart", "--value")
     unit_path = re.search(r"\bpath=([^ ;]+)", exec_start)
@@ -297,7 +302,7 @@ def copy_data(source, destination):
     run("cp", "-a", "--reflink=auto", "--", str(source), str(destination))
 
 
-def restore_drill(image, snapshot, destination, auth, before):
+def restore_drill(image, binary, snapshot, destination, auth, before):
     copy_data(snapshot, destination)
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
@@ -305,7 +310,7 @@ def restore_drill(image, snapshot, destination, auth, before):
     drill_endpoint = f"http://127.0.0.1:{port}"
     name = "sck-restore-drill-" + str(os.getpid())
     run(PODMAN, "run", "--detach", "--rm", "--name", name, "--user", "0", "--network", "host",
-        "--env-file", str(ENV_FILE), "-v", f"{destination}:/data", image,
+        "--env-file", str(ENV_FILE), "-v", f"{destination}:/data", "--entrypoint", binary, image,
         "start", "--bind", f"127.0.0.1:{port}", "rocksdb:/data")
     try:
         wait_health(drill_endpoint)
@@ -334,13 +339,17 @@ def service_command(image, data, binary=None, engine="rocksdb"):
     return [*command, image, "start", "--bind", "0.0.0.0:8000", "--allow-all", f"{engine}:/data"]
 
 
-def export_database(endpoint, auth, namespace, database, output):
+def export_database(binary, endpoint, auth, namespace, database, output):
     env = {**os.environ, "SURREAL_USER": auth[0], "SURREAL_PASS": auth[1]}
-    with open(output, "xb") as destination:
+    error_log = output.with_name(output.name + ".stderr.log")
+    with open(output, "xb") as destination, open(error_log, "xb") as errors:
+        for stream in (destination, errors):
+            os.fchmod(stream.fileno(), 0o600)
+            os.fchown(stream.fileno(), 0, 0)
         result = subprocess.run([PODMAN, "exec", "--env", "SURREAL_USER", "--env", "SURREAL_PASS", CONTAINER,
-                                 "surreal", "export", "--endpoint", endpoint, "--namespace", namespace,
+                                 binary, "export", "--endpoint", endpoint, "--namespace", namespace,
                                  "--database", database, "-"], env=env, stdout=destination,
-                                stderr=subprocess.DEVNULL, check=False)
+                                stderr=errors, check=False)
     if result.returncode or output.stat().st_size == 0:
         raise RuntimeError("container database export failed")
 
@@ -463,7 +472,7 @@ def upgrade_locked(args, candidate):
         checksums = []
         for namespace, database in before:
             output = backup / f"{namespace}--{database}.surql"
-            export_database(endpoint, auth, namespace, database, output)
+            export_database(report["binary"], endpoint, auth, namespace, database, output)
             output.chmod(0o600)
             checksums.append(digest(output) + "  " + output.name)
         (backup / "SHA256SUMS").write_text("\n".join(checksums) + "\n")
@@ -472,7 +481,7 @@ def upgrade_locked(args, candidate):
         run("systemctl", "stop", SERVICE)
         database_stopped = True
         copy_data(data, snapshot)
-        restore_drill(report["container_image"], snapshot, backup / "restore-drill", auth, before)
+        restore_drill(report["container_image"], report["binary"], snapshot, backup / "restore-drill", auth, before)
         target_data.mkdir(mode=0o700)
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
@@ -485,7 +494,7 @@ def upgrade_locked(args, candidate):
         run(*command, image, "start", "--bind", f"127.0.0.1:{port}", "--allow-all", f"{args.storage_engine}:/data")
         trial_started = True
         wait_health(trial_endpoint)
-        trial_binary = json.loads(run(PODMAN, "inspect", trial))[0]["Path"]
+        trial_binary = container_entrypoint(json.loads(run(PODMAN, "inspect", trial))[0])
         # backend 认证在导入和切换前再核验，不能把支持打开误认为生产认证通过。
         validate_capability(request(trial_endpoint + "/capabilities"), args.storage_engine)
         for namespace, database in before:
