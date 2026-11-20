@@ -28,7 +28,7 @@ fn collaboration(width: f32, height: f32) -> Result<Headless, String> {
 
 fn open_diagnostics(app: &mut Headless) -> Result<(), String> {
     app.press("设置")?;
-    app.wait_for("当前版本：0.1.0")?;
+    app.wait_for(concat!("当前版本：", env!("CARGO_PKG_VERSION")))?;
     scroll_to(app, "打开开发者诊断")?;
     app.press("打开开发者诊断")?;
     scroll_top(app);
@@ -128,7 +128,7 @@ fn offline_send_is_disabled_and_never_fakes_success() -> Result<(), String> {
 fn settings_and_diagnostics_hold_security_tools() -> Result<(), String> {
     let mut app = collaboration(480.0, 800.0)?;
     app.press("设置")?;
-    app.wait_for("当前版本：0.1.0")?;
+    app.wait_for(concat!("当前版本：", env!("CARGO_PKG_VERSION")))?;
     app.wait_for(APP_TITLE)?;
     assert!(!app.shows("搜索成员或消息"), "设置页不应残留消息会话栏");
     assert!(!app.shows("消息列表"));
@@ -141,7 +141,7 @@ fn settings_and_diagnostics_hold_security_tools() -> Result<(), String> {
     assert!(app.shows("断开并停止媒体"));
     scroll_top(&mut app);
     app.press("返回设置")?;
-    app.wait_for("当前版本：0.1.0")?;
+    app.wait_for(concat!("当前版本：", env!("CARGO_PKG_VERSION")))?;
     app.press("消息")?;
     app.wait_for("搜索成员或消息")?;
     assert!(!app.shows("创建邀请"));
@@ -153,7 +153,7 @@ fn conversation_heading_is_not_stuck_on_settings() -> Result<(), String> {
     let mut app = collaboration(1100.0, 760.0)?;
     app.wait_for("搜索成员或消息")?;
     app.press("设置")?;
-    app.wait_for("当前版本：0.1.0")?;
+    app.wait_for(concat!("当前版本：", env!("CARGO_PKG_VERSION")))?;
     assert!(!app.shows("搜索成员或消息"));
     assert!(!app.shows("消息列表"));
     assert!(app.shows("设置"));
@@ -167,9 +167,9 @@ fn window_resize_keeps_navigation_usable() -> Result<(), String> {
     use nsh_core::prelude::{Size, px};
     let mut app = collaboration(1100.0, 760.0)?;
     app.press("设置")?;
-    app.wait_for("当前版本：0.1.0")?;
+    app.wait_for(concat!("当前版本：", env!("CARGO_PKG_VERSION")))?;
     app.set_viewport(Size::new(px(360.0), px(560.0)))?;
-    app.wait_for("当前版本：0.1.0")?;
+    app.wait_for(concat!("当前版本：", env!("CARGO_PKG_VERSION")))?;
     app.press("消息")?;
     app.wait_for("搜索成员或消息")?;
     app.set_viewport(Size::new(px(1280.0), px(800.0)))?;
@@ -317,7 +317,7 @@ fn manual_update_preview_opens_and_offers_sources() -> Result<(), String> {
     app.press("设置")?;
     app.wait_for("软件更新")?;
     app.wait_for(PREVIEW_LABEL)?;
-    app.wait_for("本地版本：0.1.0")?;
+    app.wait_for(concat!("本地版本：", env!("CARGO_PKG_VERSION")))?;
     app.wait_for("远端版本：未知（尚未成功检查）")?;
     app.wait_for("安装方式：预览版仅下载并校验，需手动安装；不会自动升级。")?;
     app.wait_for("下载来源")?;
