@@ -122,6 +122,10 @@ function requirePepper(getPepper: () => string | null): string {
   return pepper;
 }
 
+function invalidPortalSession(): HttpError {
+  return new HttpError(401, "claims-session-invalid", "会话已失效，请重新打开链接");
+}
+
 function requireAttachmentConfig(getConfig: () => ReturnType<typeof getClaimsAttachmentConfig>) {
   const config = getConfig();
   if (!config) {
@@ -437,15 +441,9 @@ export class ClaimsPortalService {
     tokenPlaintext: string;
   }): { tokenId: string; rosterId: string } {
     const pepper = requirePepper(this.getPepper);
-    if (!input.cookieRaw) {
-      throw new HttpError(401, "claims-session-required", "Portal session cookie is required");
-    }
-    const session = decodeSessionCookie(input.cookieRaw, pepper);
-    if (!session || session.exp <= this.now()) {
-      throw new HttpError(401, "claims-session-invalid", "Portal session is invalid or expired");
-    }
-    if (session.slug !== input.slug) {
-      throw new HttpError(401, "claims-session-mismatch", "Portal session does not match this link");
+    const session = input.cookieRaw ? decodeSessionCookie(input.cookieRaw, pepper) : null;
+    if (!session || session.exp <= this.now() || session.slug !== input.slug) {
+      throw invalidPortalSession();
     }
     // cookie 存 tokenId；与 URL token 的一致性在 assertTokenMatchesSession 中校验。
     return { tokenId: session.tokenId, rosterId: session.rosterId };
@@ -473,7 +471,7 @@ export class ClaimsPortalService {
       || idOf(token.roster_id) !== input.rosterId
       || token.token_hash !== tokenHash
     ) {
-      throw new HttpError(401, "claims-session-mismatch", "Portal session does not match this link");
+      throw invalidPortalSession();
     }
   }
 
@@ -955,7 +953,6 @@ export class ClaimsPortalService {
       fileName: typeof row.file_name === "string" ? row.file_name : null,
       contentType: typeof row.content_type === "string" ? row.content_type : null,
       byteSize: typeof row.byte_size === "number" ? row.byte_size : null,
-      storageKey: typeof row.storage_key === "string" ? row.storage_key : null,
       uploadedAt: asDateMs(row.uploaded_at) !== null ? toIso(asDateMs(row.uploaded_at)!) : null,
       createdAt: asDateMs(row.created_at) !== null ? toIso(asDateMs(row.created_at)!) : null,
     };

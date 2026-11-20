@@ -342,6 +342,48 @@ describe("claims-portal routes", () => {
     expect(body.submission.status).toBe("draft");
   });
 
+  test("换发后旧 cookie 下一次请求失败，无法靠打开接口区分作废或不存在的令牌", async () => {
+    const { app } = makeApp();
+    const mint = async () => {
+      const response = await app.request("/api/workspaces/case-a/claims-portal/tokens", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ rosterId: "creditor_roster:r1" }),
+      });
+      expect(response.status).toBe(200);
+      const body = await response.json() as { tokenPlaintext: string };
+      return `/api/claims-portal/case-a/${body.tokenPlaintext}`;
+    };
+    const open = (url: string, identityCode = "ID-001") => app.request(`${url}/session`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "张三", identityCode }),
+    });
+
+    const oldUrl = await mint();
+    const opened = await open(oldUrl);
+    expect(opened.status).toBe(200);
+    const cookie = opened.headers.get("set-cookie")!.split(";")[0]!;
+    const read = () => app.request(`${oldUrl}/submission`, { headers: { cookie } });
+    expect((await read()).status).toBe(200);
+
+    const newUrl = await mint();
+    const unauthenticated = await app.request(`${oldUrl}/submission`);
+    const denied = await read();
+    expect(denied.status).toBe(401);
+    expect(await denied.json()).toEqual(await unauthenticated.json());
+    const wrongCredentials = await open(newUrl, "wrong");
+    expect(wrongCredentials.status).toBe(401);
+    const failure = await wrongCredentials.json();
+    for (const url of [oldUrl, "/api/claims-portal/case-a/unknown"]) {
+      const refused = await open(url);
+      expect(refused.status).toBe(401);
+      expect(await refused.json()).toEqual(failure);
+      expect(refused.headers.has("set-cookie")).toBe(false);
+    }
+    expect((await open(newUrl)).status).toBe(200);
+  });
+
   test("债权人补充往返端点：回复落库为 creditor_reply，GET 可见往返且不含管理人笔记", async () => {
     const { app, store } = makeApp();
     const mint = await app.request("/api/workspaces/case-a/claims-portal/tokens", {
@@ -434,8 +476,8 @@ describe("claims-portal routes", () => {
     expect((await res.json()).error.code).toBe("attachment-storage-not-configured");
   });
 
-  test("有附件配置：上传字节成功，管理人受控下载", async () => {
-    const { app, memoryStorage } = makeApp({ attachmentConfigured: true });
+  test("上传和查询不公开存储键或案件库名；管理人仍可按 ID 下载", async () => {
+    const { app, memoryStorage, store } = makeApp({ attachmentConfigured: true });
     const mint = await app.request("/api/workspaces/case-a/claims-portal/tokens", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -473,7 +515,22 @@ describe("claims-portal routes", () => {
     const uploaded = await upload.json();
     expect(uploaded.ok).toBe(true);
     expect(uploaded.attachment.id).toBeTruthy();
+    expect(uploaded.attachment).not.toHaveProperty("storageKey");
+    expect(JSON.stringify(uploaded)).not.toContain("ws_case_a");
     expect(memoryStorage.objects.size).toBe(1);
+
+    const submission = store.submissions[0]!;
+    submission.manager_note = "只供管理人留存的笔记";
+    const listed = await app.request(
+      `/api/claims-portal/case-a/${minted.tokenPlaintext}/submission`,
+      { headers: { cookie } },
+    );
+    expect(listed.status).toBe(200);
+    const listedBody = await listed.json();
+    expect(listedBody.attachments).toEqual([uploaded.attachment]);
+    expect(listedBody.submission).not.toHaveProperty("managerNote");
+    expect(JSON.stringify(listedBody)).not.toContain("ws_case_a");
+    expect(JSON.stringify(listedBody)).not.toContain(submission.manager_note as string);
 
     const download = await app.request(
       `/api/workspaces/case-a/claims-portal/attachments/${uploaded.attachment.id}/download`,

@@ -126,6 +126,14 @@ v1 债权人门户（ADR `creditor-token-submit`）已经实现令牌打开、�
 | P1 | A4、A5、B3、B4 | 异议闭环可用；往来记录可导出 |
 | P2 | C1–C5（以 ADR 修订通过为前提） | 债委会和法院链接上线，聚合口径通过测试锁定 |
 
+### 实施任务
+
+| 阶段 | 任务（状态见各任务页） |
+| --- | --- |
+| P0 | [01 门户脱敏与旧会话失效](issues/01-portal-response-and-revocation.md) · [02 时间线与补正](issues/02-progress-and-supplements.md) · [03 发布结论](issues/03-publish-decision.md) · [04 批量签发与作废](issues/04-batch-token-issuance.md) · [05 催办与阶段验收](issues/05-follow-up-view.md) |
+| P1 | [06 异议闭环](issues/06-objections.md) · [07 模板与导出](issues/07-templates-and-exports.md) |
+| P2 | [08 只读入口 ADR](issues/08-observer-adr.md) · [09 只读链接与聚合看板](issues/09-observer-dashboard.md) |
+
 ## 验收标准
 
 1. 债权人在门户里能看到时间线和最新发布的结论；管理人的内部笔记在任何门户响应中都不出现（用响应快照测试断言）。

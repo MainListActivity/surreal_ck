@@ -349,9 +349,11 @@ describe("ClaimsPortalService", () => {
       bytes,
     });
     expect(uploaded.id).toBeTruthy();
-    expect(String(uploaded.storageKey)).toMatch(/^claims\/ws_case_a\/.+\/.+\/合同\.pdf$/);
-    expect(memoryStorage.objects.has(String(uploaded.storageKey))).toBe(true);
+    expect(uploaded).not.toHaveProperty("storageKey");
     expect(store.attachments).toHaveLength(1);
+    const storedKey = String(store.attachments[0]?.storage_key);
+    expect(storedKey).toMatch(/^claims\/ws_case_a\/.+\/.+\/合同\.pdf$/);
+    expect(memoryStorage.objects.has(storedKey)).toBe(true);
 
     const downloaded = await service.managerDownload({
       workspaceDb: "ws_case_a",
