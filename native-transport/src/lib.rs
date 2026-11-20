@@ -11,6 +11,7 @@ use webrtc::{
 pub mod file;
 pub mod manual_verification;
 pub mod media;
+pub mod meeting;
 pub use webrtc;
 
 #[derive(thiserror::Error, Debug)]
