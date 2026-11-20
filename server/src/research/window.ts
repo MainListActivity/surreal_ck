@@ -60,6 +60,7 @@ export function createContentResearchSessionFactory(
     const session = openSession();
     try {
       await session.connect(env.SURREAL_URL, {
+        reconnect: { attempts: 5, retryDelayMax: 60_000 },
         namespace: exchange.namespace,
         database: exchange.database,
       });

@@ -550,6 +550,7 @@ describe("VO03 人类请求一次性解决闭环（真实 SurrealDB）", () => {
 
     // 债权提醒兼容：员工建一条 claims-risk 通知，收件人走老 resolution 路径解决；
     // 它不出现在 office-request 唤醒面（purpose 闸），也不被 request UI 误认。
+    await stack.triggerRuntime.reconcile({ database: fixture.database, employeeId: pmId });
     const pm = await stack.employeeRuntime.openSession(fixture.database, pmId);
     try {
       await pm.query(

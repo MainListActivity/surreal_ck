@@ -291,6 +291,7 @@ export function createSurrealClient(options: SurrealClientOptions = {}): Surreal
         // connect authentication provider 会在初始连接阶段被 SDK 拒绝；
         // 显式 authenticate 与后端 caller-session 的已验证路径保持一致。
         await next.connect(input.url, {
+          reconnect: { attempts: 5, retryDelayMax: 60_000 },
           namespace: input.namespace,
           database: input.dbName,
         });

@@ -27,7 +27,7 @@ export async function initContentPublisherSession(): Promise<void> {
   await provisionContentPublisher(root, secret);
   const db = new Surreal();
   try {
-    await db.connect(env.SURREAL_URL, { namespace: env.SURREAL_NS, database: env.CONTENT_DATABASE });
+    await db.connect(env.SURREAL_URL, { namespace: env.SURREAL_NS, database: env.CONTENT_DATABASE, reconnect: { attempts: 5, retryDelayMax: 60_000 } });
     await db.signin({
       namespace: env.SURREAL_NS,
       database: env.CONTENT_DATABASE,
