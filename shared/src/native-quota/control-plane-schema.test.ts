@@ -90,6 +90,9 @@ describe("_system native quota control-plane schema", () => {
       48,
       // 049：能力白名单追加 test.provision（测试物料自助），只放宽 schema。
       49,
+      // 050：测试标记 workspace 名下不可变控制面行放行 DELETE（UPDATE 仍禁），
+      // 修复 test_kit_purge/到期清理删库后抛 internal error；真实 workspace 行不变。
+      50,
     ]);
   });
 
