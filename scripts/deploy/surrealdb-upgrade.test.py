@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import shutil
 import stat
+import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -30,6 +31,61 @@ def capability():
 
 
 class SafetyTests(unittest.TestCase):
+    def test_container_entrypoint_requires_an_inspected_absolute_path(self):
+        self.assertEqual(upgrade.container_entrypoint({"Path": "/opt/source-db"}), "/opt/source-db")
+        for value in ({}, {"Path": None}, {"Path": ""}, {"Path": "surreal"}, {"Path": 42}):
+            with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, "absolute"):
+                upgrade.container_entrypoint(value)
+
+    def test_export_uses_inspected_binary_and_private_stderr_without_disclosure(self):
+        for code, content in ((0, b"fixture export"), (1, b"partial export"), (0, b"")):
+            with self.subTest(code=code, content=content), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "company--main.surql"
+                error_log = output.with_name(output.name + ".stderr.log")
+
+                def execute(argv, **kwargs):
+                    self.assertEqual(argv[argv.index(upgrade.CONTAINER) + 1], "/opt/source-db")
+                    self.assertNotIn("fixture-password", argv)
+                    self.assertEqual(kwargs["env"]["SURREAL_PASS"], "fixture-password")
+                    kwargs["stdout"].write(content)
+                    kwargs["stderr"].write(b"private diagnostic fixture-password")
+                    return subprocess.CompletedProcess(argv, code)
+
+                with patch.object(upgrade.subprocess, "run", side_effect=execute), \
+                        patch.object(upgrade.os, "fchown") as chown:
+                    args = ("/opt/source-db", "http://fixture", ("fixture", "fixture-password"), "company", "main", output)
+                    if code or not content:
+                        with self.assertRaisesRegex(RuntimeError, "^container database export failed$"):
+                            upgrade.export_database(*args)
+                    else:
+                        upgrade.export_database(*args)
+                    self.assertEqual(chown.call_count, 2)
+                    self.assertTrue(all(call.args[1:] == (0, 0) for call in chown.call_args_list))
+                self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(error_log.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(output.read_bytes(), content)
+                self.assertEqual(error_log.read_bytes(), b"private diagnostic fixture-password")
+                with self.assertRaises(FileExistsError):
+                    upgrade.export_database(*args)
+
+    def test_restore_drill_uses_source_entrypoint_and_always_stops(self):
+        for matches in (True, False):
+            with self.subTest(matches=matches), patch.object(upgrade, "copy_data"), \
+                    patch.object(upgrade, "run") as command, patch.object(upgrade, "wait_health"), \
+                    patch.object(upgrade, "inventory", return_value={"fixture": 1} if matches else {}):
+                args = (upgrade.SOURCE_IMAGE, "/opt/source-db", Path("/snapshot"), Path("/restore"),
+                        ("fixture", "fixture-password"), {"fixture": 1})
+                if matches:
+                    upgrade.restore_drill(*args)
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "row counts differ"):
+                        upgrade.restore_drill(*args)
+                launch = command.call_args_list[0].args
+                self.assertEqual(launch[launch.index("--entrypoint") + 1], "/opt/source-db")
+                self.assertIn(upgrade.SOURCE_IMAGE, launch)
+                self.assertEqual(launch[-1], "rocksdb:/data")
+                self.assertEqual(command.call_args.args[:4], (upgrade.PODMAN, "stop", "--time", "30"))
+
     def test_private_env_allows_root_group_read_but_no_group_write_or_other_access(self):
         path = unittest.mock.Mock()
         path.is_symlink.return_value = False
@@ -148,7 +204,7 @@ class SandboxTests(unittest.TestCase):
         stack.enter_context(patch.object(upgrade, "host_env", return_value={"SURREAL_UPGRADE_FENCE": str(self.fence),
                                                                           "SURREAL_UPGRADE_UNFENCE": str(self.unfence)}))
         self.inventory = stack.enter_context(patch.object(upgrade, "inventory", return_value=self.counts))
-        stack.enter_context(patch.object(upgrade, "restore_drill"))
+        self.restore_drill = stack.enter_context(patch.object(upgrade, "restore_drill"))
         stack.enter_context(patch.object(upgrade, "export_database", side_effect=self.export_database))
         stack.enter_context(patch.object(upgrade, "import_database", side_effect=self.import_database))
         self.request = stack.enter_context(patch.object(upgrade, "request", return_value=capability()))
@@ -163,7 +219,8 @@ class SandboxTests(unittest.TestCase):
             return json.dumps([{"Path": "/surreal-upgrade"}])
         return upgrade.TARGET + "+sha.fixture" if "version" in args else ""
 
-    def export_database(self, endpoint, auth, namespace, database, output):
+    def export_database(self, binary, endpoint, auth, namespace, database, output):
+        self.assertEqual(binary, self.report["binary"])
         self.calls.append(("export_database", namespace, database))
         output.write_text("fixture export")
 
@@ -182,6 +239,23 @@ class SandboxTests(unittest.TestCase):
         self.assertNotIn(f"{self.data}:/data", upgrade.DROPIN.read_text())
         self.assertEqual((Path(result["backup"]) / "surrealdb.service.original").read_text(), self.unit.read_text())
         self.assertEqual(self.calls[-1], (str(self.unfence),))
+        self.assertEqual((self.data / "old-records").read_text(), "unchanged")
+        self.assertEqual(self.restore_drill.call_args.args[:2], (upgrade.SOURCE_IMAGE, self.report["binary"]))
+
+    def test_nondefault_inspected_source_path_reaches_exports_and_restore(self):
+        self.report["binary"] = "/opt/source-db"
+        result = upgrade.upgrade(self.args)
+        self.assertEqual(result["state"], "healthy")
+        self.assertEqual(self.restore_drill.call_args.args[1], "/opt/source-db")
+
+    def test_export_failure_keeps_source_database_running_and_fence_closed(self):
+        with patch.object(upgrade, "export_database", side_effect=RuntimeError("container database export failed")):
+            with self.assertRaisesRegex(RuntimeError, "maintenance fence retained=True"):
+                upgrade.upgrade(self.args)
+        self.assertNotIn(("systemctl", "stop", upgrade.SERVICE), self.calls)
+        self.assertNotIn(("systemctl", "start", upgrade.ORIGIN), self.calls)
+        self.assertNotIn((str(self.unfence),), self.calls)
+        self.restore_drill.assert_not_called()
         self.assertEqual((self.data / "old-records").read_text(), "unchanged")
 
     def test_count_mismatch_restores_original_unit_on_untouched_old_directory(self):
