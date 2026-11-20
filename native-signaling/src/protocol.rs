@@ -9,6 +9,14 @@ pub const INVITE_TTL_SECONDS: u64 = 120;
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum Error {
+    #[error("会议人数已满")]
+    Full,
+    #[error("会议不存在或未获邀请")]
+    NotFound,
+    #[error("会议状态冲突")]
+    Retry,
+    #[error("会议操作被拒绝")]
+    Denied,
     #[error("身份或工作区已变化，请重新连接")]
     Identity,
     #[error("信令暂不可用或数据库拒绝操作")]
@@ -33,6 +41,14 @@ impl From<surreal_ck_native_identity::IdentityError> for Error {
     fn from(error: surreal_ck_native_identity::IdentityError) -> Self {
         use surreal_ck_native_identity::IdentityError as E;
         match error {
+            E::MeetingFull => Self::Full,
+            E::MeetingNotFound => Self::NotFound,
+            E::MeetingRetry => Self::Retry,
+            E::MeetingDenied => Self::Denied,
+            E::MeetingExpired => Self::Expired,
+            E::MeetingBinding | E::MeetingInput => Self::Binding,
+            E::MeetingRateLimited => Self::RateLimited,
+            E::MeetingRecordRequired => Self::Identity,
             E::SessionExpired
             | E::Forbidden
             | E::WorkspaceNotSelected
