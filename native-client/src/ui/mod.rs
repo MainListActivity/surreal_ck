@@ -16,7 +16,7 @@ pub const GOLD_TINT: u32 = 0xF5C54238;
 use nsh_base::{button, input, theme};
 use nsh_core::{element::ImageSrc, prelude::*};
 
-use self::icons::{INK, Icon, MUTED};
+use self::icons::{Icon, INK, MUTED};
 
 pub fn action(
     label: &'static str,
@@ -173,6 +173,15 @@ pub fn nav_item(
         .items_center()
         .justify_center()
         .rounded(px(12.0))
+        // selected_style 的 bg 在此 nsh 版本上不生效，选中态会落到 button 默认深色底；
+        // 显式按选中态给背景，未选中透明露出侧栏底色。
+        .bg(move || {
+            if selected() {
+                theme().primary
+            } else {
+                rgba(0x00000000).to_hsla().into()
+            }
+        })
         .hover(|s| s.opacity(0.85))
         .active(|s| s.opacity(0.65))
         .selected_style(|s| s.bg(theme().primary))
