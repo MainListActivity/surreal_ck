@@ -1,0 +1,5 @@
+SOURCES_COMPARE_EXIT=0
+26e8bc71235a9f75132969df3882da4808b12684f23af7b61c466b55378594bd  native-client/target/debug/examples/synthetic_video
+2eee19f0a42c959fd6278d3a0b850b175ee8cca24acedb4650c001e1a2dd862d  native-client/examples/synthetic_video.rs
+Filesystem      Size  Used Avail Use% Mounted on
+overlay          63G   58G  1.8G  97% /workspace

@@ -1,0 +1,21 @@
+UTC 2026-11-10T17:47:52Z
+HEAD 2154b06e9bf2140667a76c8f8708bda341fe693b
+ M native-client/Cargo.toml
+ M native-client/src/bridge.rs
+ M native-client/src/lib.rs
+ M native-transport/src/chat.rs
+ M native-transport/src/lib.rs
+?? native-client/examples/
+?? native-client/src/verification_ui.rs
+?? native-client/tests/verification_ui.rs
+?? native-client/validation/synthetic-video/
+?? native-transport/MANUAL-VERIFICATION.md
+?? native-transport/src/manual_verification.rs
+?? native-transport/tests/manual_verification.rs
+Filesystem      Size  Used Avail Use% Mounted on
+overlay          63G   58G  1.8G  97% /workspace
+
+COMMAND: cargo rustc --offline --locked --manifest-path native-client/Cargo.toml --features desktop --example synthetic_video -- -C debuginfo=0 -C strip=debuginfo
+   Compiling nsh-app-native-client v0.1.0 (/workspace/scratch/115bfa675150/native-client-probe/surreal_ck/native-client)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.23s
+BUILD_EXIT=0

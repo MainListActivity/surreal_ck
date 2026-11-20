@@ -1,0 +1,23 @@
+
+running 18 tests
+test desktop::tests::cancelled_session_rejects_playback_rebuild_before_creating_consumers ... ok
+test desktop::tests::cancellation_is_latched_before_a_worker_subscribes ... ok
+test desktop::tests::cancellation_during_old_player_cleanup_prevents_new_player_creation ... ok
+test desktop::tests::defaults_and_drop_disable_all_tracks ... ok
+test desktop::tests::cancelling_whole_stop_never_caches_a_successful_shutdown ... ok
+test desktop::tests::cancelling_startup_guard_preserves_unknown_cleanup ... ok
+test desktop::tests::cancelling_source_stop_cannot_turn_the_next_empty_stop_into_confirmation ... ok
+test desktop::tests::cancelled_playback_stop_still_stops_instead_of_discarding_stop_intent ... ok
+test desktop::tests::input_source_is_not_remote_controlled ... ok
+test desktop::tests::opus_duration_and_timestamp_wrap ... ok
+test desktop::tests::empty_stop_confirms_only_when_no_unknown_capture_exists ... ok
+test desktop::tests::full_event_queue_cannot_lose_capture_privacy_or_hide_unknown_shutdown ... ok
+test desktop::tests::failed_screen_cleanup_cannot_partially_enable_camera ... ok
+test desktop::tests::vp8_dimensions_and_bounds_are_validated ... ok
+test desktop::tests::overflow_invalidates_old_packets_and_cancel_is_joined ... ok
+test desktop::tests::remote_shutdown_failure_is_latched_and_blocks_restart_and_final_success ... ok
+test desktop::tests::failed_shutdown_never_emits_a_confirmed_stopped_event ... ok
+test desktop::tests::cancelling_queued_playback_control_cannot_enable_later ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

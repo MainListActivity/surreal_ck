@@ -1,0 +1,32 @@
+{
+  "command": [
+    "/workspace/scratch/115bfa675150/native-client-probe/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/clippy-driver",
+    "--edition=2021",
+    "--crate-name",
+    "one_to_one_session",
+    "--test",
+    "-C",
+    "debuginfo=0",
+    "-C",
+    "strip=debuginfo",
+    "-L",
+    "dependency=/workspace/scratch/115bfa675150/collaboration-runtime-evidence",
+    "-L",
+    "dependency=/workspace/scratch/115bfa675150/native-client-probe/surreal_ck/native-client/target/debug/deps",
+    "-o",
+    "/workspace/scratch/115bfa675150/collaboration-runtime-evidence/one_to_one_clippy.rmeta",
+    "/workspace/scratch/115bfa675150/collaboration-runtime-e2e/native-call/tests/one_to_one_session.rs",
+    "--extern",
+    "bytes=/workspace/scratch/115bfa675150/native-client-probe/surreal_ck/native-client/target/debug/deps/libbytes-fa84c749ecf7f594.rlib",
+    "--extern",
+    "tokio=/workspace/scratch/115bfa675150/native-client-probe/surreal_ck/native-client/target/debug/deps/libtokio-31d8d8892cf5b6ae.rlib",
+    "--extern",
+    "surreal_ck_peer_transport=/workspace/scratch/115bfa675150/collaboration-runtime-evidence/libsurreal_ck_peer_transport.rlib",
+    "--extern",
+    "surreal_ck_native_call=/workspace/scratch/115bfa675150/collaboration-runtime-evidence/libsurreal_ck_native_call.rlib",
+    "--emit=metadata",
+    "-D",
+    "warnings"
+  ],
+  "exit": 0
+}

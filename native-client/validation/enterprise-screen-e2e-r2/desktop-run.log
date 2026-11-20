@@ -1,0 +1,27 @@
+PRE_RUN
+INDEPENDENT_HASH_CHECK_OK source_count=160
+97450e850e997552d889e0627704cfe1da6b1ee3ce055c4c01e4704cad03ae93 /workspace/scratch/115bfa675150/enterprise-signaling-screen-e2e-harness/source-receipt.json
+0c7bdac47196722ba7efb9da6280c76be11f60d2e188ba5d5d1bdb6cb741e074 /workspace/scratch/115bfa675150/enterprise-signaling-screen-e2e-harness/desktop-window-confirmation.json
+28a4f534e2a61985ad7e4f5087db28f6d0b71c22ea99a1cd2eb5006c98654877 /workspace/scratch/115bfa675150/native-client-probe/surreal_ck/native-client/target/debug/deps/surreal_ck_enterprise_screen_e2e_r2-ce4cc09ef596126c
+6f6bcc72f8c23848295ed32d6a265f5bf0baad11e7be446294a5ade1b06a84f2 /workspace/scratch/115bfa675150/fork-runtime-probe/surreal
+e8a8d46f5225f3062cec7c07fb145d58ae73c603cb740dcd5bad34bfb54e455a /usr/bin/ffmpeg
+
+running 2 tests
+test enterprise_peer::enterprise_screen_e2e::authenticated_real_screen_capture_stop ... PASS actual X11 test-window capture / real enterprise OS UDP / native decoder / FramePublisher RGBA / actual capture and playback close; revocation=false; no camera or production grant claim
+ok
+test enterprise_peer::enterprise_screen_e2e::authenticated_revocation_closes_real_screen ... PASS actual X11 test-window capture / real enterprise OS UDP / native decoder / FramePublisher RGBA / actual capture and playback close; revocation=true; no camera or production grant claim
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 67 filtered out; finished in 15.08s
+
+
+Two actual test-window screen capture cases passed; no camera or production grant claim.
+POST_RUN
+INDEPENDENT_HASH_CHECK_OK source_count=160
+97450e850e997552d889e0627704cfe1da6b1ee3ce055c4c01e4704cad03ae93 /workspace/scratch/115bfa675150/enterprise-signaling-screen-e2e-harness/source-receipt.json
+0c7bdac47196722ba7efb9da6280c76be11f60d2e188ba5d5d1bdb6cb741e074 /workspace/scratch/115bfa675150/enterprise-signaling-screen-e2e-harness/desktop-window-confirmation.json
+28a4f534e2a61985ad7e4f5087db28f6d0b71c22ea99a1cd2eb5006c98654877 /workspace/scratch/115bfa675150/native-client-probe/surreal_ck/native-client/target/debug/deps/surreal_ck_enterprise_screen_e2e_r2-ce4cc09ef596126c
+6f6bcc72f8c23848295ed32d6a265f5bf0baad11e7be446294a5ade1b06a84f2 /workspace/scratch/115bfa675150/fork-runtime-probe/surreal
+e8a8d46f5225f3062cec7c07fb145d58ae73c603cb740dcd5bad34bfb54e455a /usr/bin/ffmpeg
+TEST_EXIT=0
+POST_HASH_EXIT=0

@@ -1,0 +1,7 @@
+   Compiling surreal-ck-native-identity v0.1.0 (/workspace/scratch/115bfa675150/native-client-probe/surreal_ck/native-identity)
+   Compiling surreal-ck-peer-transport v0.1.0 (/workspace/scratch/115bfa675150/native-client-probe/surreal_ck/native-transport)
+   Compiling surreal-ck-native-call v0.1.0 (/workspace/scratch/115bfa675150/native-client-probe/surreal_ck/native-call)
+   Compiling surreal-ck-native-signaling v0.1.0 (/workspace/scratch/115bfa675150/native-client-probe/surreal_ck/native-signaling)
+   Compiling nsh-app-native-client v0.1.0 (/workspace/scratch/115bfa675150/native-client-probe/surreal_ck/native-client)
+   Compiling surreal-ck-android-host v0.1.0 (/workspace/scratch/115bfa675150/native-client-probe/surreal_ck/native-client/android-host)
+    Finished `release` profile [optimized] target(s) in 1m 38s

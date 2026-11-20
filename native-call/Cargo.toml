@@ -1,0 +1,22 @@
+[package]
+name = "surreal-ck-native-call"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]
+bytes = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+thiserror = "2"
+surreal-ck-peer-transport = { path = "../native-transport" }
+
+surreal-ck-native-media-platform = { path = "../native-media-platform" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["process", "io-util"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+bytes = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+surreal-ck-peer-transport = { path = "../native-transport" }
+surreal-ck-native-media-platform = { path = "../native-media-platform" }

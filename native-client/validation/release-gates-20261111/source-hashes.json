@@ -1,0 +1,17 @@
+{
+  "scripts/native-client/attach-release-evidence.py": "dc4080007ff009705cf56d374c2b3232f83a6a3be09c48d675a82eb815b06321",
+  "scripts/native-client/build-receipt.py": "57a7888a018d681e94b9d97baff602da18e54fa40d05b51fb62e179ff700cb8b",
+  "scripts/native-client/check-release-readiness.py": "7a754763d3f5f42eb4e8d6116526b9c50de64b4672199deccd3019ebdd6d67f1",
+  "scripts/native-client/check-version.py": "636ee33dcdc59d473814a5b1ee88c0fac179c35f6c3bf6ca6f63f4ca278bc1dd",
+  "scripts/native-client/collect.py": "3024bfd73bad93b283c996f0824e9a433b1f9e024d3042821fdf136de9414b0b",
+  "scripts/native-client/install-nsh.py": "d347664d42b62c17c3d36afe6670a2c3328162379f67f035a01100eedd1bcc19",
+  "scripts/native-client/media-runtime.py": "3e838e2939478ba539bf85d46a6ca0e16f529984590c0102276435193146a1cc",
+  "scripts/native-client/package-android-host.py": "778ab788ec00db19da5e59dedc118f66b93a19a05fd783ee9e65a9585f14bed8",
+  "scripts/native-client/test_android_host.py": "229d9ccd03f2dbc58a8b1502077af2b37e2f4b365bc2dac04080ff92d5417acc",
+  "scripts/native-client/test_collect.py": "f7549242bd2db581f35fdf2eb7e8fced68a99be88656660d7773329bc241dd31",
+  "scripts/native-client/test_native_host.py": "61415e8ce4281d62257caad3beb8a950b64469b842bbb794088ff52268926171",
+  "scripts/native-client/test_release_readiness.py": "ff8b8f5167e4cd21f1d25807356876d2ace534e89527495b19ea12f115c8c66f",
+  "scripts/native-client/test_update_policy.py": "e7ca3c71d0e6091e39cba5532fb5f35b6c2b23e9e4fbce84b8add649031d509b",
+  "scripts/native-client/update-policy.py": "2ca76740536018a2a5079606f2b1bfeaaf3bf59c7cd7089a2b142d691a01ec54",
+  "scripts/native-client/update_config.py": "d7ab9f02efed9f5e0db637a42276aca1d683d6720d09959acba47b7fcee75941"
+}

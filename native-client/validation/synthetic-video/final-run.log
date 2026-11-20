@@ -1,0 +1,60 @@
+TEST 真实 UDP Peer 已连接；同会话中文 DataChannel 验证通过
+NATIVE 合成视频 A（camera 测试轨） / GTK ready {"height":180,"width":320}
+NATIVE 合成视频 B（screen 测试轨） / GTK ready {"height":180,"width":320}
+COUNTERS RGBA A=9 B=9 | SRTP 包 A=48 B=46 Opus=49 | 错误=0 | 运行=1s stopped=false closed=false
+COUNTERS RGBA A=19 B=19 | SRTP 包 A=94 B=92 Opus=99 | 错误=0 | 运行=2s stopped=false closed=false
+COUNTERS RGBA A=29 B=29 | SRTP 包 A=140 B=136 Opus=145 | 错误=0 | 运行=3s stopped=false closed=false
+COUNTERS RGBA A=39 B=39 | SRTP 包 A=188 B=186 Opus=196 | 错误=0 | 运行=4s stopped=false closed=false
+COUNTERS RGBA A=49 B=49 | SRTP 包 A=234 B=232 Opus=249 | 错误=0 | 运行=5s stopped=false closed=false
+COUNTERS RGBA A=60 B=59 | SRTP 包 A=280 B=280 Opus=295 | 错误=0 | 运行=6s stopped=false closed=false
+COUNTERS RGBA A=69 B=69 | SRTP 包 A=328 B=324 Opus=345 | 错误=0 | 运行=7s stopped=false closed=false
+COUNTERS RGBA A=80 B=79 | SRTP 包 A=374 B=372 Opus=400 | 错误=0 | 运行=8s stopped=false closed=false
+COUNTERS RGBA A=89 B=89 | SRTP 包 A=420 B=420 Opus=448 | 错误=0 | 运行=9s stopped=false closed=false
+COUNTERS RGBA A=99 B=99 | SRTP 包 A=468 B=466 Opus=495 | 错误=0 | 运行=10s stopped=false closed=false
+COUNTERS RGBA A=109 B=109 | SRTP 包 A=514 B=512 Opus=548 | 错误=0 | 运行=11s stopped=false closed=false
+COUNTERS RGBA A=120 B=119 | SRTP 包 A=560 B=560 Opus=600 | 错误=0 | 运行=12s stopped=false closed=false
+COUNTERS RGBA A=130 B=129 | SRTP 包 A=608 B=606 Opus=649 | 错误=0 | 运行=13s stopped=false closed=false
+COUNTERS RGBA A=140 B=139 | SRTP 包 A=654 B=652 Opus=696 | 错误=0 | 运行=14s stopped=false closed=false
+COUNTERS RGBA A=150 B=149 | SRTP 包 A=700 B=700 Opus=749 | 错误=0 | 运行=15s stopped=false closed=false
+COUNTERS RGBA A=160 B=159 | SRTP 包 A=748 B=746 Opus=800 | 错误=0 | 运行=16s stopped=false closed=false
+COUNTERS RGBA A=170 B=169 | SRTP 包 A=794 B=792 Opus=850 | 错误=0 | 运行=17s stopped=false closed=false
+COUNTERS RGBA A=180 B=179 | SRTP 包 A=840 B=840 Opus=900 | 错误=0 | 运行=18s stopped=false closed=false
+COUNTERS RGBA A=190 B=189 | SRTP 包 A=888 B=886 Opus=950 | 错误=0 | 运行=19s stopped=false closed=false
+COUNTERS RGBA A=199 B=199 | SRTP 包 A=934 B=928 Opus=995 | 错误=0 | 运行=20s stopped=false closed=false
+COUNTERS RGBA A=210 B=209 | SRTP 包 A=980 B=980 Opus=1045 | 错误=0 | 运行=21s stopped=false closed=false
+TEST 畸形 RGBA 已拒绝；畸形 VP8 已经 SRTP 发送，等待接收端错误
+TEST 坏帧已在接收端拒绝，无崩溃：无效的媒体帧或配置；继续等待合法关键帧恢复
+COUNTERS RGBA A=220 B=219 | SRTP 包 A=1029 B=1026 Opus=1100 | 错误=1 | 运行=22s stopped=false closed=false
+COUNTERS RGBA A=230 B=229 | SRTP 包 A=1075 B=1072 Opus=1145 | 错误=1 | 运行=23s stopped=false closed=false
+COUNTERS RGBA A=240 B=239 | SRTP 包 A=1121 B=1120 Opus=1197 | 错误=1 | 运行=24s stopped=false closed=false
+COUNTERS RGBA A=249 B=249 | SRTP 包 A=1169 B=1163 Opus=1245 | 错误=1 | 运行=25s stopped=false closed=false
+COUNTERS RGBA A=260 B=259 | SRTP 包 A=1215 B=1212 Opus=1296 | 错误=1 | 运行=26s stopped=false closed=false
+COUNTERS RGBA A=270 B=269 | SRTP 包 A=1261 B=1260 Opus=1345 | 错误=1 | 运行=27s stopped=false closed=false
+COUNTERS RGBA A=280 B=279 | SRTP 包 A=1309 B=1306 Opus=1398 | 错误=1 | 运行=28s stopped=false closed=false
+COUNTERS RGBA A=289 B=289 | SRTP 包 A=1355 B=1348 Opus=1445 | 错误=1 | 运行=29s stopped=false closed=false
+COUNTERS RGBA A=300 B=299 | SRTP 包 A=1401 B=1400 Opus=1495 | 错误=1 | 运行=30s stopped=false closed=false
+COUNTERS RGBA A=309 B=309 | SRTP 包 A=1446 B=1442 Opus=1545 | 错误=1 | 运行=31s stopped=false closed=false
+TEST STOP 已确认，RGBA [318, 318]；发送端继续发送以验证接收不会恢复
+NATIVE 合成视频 A（camera 测试轨） / GTK closed null
+NATIVE 合成视频 B（screen 测试轨） / GTK closed null
+COUNTERS RGBA A=318 B=318 | SRTP 包 A=1495 B=1492 Opus=1599 | 错误=1 | 运行=32s stopped=true closed=false
+COUNTERS RGBA A=318 B=318 | SRTP 包 A=1541 B=1540 Opus=1650 | 错误=1 | 运行=33s stopped=true closed=false
+COUNTERS RGBA A=318 B=318 | SRTP 包 A=1589 B=1586 Opus=1700 | 错误=1 | 运行=34s stopped=true closed=false
+COUNTERS RGBA A=318 B=318 | SRTP 包 A=1635 B=1632 Opus=1750 | 错误=1 | 运行=35s stopped=true closed=false
+COUNTERS RGBA A=318 B=318 | SRTP 包 A=1681 B=1680 Opus=1800 | 错误=1 | 运行=36s stopped=true closed=false
+COUNTERS RGBA A=318 B=318 | SRTP 包 A=1729 B=1726 Opus=1845 | 错误=1 | 运行=37s stopped=true closed=false
+COUNTERS RGBA A=318 B=318 | SRTP 包 A=1775 B=1772 Opus=1895 | 错误=1 | 运行=38s stopped=true closed=false
+COUNTERS RGBA A=318 B=318 | SRTP 包 A=1821 B=1820 Opus=1949 | 错误=1 | 运行=39s stopped=true closed=false
+COUNTERS RGBA A=318 B=318 | SRTP 包 A=1869 B=1866 Opus=1995 | 错误=1 | 运行=40s stopped=true closed=false
+TEST 重复停止/关闭：保持已确认状态
+TEST CLOSE 已确认，RGBA [318, 318]；三轨迟到发送全部拒绝
+COUNTERS RGBA A=318 B=318 | SRTP 包 A=1869 B=1866 Opus=1995 | 错误=1 | 运行=41s stopped=true closed=true
+COUNTERS RGBA A=318 B=318 | SRTP 包 A=1869 B=1866 Opus=1995 | 错误=1 | 运行=42s stopped=true closed=true
+COUNTERS RGBA A=318 B=318 | SRTP 包 A=1869 B=1866 Opus=1995 | 错误=1 | 运行=43s stopped=true closed=true
+COUNTERS RGBA A=318 B=318 | SRTP 包 A=1869 B=1866 Opus=1995 | 错误=1 | 运行=44s stopped=true closed=true
+COUNTERS RGBA A=318 B=318 | SRTP 包 A=1869 B=1866 Opus=1995 | 错误=1 | 运行=45s stopped=true closed=true
+COUNTERS RGBA A=318 B=318 | SRTP 包 A=1869 B=1866 Opus=1995 | 错误=1 | 运行=46s stopped=true closed=true
+COUNTERS RGBA A=318 B=318 | SRTP 包 A=1869 B=1866 Opus=1995 | 错误=1 | 运行=47s stopped=true closed=true
+COUNTERS RGBA A=318 B=318 | SRTP 包 A=1869 B=1866 Opus=1995 | 错误=1 | 运行=48s stopped=true closed=true
+TEST 重复停止/关闭：保持已确认状态
+EXIT 两个 Peer 与解码子进程均已确认停止
