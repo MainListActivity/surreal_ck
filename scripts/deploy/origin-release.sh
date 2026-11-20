@@ -415,12 +415,20 @@ read_field() {
   printf '%s' "${v#*=}"
 }
 
-# 活跃性以锁为准：锁属于本激活且持有者进程存活。
+# 进程 cmdline 是否确为本激活的工作进程（nohup bash … --worker <release-id>）。
+# pid 复用防护：存活但 cmdline 不符的进程不算工作进程，否则已死的激活会永远显示 running。
+is_worker_pid() {
+  local args
+  args=$(ps -o args= -p "$1" 2>/dev/null || true)
+  printf '%s' "$args" | grep -q -- "--worker" && printf '%s' "$args" | grep -qw -- "$2"
+}
+
+# 活跃性以锁为准：锁属于本激活，且持有者进程存活且确为该激活的 worker。
 worker_alive() {
   local owner rel
   owner=$(cat "$lock_dir/pid" 2>/dev/null || true)
   rel=$(cat "$lock_dir/release" 2>/dev/null || true)
-  [ -n "$owner" ] && [ "$rel" = "$release_id" ] && kill -0 "$owner" 2>/dev/null
+  [ -n "$owner" ] && [ "$rel" = "$release_id" ] && kill -0 "$owner" 2>/dev/null && is_worker_pid "$owner" "$release_id"
 }
 
 # 对外状态：终态原样；非终态且工作进程存活时保持 running；否则为 interrupted（工作进程已消失）。
@@ -512,9 +520,13 @@ acquire_lock() {
   owner=$(cat "$lock_dir/pid" 2>/dev/null || true)
   other=$(cat "$lock_dir/release" 2>/dev/null || true)
   if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
-    echo "busy: activation ${other:-unknown} is running (pid $owner)" >&2
-    release_reclaim
-    return 75
+    # 持有者存活：先给「卡死且未改动主机」的激活一次自愈回收的机会（内部 fail-closed，
+    # 条件不满足返回 1）。回收成功（含 owner 实为复用 pid 的情形）则按陈旧锁继续往下走。
+    if ! reclaim_stuck_activation "$other" "$owner" "$1"; then
+      echo "busy: activation ${other:-unknown} is running (pid $owner)" >&2
+      release_reclaim
+      return 75
+    fi
   fi
   if [ -z "$owner" ] && [ -z "$(find "$lock_dir" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
     echo "busy: activation lock is being claimed" >&2
@@ -543,6 +555,86 @@ acquire_lock() {
   echo "busy: lock was claimed concurrently" >&2
   release_reclaim
   return 75
+}
+
+# 递归列出 pid 的全部后代（pgrep -P），不含根 pid 本身。
+descendants() {
+  local child
+  for child in $(pgrep -P "$1" 2>/dev/null); do
+    echo "$child"
+    descendants "$child"
+  done
+}
+
+# 杀掉整棵进程树：先对全部成员发 TERM，最多等 15 秒，仍存活的发 KILL。
+# 不按进程组杀：worker 的 pgid 可能与 launch/ssh 会话或本进程相同。
+kill_tree() {
+  local root_pid=$1 pids pid alive waited
+  pids="$root_pid $(descendants "$root_pid")"
+  for pid in $pids; do kill -TERM "$pid" 2>/dev/null || true; done
+  waited=0
+  while [ "$waited" -lt 150 ]; do
+    alive=0
+    for pid in $pids; do
+      if kill -0 "$pid" 2>/dev/null; then alive=1; break; fi
+    done
+    [ "$alive" = 0 ] && return 0
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  for pid in $pids; do kill -KILL "$pid" 2>/dev/null || true; done
+  return 0
+}
+
+# 把某激活的状态文件原子改成终态 failed：只重写 state/updated_at/note 三行，其余行原样保留；
+# 不动 current、env、服务。
+mark_failed_state() {
+  local id=$1 msg=$2 f tmp now
+  f="$state_dir/$id.state"
+  [ -f "$f" ] || return 0
+  tmp="$f.tmp.$$"
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  while IFS= read -r line; do
+    case "$line" in
+      state=*) echo "state=failed" ;;
+      updated_at=*) echo "updated_at=$now" ;;
+      note=*) echo "note=$msg" ;;
+      *) echo "$line" ;;
+    esac
+  done < "$f" > "$tmp" && mv -f "$tmp" "$f"
+}
+
+# reclaim_stuck_activation <other-id> <lock-owner-pid> <new-release-id>：
+# 锁持有者存活但其激活卡死且对主机零改动（env_dirty/svc_touched/switched 全 0）、
+# updated_at 超过 ${ORIGIN_STUCK_AFTER_SEC:-1800} 秒未推进时，杀掉 worker 进程树并把激活
+# 标记 failed，返回 0 让调用方按陈旧锁继续回收；任一条件不满足返回 1，调用方照常 busy 75。
+# fail-closed：改动过主机的激活、未到超时、时间解析失败都不回收。
+reclaim_stuck_activation() {
+  local other=$1 owner=$2 want=$3 st ed sv sw up ph up_s now idle
+  [ -n "$other" ] && [ "$other" != "$want" ] || return 1
+  # pid 复用：owner 的 cmdline 不是该激活的 worker 时，这个存活 pid 只是恰好复用了旧 pid，
+  # 不杀任何进程，直接当作持有者已死、按陈旧锁继续。
+  if ! is_worker_pid "$owner" "$other"; then return 0; fi
+  st=$(read_field "$other" state)
+  if [ -z "$st" ] || is_terminal "$st"; then return 1; fi
+  ed=$(read_field "$other" env_dirty)
+  sv=$(read_field "$other" svc_touched)
+  sw=$(read_field "$other" switched)
+  if [ "${ed:-0}" != 0 ] || [ "${sv:-0}" != 0 ] || [ "${sw:-0}" != 0 ]; then return 1; fi
+  up=$(read_field "$other" updated_at)
+  ph=$(read_field "$other" phase)
+  # GNU date -d 优先；BSD date（本机测试）用 -j -f 解析同一时间戳格式。解析失败视为不满足，不回收。
+  up_s=$(date -u -d "$up" +%s 2>/dev/null || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$up" +%s 2>/dev/null) || return 1
+  now=$(date -u +%s)
+  idle=$((now - up_s))
+  [ "$idle" -gt "${ORIGIN_STUCK_AFTER_SEC:-1800}" ] || return 1
+  kill_tree "$owner"
+  if ! is_terminal "$(read_field "$other" state)"; then
+    mark_failed_state "$other" \
+      "watchdog: stuck in phase ${ph:-?} since ${up:-?}; no env/service change; superseded by $want"
+  fi
+  echo "reclaimed stuck activation $other (phase ${ph:-?}, idle ${idle}s, no host changes)" >&2
+  return 0
 }
 
 # 回收互斥只由其持有者（pid 为本进程）释放；其余情况保持原样。
@@ -848,7 +940,14 @@ run_release() {
   rollback_preflight
 
   set_phase install "installing production dependencies"
-  if ! (cd "$release" && bunx pnpm@10.32.1 install --frozen-lockfile --prod --config.confirmModulesPurge=false); then
+  local install_rc=0 install_timeout=${ORIGIN_INSTALL_TIMEOUT_SEC:-600}
+  # 无超时上限时卡死的安装会永久占住部署锁（真实事故：worker pid 633794，phase=install）。
+  # timeout 不加 --foreground：向整个进程组发信号，pnpm/bun 的后代一并被杀。
+  (cd "$release" && timeout --kill-after=30 "$install_timeout" \
+    bunx pnpm@10.32.1 install --frozen-lockfile --prod --config.confirmModulesPurge=false) || install_rc=$?
+  if [ "$install_rc" -eq 124 ] || [ "$install_rc" -eq 137 ]; then
+    abort_forward "dependency install timed out after ${install_timeout}s"
+  elif [ "$install_rc" -ne 0 ]; then
     abort_forward "dependency install failed"
   fi
 

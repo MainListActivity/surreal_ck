@@ -21,7 +21,14 @@ const POLL_TIMEOUT_MS = 20_000;
 const TEST_TIMEOUT_MS = 40_000;
 
 // 外部命令桩。注意：模板字符串内的 shell 插值需转义为 \${...}。
-const PRELUDE = `bunx() { echo "bunx:$*" >>"$GATE_LOG"; return 0; }
+const PRELUDE = `timeout() {
+  # GNU timeout 替身（本机无 coreutils）：剥掉 --kill-after=K 与秒数后透传执行。
+  echo "timeout:$*" >>"$GATE_LOG"
+  while [ "\${1#--}" != "$1" ]; do shift; done
+  shift
+  "$@"
+}
+bunx() { echo "bunx:$*" >>"$GATE_LOG"; return 0; }
 bun() { echo "bun:$*" >>"$GATE_LOG"; echo "grant_revocations=0"; }
 sudo() { echo "sudo:$*" >>"$GATE_LOG"; if [ "\${1:-}" = "-n" ]; then shift; fi; "$@"; }
 systemctl() {
@@ -456,7 +463,9 @@ describe("origin-release 生命周期（脚本级）", () => {
   describe("忙与陈旧锁", () => {
     t("锁被存活进程持有 → exit 75，不生成新状态、无 systemctl", () => {
       const h = makeHarness();
-      const holder = Bun.spawn(["sleep", "30"]);
+      // 持有者进程需带 worker cmdline（--worker + release id）：cmdline 不符的存活 pid
+      // 按 pid 复用处理（视为持有者已死），不再是 busy。
+      const holder = Bun.spawn(["bash", "-c", 'exec -a "bash origin-release.sh --worker other-running" sleep 30']);
       h.procs.push(holder);
       writeLock(h, holder.pid, "other-running");
       const id = "rel-ci-busy";

@@ -102,7 +102,7 @@ origin 是 `data.maplayer.top`（`129.146.179.37`）上的 systemd 服务 `surre
 发布分三段。**停服只发生在第 2 段的工作进程内，且只在上传、解包、依赖安装与全部门禁通过之后。**
 
 1. **上传（CI，不停服）**：确认 commit 通过 Quality gate；`git archive` 打包并附加 `server/runtime-release.json`；scp 上传 env 增改件、发布包与 `origin-release.sh` 副本到 `/tmp`（文件名含 `<sha7>-ci<run_id>`）。上传失败在停服之前结束，旧版本继续运行。
-2. **登记并分离执行（主机）**：`scripts/deploy/origin-release-ci.sh` 通过 SSH 调用 `--launch`。launch 只校验参数与上传件，登记状态并取锁，然后以 `nohup` 启动分离的工作进程并立即返回；SSH 断开不影响工作进程。工作进程依次执行：解包到 `releases/<sha7>-ci<run_id>`；回滚前提预检（登记的 `previous` 必须存在，并通过试用与分配来源门禁；纯静态，零服务与 env 变更，不通过即以 `refused` 结束）；`bunx pnpm@10.32.1 install --frozen-lockfile --prod`；撤销预检（`previous` 不含撤销过滤时，于新发布目录中读取撤销计数，计数非零或不可证明即以 `refused` 结束；零服务与 env 变更）；试用与分配来源门禁（纯静态、无副作用）；备份 `server.env` 到 `~/surreal_ck/backups/env/`；把 GitHub `production` Environment 中的 `ORIGIN_ENV_<NAME>` secret 逐行写成 `<NAME>=<值>`（只增改这些键，值必须单行，日志只打印键名；`UNSET` 哨兵表示删除该键）；撤销兼容门禁（见下）；若存在 `scripts/deploy/origin-pre-start.sh` 则停服执行该钩子（`ORIGIN_ENV_FILE` 指向 `server.env`，钩子必须幂等）；原子切换 `current`；重启服务；健康探测。
+2. **登记并分离执行（主机）**：`scripts/deploy/origin-release-ci.sh` 通过 SSH 调用 `--launch`。launch 只校验参数与上传件，登记状态并取锁，然后以 `nohup` 启动分离的工作进程并立即返回；SSH 断开不影响工作进程。工作进程依次执行：解包到 `releases/<sha7>-ci<run_id>`；回滚前提预检（登记的 `previous` 必须存在，并通过试用与分配来源门禁；纯静态，零服务与 env 变更，不通过即以 `refused` 结束）；`bunx pnpm@10.32.1 install --frozen-lockfile --prod`（包在 `timeout --kill-after=30 ${ORIGIN_INSTALL_TIMEOUT_SEC:-600}` 内，超时报「dependency install timed out」并失败，不再永久占锁）；撤销预检（`previous` 不含撤销过滤时，于新发布目录中读取撤销计数，计数非零或不可证明即以 `refused` 结束；零服务与 env 变更）；试用与分配来源门禁（纯静态、无副作用）；备份 `server.env` 到 `~/surreal_ck/backups/env/`；把 GitHub `production` Environment 中的 `ORIGIN_ENV_<NAME>` secret 逐行写成 `<NAME>=<值>`（只增改这些键，值必须单行，日志只打印键名；`UNSET` 哨兵表示删除该键）；撤销兼容门禁（见下）；若存在 `scripts/deploy/origin-pre-start.sh` 则停服执行该钩子（`ORIGIN_ENV_FILE` 指向 `server.env`，钩子必须幂等）；原子切换 `current`；重启服务；健康探测。
 3. **收敛（CI 读取主机状态文件）**：CI 每 15 秒用 `--status` 读取状态，最多等 20 分钟。只有 `healthy` 才算成功。`interrupted`（工作进程已消失且未到终态）时 CI 在主机接受 `--recover` 之前每轮请求一次（忙或结果未知时下一轮重试），接受后只等待主机状态，不重复请求。任何终态失败都会让 job 失败。SSH 失败、超时或状态不可读**既不是成功，也不是回滚**：job 以「结果未知」失败，由运维读取主机状态后判定。
 
 健康探测轮询 `http://127.0.0.1:8080/health` 最多 30 次，每次 curl 超时 5 秒、间隔 3 秒，合计约 240 秒（旧文档写的 90 秒已更正）。钩子失败或健康探测失败时，先过门禁，再恢复 `server.env` 备份与上一个 `current` 并重启，结果为 `rolled-back`，job 失败，Cloudflare 不会发布。CI 发布目录与 env 备份各保留最近 8 个，手工发布目录不动。
@@ -240,6 +240,8 @@ GitHub `production` Environment 额外配置：
 | 情况 | 结果 | 处置 |
 | --- | --- | --- |
 | 持有者进程存活 | `busy`（退出码 75） | 等待，不删除锁 |
+| 持有者存活但激活超时未推进（`updated_at` 距今超过 `ORIGIN_STUCK_AFTER_SEC`，默认 1800s）且未改动 env/服务/current（`env_dirty`、`svc_touched`、`switched` 全 0） | 杀掉 worker 进程树、激活标记 `failed`、按陈旧锁回收 | 自愈，CI 日志输出 `reclaimed stuck activation` |
+| 持有者存活，锁的 pid 实为复用进程（cmdline 不含 `--worker <id>`） | 不杀进程，按持有者已死处理（`interrupted=<id>`，退出码 76） | 对该激活执行 `--recover <id>` |
 | 持有者已死，激活未到终态 | `interrupted=<id>`（退出码 76） | 对该激活执行 `--recover <id>`（CI 会自动请求） |
 | 持有者已死，且激活已终态、无状态文件，或即为 `--recover` 指定的激活 | 陈旧锁，回收并重建 | 无需处置 |
 | 回收互斥 `lock.reclaim` 已存在，且持有者已死（或无 pid 超过 1 分钟） | `busy`（退出码 75），不自动删除 | 运维核查，见下 |
