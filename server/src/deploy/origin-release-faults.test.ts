@@ -32,6 +32,8 @@ import {
   waitTerminal,
   waitUntil,
   writeLock,
+  writeStateFile,
+  parseKv,
   zeroTouchViolations,
   type Harness,
 } from "./origin-release-harness";
@@ -653,5 +655,139 @@ describe("AC04 主机入参校验先于登记、取锁与停服", () => {
     expect(r.stderr).toContain("sha must be a full lowercase commit SHA");
     expect(existsSync(h.stateDir)).toBe(false);
     expect(gateCalls(h)).toEqual([]);
+  });
+});
+
+describe("卡死激活自愈回收（stuck worker watchdog）", () => {
+  // 假 worker：cmdline 含 `--worker <other>`（与真实 nohup bash … --worker <id> 同形），
+  // 并挂一个子进程（模拟 pnpm/bun 后代）；子进程 pid 写入文件供断言。
+  const stuckWorker = (h: Harness, other: string) => {
+    const childFile = join(h.dir, `${other}-child.pid`);
+    const w = Bun.spawn(
+      ["bash", "-c", `sleep 600 & echo $! >"${childFile}"; wait`, "origin-release.sh", "--worker", other, "launch"],
+      { stdout: "ignore", stderr: "ignore" },
+    );
+    h.procs.push(w);
+    return { proc: w, childFile };
+  };
+  const alive = (pid: number) => {
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  };
+  const NOW = () => new Date().toISOString().replace(/\.\d+Z$/, "Z");
+
+  t("a. 卡死未改动主机的激活 → 新 launch 回收：杀 worker 树、标记 failed、正常取锁", async () => {
+    const h = makeHarness();
+    const other = "rel-ci-stuck";
+    const { proc, childFile } = stuckWorker(h, other);
+    await waitUntil(() => existsSync(childFile), "stuck worker child pid");
+    const child = Number(readText(childFile).trim());
+    writeStateFile(h, other, { phase: "install", updated_at: "2026-01-01T00:00:00Z", worker_pid: String(proc.pid) });
+    writeLock(h, proc.pid, other);
+
+    const id = "rel-ci-after";
+    stageRelease(h, id);
+    const r = launch(h, id, { extraEnv: { ORIGIN_STUCK_AFTER_SEC: "1" } });
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toContain(`reclaimed stuck activation ${other}`);
+    await proc.exited; // 杀死后等 bun 侧收割，避免把僵尸误读成存活
+    await waitUntil(() => !alive(child), "stuck worker child killed");
+    expect(alive(proc.pid)).toBe(false);
+    expect(alive(child)).toBe(false);
+    const st = parseKv(readText(join(h.stateDir, `${other}.state`)));
+    expect(st.state).toBe("failed");
+    expect(st.note).toContain("watchdog");
+    expect(st.note).toContain(`superseded by ${id}`);
+    const s = await waitTerminal(h, id);
+    expect(s.state).toBe("healthy");
+  });
+
+  t("b. 已改动主机（env_dirty=1）的卡死激活 → 75 busy，不杀进程、不改状态", async () => {
+    const h = makeHarness();
+    const other = "rel-ci-dirty";
+    const { proc } = stuckWorker(h, other);
+    writeStateFile(h, other, { phase: "install", env_dirty: "1", updated_at: "2026-01-01T00:00:00Z", worker_pid: String(proc.pid) });
+    writeLock(h, proc.pid, other);
+
+    const id = "rel-ci-after-dirty";
+    stageRelease(h, id);
+    const r = launch(h, id, { extraEnv: { ORIGIN_STUCK_AFTER_SEC: "1" } });
+    expect(r.exitCode).toBe(75);
+    expect(r.stderr).toContain("busy");
+    expect(alive(proc.pid)).toBe(true);
+    const st = parseKv(readText(join(h.stateDir, `${other}.state`)));
+    expect(st.state).toBe("running");
+    expect(st.note).toBe("fixture");
+  });
+
+  t("c. 未到超时门槛（updated_at 是刚刚）→ 75 busy，不杀进程", async () => {
+    const h = makeHarness();
+    const other = "rel-ci-fresh";
+    const { proc } = stuckWorker(h, other);
+    writeStateFile(h, other, { phase: "install", updated_at: NOW(), worker_pid: String(proc.pid) });
+    writeLock(h, proc.pid, other);
+
+    const id = "rel-ci-after-fresh";
+    stageRelease(h, id);
+    const r = launch(h, id, { extraEnv: { ORIGIN_STUCK_AFTER_SEC: "60" } });
+    expect(r.exitCode).toBe(75);
+    expect(alive(proc.pid)).toBe(true);
+    expect(parseKv(readText(join(h.stateDir, `${other}.state`))).state).toBe("running");
+  });
+
+  t("d. 锁 pid 为复用的无关进程 → 不杀进程，按持有者已死：interrupted=<other> 76，status 为 interrupted", async () => {
+    const h = makeHarness();
+    const other = "rel-ci-reused";
+    const squatter = Bun.spawn(["sleep", "30"]);
+    h.procs.push(squatter);
+    writeStateFile(h, other, { phase: "install", updated_at: NOW() });
+    writeLock(h, squatter.pid, other);
+
+    const id = "rel-ci-after-reused";
+    stageRelease(h, id);
+    const r = launch(h, id);
+    expect(r.exitCode).toBe(76);
+    expect(r.stdout).toContain(`interrupted=${other}`);
+    expect(alive(squatter.pid)).toBe(true);
+    expect(status(h, other).state).toBe("interrupted");
+    expect(parseKv(readText(join(h.stateDir, `${other}.state`))).state).toBe("running");
+  });
+
+  t("f. 锁 pid 复用 + 卡死未改动主机 → 不杀无关进程，仍标记 failed 并回收取锁", async () => {
+    const h = makeHarness();
+    const other = "rel-ci-reused-stuck";
+    const squatter = Bun.spawn(["sleep", "30"]);
+    h.procs.push(squatter);
+    writeStateFile(h, other, { phase: "install", updated_at: "2026-01-01T00:00:00Z" });
+    writeLock(h, squatter.pid, other);
+
+    const id = "rel-ci-after-reused-stuck";
+    stageRelease(h, id);
+    const r = launch(h, id, { extraEnv: { ORIGIN_STUCK_AFTER_SEC: "1" } });
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toContain(`reclaimed stuck activation ${other}`);
+    // 复用 pid 的无关进程不被杀。
+    expect(alive(squatter.pid)).toBe(true);
+    const st = parseKv(readText(join(h.stateDir, `${other}.state`)));
+    expect(st.state).toBe("failed");
+    expect(st.note).toContain("reused");
+    const s = await waitTerminal(h, id);
+    expect(s.state).toBe("healthy");
+  });
+
+  t("e. install 超时 → 激活 failed 终态（note 含 timed out），env/current 不变，锁释放", async () => {
+    const h = makeHarness();
+    const id = "rel-ci-timeout";
+    stageRelease(h, id);
+    // 本机无 GNU timeout：替身透传 + T_TIMEOUT_RC 注入超时退出码，验证脚本对 124 的分支处理。
+    expect(launch(h, id, { extraEnv: { ORIGIN_INSTALL_TIMEOUT_SEC: "2", T_TIMEOUT_RC: "124" } }).exitCode).toBe(0);
+    const s = await waitTerminal(h, id);
+    expect(s.state).toBe("failed");
+    expect(s.note).toContain("timed out");
+    // 脚本确实把 install 包进 timeout 并透传了超时秒数。
+    expect(gateCalls(h).some((c) => c === "timeout:--kill-after=30 2 bunx pnpm@10.32.1 install --frozen-lockfile --prod --config.confirmModulesPurge=false")).toBe(true);
+    expect(readText(h.envFile)).toBe(BEFORE);
+    expect(currentBasename(h)).toBe("rel-old");
+    expect(serviceState(h)).toBe("active");
+    expect(existsSync(h.lockDir)).toBe(false);
   });
 });
