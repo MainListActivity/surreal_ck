@@ -468,36 +468,31 @@ export function buildCreateWorkbookTransaction(
     : undefined;
   const dashboardId = resolvedDashboard ? `dashboard_page:${generateKey()}` : undefined;
 
-  const sampleSql = samples.map(({ recordId }, index) =>
-    `CREATE ${recordId} CONTENT $sampleRecord${index};`
-  ).join("\n");
+  const sampleSql = samples.length ? `FOR $sample IN $sampleRecords {
+  LET $target = $sample.target;
+  CREATE $target CONTENT $sample.content;
+};` : "";
 
-  const importReceiptSql = (options.importBatch?.receipts ?? []).map((receipt, index) => {
-    const targetRecord = receipt.sampleKey
-      ? sampleIds.get(`${receipt.sheetKey}\u0000${receipt.sampleKey}`)
-      : undefined;
-    if (receipt.status === "success" && !targetRecord) {
-      throw new Error(`导入成功回执无法解析目标记录：${receipt.sheetName}/${receipt.rowNumber}`);
-    }
-    return `INSERT INTO import_batch_row {
-  batch: $importBatch${index},
-  sheet_name: $importSheetName${index},
-  source_row_number: $importRowNumber${index},
-  status: $importRowStatus${index},
-  target_record: $importTargetRecord${index},
-  target_updated_at: ${receipt.status === "success" ? "time::now()" : "NONE"},
-  field: $importRowField${index},
-  reason: $importRowReason${index},
-  source_cells: $importSourceCells${index}
+  const importReceiptSql = options.importBatch?.receipts?.length ? `FOR $receipt IN $importReceipts {
+INSERT INTO import_batch_row {
+  batch: $receipt.batch,
+  sheet_name: $receipt.sheet_name,
+  source_row_number: $receipt.source_row_number,
+  status: $receipt.status,
+  target_record: $receipt.target_record,
+  target_updated_at: IF $receipt.status = "success" { time::now() } ELSE { NONE },
+  field: $receipt.field,
+  reason: $receipt.reason,
+  source_cells: $receipt.source_cells
 } ON DUPLICATE KEY UPDATE
-  status = $importRowStatus${index},
-  target_record = $importTargetRecord${index},
-  target_updated_at = ${receipt.status === "success" ? "time::now()" : "NONE"},
-  field = $importRowField${index},
-  reason = $importRowReason${index},
-  source_cells = $importSourceCells${index},
-  updated_at = time::now();`;
-  }).join("\n");
+  status = $receipt.status,
+  target_record = $receipt.target_record,
+  target_updated_at = IF $receipt.status = "success" { time::now() } ELSE { NONE },
+  field = $receipt.field,
+  reason = $receipt.reason,
+  source_cells = $receipt.source_cells,
+  updated_at = time::now();
+};` : "";
 
   const sheetSql = resolvedSheets.map((sheet) => {
     const fieldDdl = sheet.columns
@@ -564,27 +559,32 @@ COMMIT TRANSACTION;`;
       bindings[createdSheets.length === 1 ? "sheetTemplateKey" : `sheetTemplateKey${suffix}`] = sheet.key;
     }
   }
-  samples.forEach(({ sheet, sample }, index) => {
+  if (samples.length) bindings.sampleRecords = samples.map(({ sheet, sample, recordId }) => {
     const columnByKey = new Map(sheet.columns.map((column) => [column.key, column]));
-    bindings[`sampleRecord${index}`] = Object.fromEntries(
+    return { target: toRecordId(recordId), content: Object.fromEntries(
       Object.entries(sample.values).map(([field, value]) => [
         field,
         resolveSampleValue(value, columnByKey.get(field)),
       ]),
-    );
+    ) };
   });
-  (options.importBatch?.receipts ?? []).forEach((receipt, index) => {
+  if (options.importBatch?.receipts?.length) bindings.importReceipts = options.importBatch.receipts.map((receipt) => {
     const targetRecord = receipt.sampleKey
       ? sampleIds.get(`${receipt.sheetKey}\u0000${receipt.sampleKey}`)
       : undefined;
-    bindings[`importBatch${index}`] = toRecordId(options.importBatch!.id);
-    bindings[`importSheetName${index}`] = receipt.sheetName;
-    bindings[`importRowNumber${index}`] = receipt.rowNumber;
-    bindings[`importRowStatus${index}`] = receipt.status;
-    bindings[`importTargetRecord${index}`] = targetRecord ? toRecordId(targetRecord) : undefined;
-    bindings[`importRowField${index}`] = receipt.field;
-    bindings[`importRowReason${index}`] = receipt.reason;
-    bindings[`importSourceCells${index}`] = receipt.sourceCells;
+    if (receipt.status === "success" && !targetRecord) {
+      throw new Error(`导入成功回执无法解析目标记录：${receipt.sheetName}/${receipt.rowNumber}`);
+    }
+    return {
+      batch: toRecordId(options.importBatch!.id),
+      sheet_name: receipt.sheetName,
+      source_row_number: receipt.rowNumber,
+      status: receipt.status,
+      target_record: targetRecord ? toRecordId(targetRecord) : undefined,
+      field: receipt.field,
+      reason: receipt.reason,
+      source_cells: receipt.sourceCells,
+    };
   });
   if (resolvedDashboard) {
     bindings.dashboardTitle = resolvedDashboard.title;
