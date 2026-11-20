@@ -1,5 +1,5 @@
 // 本地公司 fork 集成测试：对真实 workspace 模板跑对账的实际 SQL——
-// loadReconciliation 七路读取（含 ORDER BY 投影约束）、finding UPSERT、
+// loadReconciliation 并行读取（含 ORDER BY 投影约束）、finding UPSERT、
 // supplement 追加与排序、ALLINSIDE 四类枚举断言。
 //   surreal start --user root --pass root memory --bind 127.0.0.1:8000
 //   RUN_LOCAL_SURREALDB_TESTS=1 bun test src/lib/claims-reconcile.integration.test.ts
@@ -7,6 +7,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { Surreal } from "surrealdb";
 import { loadTemplateScripts } from "@surreal-ck/shared/workspace-template";
 import {
+  buildClaimCorrespondenceCsv,
   loadReconciliation,
   saveFinding,
   sendSupplementRequest,
@@ -42,6 +43,66 @@ async function setupWorkspace(): Promise<{ conn: SurrealConn }> {
 }
 
 describe("债权对账 · 真实 fork 模板集成", () => {
+  localSurrealTest("往来 CSV 可按本人或全案导出补正、回复及结论版本，并保护公式单元格", async () => {
+    const { conn } = await setupWorkspace();
+    await conn.query(`
+      CREATE creditor_roster:own SET subject_type = "enterprise", name = "甲公司", identity_code = "OWN";
+      CREATE creditor_roster:other SET subject_type = "enterprise", name = "乙公司", identity_code = "OTHER";
+      CREATE claim_submission:own SET roster_id = creditor_roster:own, identity_code = "OWN", status = "submitted",
+        manager_note = "不要导出内部笔记";
+      CREATE claim_submission:other SET roster_id = creditor_roster:other, identity_code = "OTHER", status = "submitted";
+      CREATE claim_supplement:request SET submission_id = claim_submission:own, direction = "manager_request",
+        actor = "管理人", body = "=请补充合同", created_at = time::now();
+      CREATE claim_attachment:reply SET submission_id = claim_submission:own, attachment_type = "contract",
+        file_name = "回复.pdf", content_type = "application/pdf", byte_size = 12, storage_key = "fixture/reply",
+        uploaded_at = time::now();
+      CREATE claim_supplement:reply SET submission_id = claim_submission:own, direction = "creditor_reply",
+        actor = "甲公司", body = "已回复", request_id = claim_supplement:request,
+        attachment_ids = [claim_attachment:reply], created_at = time::now();
+      CREATE claim_supplement:other SET submission_id = claim_submission:other, direction = "manager_request",
+        actor = "管理人", body = "乙公司专用", created_at = time::now();
+      UPDATE claim_submission:own SET portal_stage = "under_review", portal_stage_by = "管理人";
+      CREATE claim_decision SET submission_id = claim_submission:own, version = 1, reason = "材料已确认",
+        confirmed_principal = 100, confirmed_interest = 0, confirmed_penalty = 0, unconfirmed_amount = 20;
+    `);
+    const single = await buildClaimCorrespondenceCsv(conn, "claim_submission:own");
+    expect(single).toContain("甲公司");
+    expect(single).toContain("'=请补充合同");
+    expect(single).toContain("已回复");
+    expect(single).toContain("回复.pdf");
+    expect(single).toContain("审查结论");
+    expect(single).toContain("材料已确认");
+    expect(single).not.toContain("不要导出内部笔记");
+    expect(single).not.toContain("乙公司");
+    expect(await buildClaimCorrespondenceCsv(conn)).toContain("乙公司专用");
+  });
+
+  localSurrealTest("v1 已提交申报可受理并补正，状态与时间线在同一事务更新", async () => {
+    const { conn } = await setupWorkspace();
+    await conn.query(`
+      CREATE creditor_roster:progress SET subject_type = "enterprise", name = "样本债权人", identity_code = "PROGRESS-001";
+      CREATE claim_submission:progress SET roster_id = creditor_roster:progress,
+        identity_code = "PROGRESS-001", principal = 500, status = "submitted",
+        submitted_at = d"2025-01-01T00:00:00Z";
+    `);
+    await sendSupplementRequest(conn, {
+      submission_id: "claim_submission:progress",
+      body: "请补充对账单",
+      actor: "样本管理人",
+      dueAt: "2027-01-10T12:00:00Z",
+    });
+    const stages = await conn.query<{ stage: string }>(
+      "SELECT stage, created_at FROM claim_progress_event ORDER BY created_at ASC, id ASC;",
+    );
+    expect(stages.map((entry) => entry.stage)).toEqual(["accepted", "needs_info"]);
+    const [request] = await conn.query<{ due_at: unknown }>("SELECT due_at FROM claim_supplement;");
+    expect(String(request?.due_at)).toContain("2027-01-10");
+    const [submission] = await conn.query<{ portal_stage: string; status: string }>(
+      "SELECT portal_stage, status FROM claim_submission:progress;",
+    );
+    expect(submission).toEqual({ portal_stage: "needs_info", status: "submitted" });
+  });
+
   localSurrealTest("055 表建好：装配四列、finding UPSERT 往返、supplement 追加排序", async () => {
     const { conn } = await setupWorkspace();
 

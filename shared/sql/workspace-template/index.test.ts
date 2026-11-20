@@ -626,8 +626,6 @@ describe("workspace template scripts", () => {
     const migration = scripts.find((script) => script.name === "055-claims-reconciliation-finding.surql");
 
     expect(migration?.version).toBe(55);
-    // 063-template-flexible-array-elements 追加为最新版本。
-    expect(WORKSPACE_TEMPLATE_VERSION).toBe(63);
     const sql = migration?.sql ?? "";
     expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS reconciliation_finding SCHEMAFULL/);
     expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS claim_supplement SCHEMAFULL/);
@@ -636,6 +634,17 @@ describe("workspace template scripts", () => {
     expect(sql).toMatch(/FOR update, delete\s+WHERE false/);
     expect(sql).toMatch(/ALLINSIDE \["amount_mismatch", "interest_mismatch", "missing_evidence", "identity_mismatch"\]/);
     expect(sql).not.toMatch(/UPDATE |DELETE |REMOVE /i);
+  });
+
+  test("外部协作者门户 v2 的四个迁移按顺序追加", async () => {
+    const scripts = await loadTemplateScripts();
+    expect(scripts.filter((script) => script.version >= 64 && script.version <= 67).map((script) => script.name)).toEqual([
+      "064-claims-portal-progress.surql",
+      "065-claims-portal-decisions.surql",
+      "066-claims-portal-token-issuance.surql",
+      "067-claims-portal-supplement-templates.surql",
+    ]);
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(scripts.at(-1)?.version);
   });
 
   test("a1e2791c/ad5d63f0：059 funnel_event 追加式漏斗事件——去 subject、触发点幂等、无内容字段", async () => {
