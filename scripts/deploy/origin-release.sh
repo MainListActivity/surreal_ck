@@ -612,27 +612,35 @@ mark_failed_state() {
 # 条件全满足 → owner 确为该激活 worker 才杀进程树（pid 复用则不杀任何进程），两种情况都
 # 标记 failed 并返回 0 让调用方按陈旧锁继续回收——真实事故里无法分辨锁 pid 是卡死的
 # worker 还是复用 pid，两种情况都必须自愈，不能只靠 interrupted/76 让人工 recover 重跑旧 SHA。
-# 条件不满足 → owner 不是 worker 返回 0（复用 pid，按持有者已死走 interrupted/陈旧锁），
-# owner 是 worker 返回 1（照常 busy 75）。fail-closed：改动过主机的激活绝不自动回收。
+# 条件不满足 → owner 是本激活 worker 或脚本 --launch 进程（合法在途持有者）返回 1
+# （照常 busy 75）；cmdline 与本发布系统无关的存活 pid 返回 0（pid 复用，按持有者已死
+# 走 interrupted/陈旧锁）。fail-closed：改动过主机的激活绝不自动回收。
 reclaim_stuck_activation() {
-  local other=$1 owner=$2 want=$3 st ed sv sw up ph up_s now idle isw=0
+  local other=$1 owner=$2 want=$3 st ed sv sw up ph up_s now idle isw=0 islaunch=0 oargs
   [ -n "$other" ] && [ "$other" != "$want" ] || return 1
-  if is_worker_pid "$owner" "$other"; then isw=1; fi
+  if is_worker_pid "$owner" "$other"; then
+    isw=1
+  else
+    # --launch 进程是本脚本合法的在途持有者（锁 pid 就是 launch 的 $$），不是复用 pid：
+    # 它与 worker 一样让本次取锁返回 busy，而不是被当作持有者已死。
+    oargs=$(ps -o args= -p "$owner" 2>/dev/null || true)
+    [[ "$oargs" == *" --launch "* ]] && islaunch=1
+  fi
   st=$(read_field "$other" state)
-  if [ -z "$st" ] || is_terminal "$st"; then [ "$isw" = 1 ] && return 1 || return 0; fi
+  if [ -z "$st" ] || is_terminal "$st"; then [ "$isw$islaunch" = "00" ] && return 0; return 1; fi
   ed=$(read_field "$other" env_dirty)
   sv=$(read_field "$other" svc_touched)
   sw=$(read_field "$other" switched)
   if [ "${ed:-0}" != 0 ] || [ "${sv:-0}" != 0 ] || [ "${sw:-0}" != 0 ]; then
-    [ "$isw" = 1 ] && return 1 || return 0
+    [ "$isw$islaunch" = "00" ] && return 0; return 1
   fi
   up=$(read_field "$other" updated_at)
   ph=$(read_field "$other" phase)
   # GNU date -d 优先；BSD date（本机测试）用 -j -f 解析同一时间戳格式。解析失败视为不满足，不回收。
-  up_s=$(date -u -d "$up" +%s 2>/dev/null || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$up" +%s 2>/dev/null) || { [ "$isw" = 1 ] && return 1 || return 0; }
+  up_s=$(date -u -d "$up" +%s 2>/dev/null || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$up" +%s 2>/dev/null) || { [ "$isw$islaunch" = "00" ] && return 0; return 1; }
   now=$(date -u +%s)
   idle=$((now - up_s))
-  [ "$idle" -gt "${ORIGIN_STUCK_AFTER_SEC:-1800}" ] || { [ "$isw" = 1 ] && return 1 || return 0; }
+  [ "$idle" -gt "${ORIGIN_STUCK_AFTER_SEC:-1800}" ] || { [ "$isw$islaunch" = "00" ] && return 0; return 1; }
   if [ "$isw" = 1 ]; then kill_tree "$owner"; fi
   if ! is_terminal "$(read_field "$other" state)"; then
     local why="worker stuck"
