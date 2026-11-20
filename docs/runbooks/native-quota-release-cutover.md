@@ -175,7 +175,8 @@ sudo install -d -o root -g root -m 0700 /var/lib/surreal-ck/latency
 
 探针选择 HTTP `/sql` 方案：只连接 `127.0.0.1:8000`，不经 Caddy，不跟随重定向、
 不使用代理或主机的 3.2.3 CLI。`sample` 必须以 root 运行，凭证只读取
-`/etc/surrealdb/surrealdb.env`，要求 root-owned、无 group/other 权限且不是符号链接。
+`/etc/surrealdb/surrealdb.env`，要求 root-owned、组至多只读、other 无权限且不是符号链接
+（支持生产的 root:ubuntu 0640）。
 支持 `SURREAL_USER` / `SURREAL_PASS` 或 `SURREAL_ROOT_USER` / `SURREAL_ROOT_PASS`；
 不接受命令行或进程环境凭证，不输出响应正文、查询文本、样本行或凭证。
 
@@ -234,7 +235,7 @@ compare 可离线执行，不访问数据库或凭证。退出码：0 成功；1
 旧库保持数据库 compatibility level 3；不要为存储升级顺便切换到 level 4。
 新建 4.0 库为 level 4，全链从空库应用；有旧行的后续 DDL 如需收紧字段类型，
 必须单独设计 `MIGRATE EXISTING ROWS` 与数据处理，不重写已应用的历史 migration。
-workspace 063 单独放宽 workbook 模板嵌套列对象，保持自定义字段。
+workspace 068 在 063 元素字段修正之后放宽 workbook 模板嵌套列数组，保持自定义字段。
 
 ### 阶段一：migration-conductor
 
@@ -395,3 +396,9 @@ downgrade。
   `waived_no_certificate` evidence 已归档。
 
 缺任一项不得设置 `dispatch_production=true`。
+
+## SurrealDB 4.0 升级验证
+
+开发分支的 server、shared、web 统一固定 SDK 2.2.2。实测 SDK 2.0.8 在连接时拒绝服务端 4.0.1；2.2.2 已在本地临时 fork 实例上通过 HTTP、WebSocket、配额拒绝和 LIVE 通知检查。
+
+这次依赖调整不代表数据库已可切换：发行身份、存储格式和签名候选包校验仍要求现有认证发行线。候选包必须明确认证 SDK 2.2.2 后才允许验收；固定 2.0.8 的旧清单必须拒绝通过。验证期间没有修改生产镜像或生产数据库。

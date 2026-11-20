@@ -8,7 +8,7 @@ import {
 import { jsonify } from "surrealdb";
 
 export type NativeQuotaQueryClient = {
-  query<T = unknown>(sql: string, params?: Record<string, unknown>): Promise<T>;
+  query(sql: string, params?: Record<string, unknown>): Promise<unknown>;
 };
 
 export interface NativeQuotaClient {

@@ -35,7 +35,16 @@ export const HOOK_BLOCK = [
 ].join("\n");
 
 // 注意：模板字符串内的 shell 插值需转义为 \${...}；printf 格式中的 \\n 在脚本里是 \n。
-export const FAULT_PRELUDE = `bunx() {
+export const FAULT_PRELUDE = `timeout() {
+  # GNU timeout 替身（本机无 coreutils）：剥掉 --kill-after=K 与秒数后透传执行；
+  # T_TIMEOUT_RC 注入超时退出码（124/137），由脚本侧验证超时分支。真实杀进程语义由主机 GNU timeout 承担。
+  echo "timeout:$*" >>"$GATE_LOG"
+  while [ "\${1#--}" != "$1" ]; do shift; done
+  shift
+  if [ -n "\${T_TIMEOUT_RC:-}" ]; then return "\${T_TIMEOUT_RC}"; fi
+  "$@"
+}
+bunx() {
   echo "bunx:$*" >>"$GATE_LOG"
   if [ -n "\${T_HOLD_FILE:-}" ]; then while [ -f "$T_HOLD_FILE" ]; do command sleep 0.05; done; fi
   if [ -n "\${T_BUNX_FAIL:-}" ]; then return 1; fi

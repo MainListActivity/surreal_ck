@@ -11,7 +11,7 @@
 | `test_kit_status` | `email`。开通慢于同步窗时轮询；完成后登记测试主体并一次性收取激活链接。失败或中断（processing 超过 15 分钟）返回 failed，该邮箱作废。 |
 | `test_kit_list` | 只列本 agent 开的测试账号与开通中的邮箱；顺带把已完成但未轮询、失败或中断但已建出账号的开通补登记。 |
 | `test_kit_add_member` | `workspaceSlug`、`email`、可选 `isAdmin`/`displayName`。被加者必须是本 agent 开的未到期测试账号；workspace 必须由本 agent 开的账号（可加管理员）或运营登记的测试账号（只能加普通成员）拥有，其他 agent 的账号不能碰。首次登录按邮箱绑定。 |
-| `test_kit_purge` | `subject`、`confirm="purge <subject>"`。立即清理本 agent 开的测试账号：整库删除它自己拥有的 workspace，它加入的别人的 workspace 只摘成员索引。到期也会被 reaper 自动清理。 |
+| `test_kit_purge` | `subject`、`confirm="purge <subject>"`。立即清理本 agent 开的测试账号：整库删除它自己拥有的 workspace，它加入的别人的 workspace 只摘成员索引。到期也会被 reaper 自动清理。成功返回 `{subject, workspacesPurged, workspacesSkipped}`；对已清理过的账号重复调用返回 `{subject, alreadyPurged:true, ...}` 幂等结果。已清理的账号不再出现在 test_kit_list 里；要确认某个邮箱是否已清理，用 test_kit_status，返回 code=purged 表示已清理且该邮箱作废不可复用。 |
 
 激活：在浏览器打开激活链接自行设置密码（建议存进 agent 自己的密码库）。任何接口都不收发明文密码。
 

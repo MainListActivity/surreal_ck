@@ -4,7 +4,9 @@ import importlib.util
 import json
 from pathlib import Path
 import shutil
+import stat
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -28,6 +30,28 @@ def capability():
 
 
 class SafetyTests(unittest.TestCase):
+    def test_private_env_allows_root_group_read_but_no_group_write_or_other_access(self):
+        path = unittest.mock.Mock()
+        path.is_symlink.return_value = False
+        path.read_text.return_value = 'SURREAL_USER=root\nSURREAL_PASS="fixture password"\n'
+        for mode in (0o600, 0o640):
+            path.stat.return_value = SimpleNamespace(st_uid=0, st_gid=1000, st_mode=stat.S_IFREG | mode)
+            self.assertEqual(upgrade.host_env(path)['SURREAL_PASS'], 'fixture password')
+        for uid, mode in ((1000, 0o640), (0, 0o660), (0, 0o644), (0, 0o641), (0, 0o650)):
+            path.stat.return_value = SimpleNamespace(st_uid=uid, st_mode=stat.S_IFREG | mode)
+            with self.assertRaises(RuntimeError):
+                upgrade.host_env(path)
+
+    def test_inventory_quotes_numeric_leading_namespace_database_and_table(self):
+        name = '953lb2sli64ha56neo25'
+        with patch.object(upgrade, 'sql', side_effect=[{'namespaces': {name: ''}},
+                {'databases': {name: ''}}, {'tables': {name: 'DEFINE TABLE fixture'}}, [{'count': 2}]]) as sql:
+            self.assertEqual(upgrade.inventory('http://fixture', ('test', 'test')), {(name, name): {name: 2}})
+            self.assertIn('FROM `' + name + '` GROUP ALL', sql.call_args.args[2])
+        for invalid in ('', 'db`', 'a.b', 'a\nb', 'db; DELETE data;'):
+            with self.assertRaises(RuntimeError):
+                upgrade.identifier(invalid)
+
     def test_capabilities_require_clean_certified_storage(self):
         upgrade.validate_capability(capability())
         for value in ({}, {"storage": {}}, {**capability(), "backend": {"name": "surrealkv"}}):

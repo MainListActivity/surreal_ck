@@ -1,0 +1,4 @@
+BEFORE aarch64-linux-android 1285
+AFTER aarch64-linux-android 1249 MIN 1200
+BEFORE x86_64-linux-android 1249
+AFTER x86_64-linux-android 1216 MIN 1216

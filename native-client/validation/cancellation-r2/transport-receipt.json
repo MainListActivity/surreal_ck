@@ -1,0 +1,28 @@
+{
+  "recorded_at_utc": "2026-11-11T00:43:44.463585+00:00",
+  "test_command": "cargo test --manifest-path native-transport/Cargo.toml --locked --offline --lib --config 'profile.test.package.surreal-ck-peer-transport.debug=0' --config 'profile.test.package.surreal-ck-peer-transport.strip=\"debuginfo\"'",
+  "test_count": 29,
+  "result": "passed",
+  "clippy_command": "cargo clippy --manifest-path native-transport/Cargo.toml --locked --offline --all-targets -- -D warnings",
+  "fmt_command": "cargo fmt --manifest-path native-transport/Cargo.toml -- --check",
+  "environment": {
+    "CARGO_TARGET_DIR": "/workspace/scratch/115bfa675150/native-client-probe/surreal_ck/native-client/target",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_BUILD_JOBS": "1"
+  },
+  "sha256": {
+    "native-transport/src/transfer.rs": "2bc908cb0c708e733b935e706f1073d95e151c7e930251a21450c14152504839",
+    "native-transport/src/transfer_destination.rs": "be2fc6d383b48a6890086fc32b6efb857733c80dd7b72f4dc63b13f4b8e28067",
+    "native-transport/src/chat.rs": "bef188f3dc7b8ec652e549c61babfc429b12fe9d5b67456a491c98da058ba84a",
+    "native-client/target/debug/deps/surreal_ck_peer_transport-ce8e459545f2a126": "0a5e2bb577b48202d804d102fee7ef060b2e6a8b5b18328d9749f6c3a8e2d820"
+  },
+  "logs": [
+    "/workspace/scratch/115bfa675150/transfer-cancel-test-r2-20261112.log",
+    "/workspace/scratch/115bfa675150/transfer-cancel-clippy-r2-20261112.log"
+  ],
+  "limits": [
+    "文件名20261112为笔误，测试实际发生于2026-11-11 UTC。",
+    "发布准入后单文件取消的即时Completed/COMPLETE ACK仍可能被取消标记抑制；真实保存事实由CloseReport保留。",
+    "未新增企业文件wrapper/UI；未生产连接、发布或提交。"
+  ]
+}

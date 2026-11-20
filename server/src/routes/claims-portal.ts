@@ -1,10 +1,12 @@
 import { Hono } from "hono";
-import type { MiddlewareHandler } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
+import { claimCsvCell } from "@surreal-ck/shared/claims-portal";
 import type { AppBindings } from "../hono-types";
 import { HttpError } from "../http-error";
 import { requireOidc } from "../middleware/oidc";
 import { ClaimsPortalService } from "../claims-portal/service";
+import { renderClaimRecordPdf } from "../claims-portal/record-pdf";
 import { SESSION_COOKIE_NAME } from "../claims-portal/constants";
 
 export type ClaimsPortalRouteOptions = {
@@ -69,7 +71,7 @@ export function createClaimsPortalRoutes(
     return c.json({ ok: true, rosterId: opened.rosterId, exp: opened.exp });
   });
 
-  routes.get("/api/claims-portal/:slug/:token/submission", async (c) => {
+  async function readPortalRecord(c: Context<AppBindings, "/api/claims-portal/:slug/:token/submission">) {
     const slug = c.req.param("slug");
     const token = c.req.param("token");
     const workspaceDb = await service.resolveWorkspaceDb(slug);
@@ -84,11 +86,29 @@ export function createClaimsPortalRoutes(
       tokenId: session.tokenId,
       rosterId: session.rosterId,
     });
-    const result = await service.getSubmission({
+    return service.getSubmission({
       workspaceDb,
       rosterId: session.rosterId,
     });
+  }
+
+  routes.get("/api/claims-portal/:slug/:token/submission", async (c) => {
+    const result = await readPortalRecord(c);
     return c.json({ ok: true, ...result });
+  });
+
+  routes.get("/api/claims-portal/:slug/:token/submission.pdf", async (c) => {
+    const record = await readPortalRecord(c);
+    if (!record.submission || record.submission.status === "draft") {
+      throw new HttpError(409, "claims-not-submitted", "提交申报后才能下载往来记录");
+    }
+    const pdf = await renderClaimRecordPdf(record, record.submission);
+    return c.body(new Uint8Array(pdf), 200, {
+      "Cache-Control": "private, no-store",
+      "Content-Type": "application/pdf",
+      "Content-Disposition": 'attachment; filename="claim-record.pdf"',
+      "Referrer-Policy": "no-referrer",
+    });
   });
 
   routes.put("/api/claims-portal/:slug/:token/submission", async (c) => {
@@ -157,6 +177,8 @@ export function createClaimsPortalRoutes(
       workspaceDb,
       rosterId: session.rosterId,
       body: typeof body.body === "string" ? body.body : "",
+      requestId: body.requestId,
+      attachmentIds: body.attachmentIds,
     });
     return c.json({ ok: true, supplement });
   });
@@ -246,6 +268,7 @@ export function createClaimsPortalRoutes(
       rosterId,
       createdBy: c.var.user.subject,
     });
+    c.header("Cache-Control", "no-store");
     return c.json({
       ok: true,
       tokenPlaintext: minted.tokenPlaintext,
@@ -253,6 +276,31 @@ export function createClaimsPortalRoutes(
       portalPath: minted.portalPath,
       status: minted.status,
     });
+  });
+
+  routes.post("/api/workspaces/:slug/claims-portal/tokens:batch", requireUser(), async (c) => {
+    const slug = c.req.param("slug");
+    const workspaceDb = await service.resolveWorkspaceDb(slug);
+    assertAdminScope(c.var.user, workspaceDb);
+    const body = readJsonBody(await c.req.json().catch(() => null));
+    const caller = URL.parse(c.req.header("origin") ?? "");
+    const origin = caller && ["http:", "https:"].includes(caller.protocol) ? caller.origin : new URL(c.req.url).origin;
+    const issued = await service.mintTokenBatch({
+      workspaceDb, slug, rosterIds: body.rosterIds, createdBy: c.var.user.subject,
+    });
+    const lines = issued.map((row) => [row.name, row.identityCode, `${origin}${row.portalPath}`].map(claimCsvCell).join(","));
+    return c.body(`\uFEFF名称,识别码,链接\r\n${lines.join("\r\n")}\r\n`, 200, {
+      "Cache-Control": "no-store",
+      "Content-Type": "text/csv; charset=utf-8",
+      "Content-Disposition": 'attachment; filename="claims-portal-links.csv"',
+    });
+  });
+
+  routes.delete("/api/workspaces/:slug/claims-portal/tokens/:tokenId", requireUser(), async (c) => {
+    const workspaceDb = await service.resolveWorkspaceDb(c.req.param("slug"));
+    assertAdminScope(c.var.user, workspaceDb);
+    await service.revokeToken({ workspaceDb, tokenId: c.req.param("tokenId"), actor: c.var.user.subject });
+    return c.json({ ok: true });
   });
 
   routes.get("/api/workspaces/:slug/claims-portal/tokens", requireUser(), async (c) => {

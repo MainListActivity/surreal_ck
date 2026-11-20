@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { QueryError } from "surrealdb";
 import { HttpError } from "../http-error";
 import { hashToken } from "./crypto";
 import {
@@ -33,32 +34,22 @@ function createMemoryDb(store: Store): ClaimsQueryable {
         return [[]];
       }
 
-      if (sql.includes("UPDATE claim_access_token SET status = \"revoked\"")) {
-        for (const token of store.tokens) {
-          if (String(token.roster_id) === String(vars.roster) && token.status === "active") {
-            token.status = "revoked";
-          }
-        }
-        return [[]];
+      if (sql.includes("FROM creditor_roster WHERE id INSIDE")) {
+        return [[store.roster].filter((row) => (vars.rosterIds as unknown[]).map(String).includes(row.id))];
       }
 
-      if (sql.includes("CREATE claim_access_token CONTENT")) {
-        store.seq += 1;
-        const row = {
-          id: `claim_access_token:t${store.seq}`,
-          roster_id: String(vars.roster),
-          token_hash: vars.tokenHash,
-          status: "active",
-          opened_at: null,
-          last_attempt_at: null,
-          failure_count: 0,
-          locked_until: null,
-          created_by: vars.createdBy,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        };
-        store.tokens.push(row);
-        return [[row]];
+      if (sql.includes("CREATE $entry.token")) {
+        for (const entry of vars.entries as { roster: unknown; token: unknown; hash: string }[]) {
+          for (const old of store.tokens) {
+            if (old.roster_id === String(entry.roster) && old.status === "active") old.status = "revoked";
+          }
+          store.tokens.push({
+            id: String(entry.token), roster_id: String(entry.roster), token_hash: entry.hash,
+            status: "active", opened_at: null, last_attempt_at: null, failure_count: 0, locked_until: null,
+            created_by: vars.createdBy, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+          });
+        }
+        return [[]];
       }
 
       if (sql.includes("FROM claim_access_token ORDER BY")) {
@@ -183,6 +174,7 @@ function createMemoryDb(store: Store): ClaimsQueryable {
         return [[token].filter(Boolean)];
       }
 
+      if (sql.includes("FROM claim_progress_event") || sql.includes("FROM claim_decision")) return [[]];
       if (sql.includes("FROM claim_supplement WHERE submission_id")) {
         const rows = store.supplements
           .filter((item) => String(item.submission_id) === String(vars.submission))
@@ -278,6 +270,26 @@ function makeService(options?: {
 }
 
 describe("ClaimsPortalService", () => {
+  test("签发和作废遇到结构化事务冲突返回可重试的中文 409", async () => {
+    const { service, db, store } = makeService();
+    const query = db.query;
+    db.query = (sql, vars) => {
+      if (sql.includes("BEGIN TRANSACTION")) {
+        return Promise.reject(new QueryError({
+          code: -32000, message: "Conflict with another transaction", details: { kind: "TransactionConflict" },
+        }));
+      }
+      return query(sql, vars);
+    };
+    const conflict = { status: 409, code: "claims-token-conflict", message: "链接已被其他操作更改，请刷新后重试" };
+    await expect(service.mintToken({
+      workspaceDb: "ws_case_a", slug: "case-a", rosterId: store.roster.id, createdBy: "admin",
+    })).rejects.toMatchObject(conflict);
+    await expect(service.revokeToken({
+      workspaceDb: "ws_case_a", tokenId: "claim_access_token:t1", actor: "admin",
+    })).rejects.toMatchObject(conflict);
+  });
+
   test("无 pepper → mint/open 501 claims-portal-not-configured", async () => {
     const { service } = makeService({ pepper: null });
     await expect(
@@ -349,9 +361,11 @@ describe("ClaimsPortalService", () => {
       bytes,
     });
     expect(uploaded.id).toBeTruthy();
-    expect(String(uploaded.storageKey)).toMatch(/^claims\/ws_case_a\/.+\/.+\/合同\.pdf$/);
-    expect(memoryStorage.objects.has(String(uploaded.storageKey))).toBe(true);
+    expect(uploaded).not.toHaveProperty("storageKey");
     expect(store.attachments).toHaveLength(1);
+    const storedKey = String(store.attachments[0]?.storage_key);
+    expect(storedKey).toMatch(/^claims\/ws_case_a\/.+\/.+\/合同\.pdf$/);
+    expect(memoryStorage.objects.has(storedKey)).toBe(true);
 
     const downloaded = await service.managerDownload({
       workspaceDb: "ws_case_a",
@@ -381,6 +395,23 @@ describe("ClaimsPortalService", () => {
         byteSize: 10,
       }),
     ).rejects.toMatchObject({ status: 400, code: "attachment-bytes-required" });
+  });
+
+  test("已确认申报不能再上传附件，即使旧状态仍为 submitted", async () => {
+    const { service, store, memoryStorage } = makeService({ attachmentConfigured: true });
+    store.submissions.push({
+      id: "claim_submission:s1", roster_id: store.roster.id, status: "submitted", portal_stage: "final",
+    });
+    const input = {
+      workspaceDb: "ws_case_a", rosterId: store.roster.id, attachmentType: "contract",
+      fileName: "合同.pdf", contentType: "application/pdf", byteSize: 10,
+    };
+    await expect(service.uploadBytes({ ...input, bytes: new Uint8Array(10) }))
+      .rejects.toMatchObject({ status: 409, code: "claims-submission-locked" });
+    await expect(service.registerAttachmentMetadata(input))
+      .rejects.toMatchObject({ status: 409, code: "claims-submission-locked" });
+    expect(memoryStorage.objects.size).toBe(0);
+    expect(store.attachments).toHaveLength(0);
   });
 
   test("mint 明文只返回一次；list 不含明文/hash", async () => {

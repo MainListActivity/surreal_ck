@@ -1,0 +1,13 @@
+3.3.0-native-quota.1+sha.f30704bce914 for linux on x86_64
+source/shared/sql/workspace-template/061-member-identity-guard.surql: OK
+
+bun test v1.3.12 (700fc117)
+
+source/server/src/db/member-identity-guard.integration.test.ts:
+(pass) 061 member identity defensive regression > 自身身份字段拒绝，展示更新保留，停用后旧会话及重新认证拒绝 [838.73ms]
+(pass) 061 member identity defensive regression > JWT Owner、控制面及PM自有analyst创建激活保持正常 [863.12ms]
+
+ 2 pass
+ 0 fail
+ 32 expect() calls
+Ran 2 tests across 1 file. [1.80s]

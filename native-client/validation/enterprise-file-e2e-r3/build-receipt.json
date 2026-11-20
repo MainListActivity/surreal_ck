@@ -1,0 +1,11 @@
+{
+  "binary": "/workspace/scratch/115bfa675150/native-client-probe/surreal_ck/native-client/target/debug/deps/surreal_ck_enterprise_file_e2e_r3-ba66a0eb6749ea31",
+  "binary_sha256": "e318ffe80d7a81215b4792aa6469eaead2d074008ab880a4368fb8672bc9c756",
+  "binary_bytes": 43657712,
+  "source_receipt_sha256": "0a9ae6237b4f30f4cdbc7be54accc3154fd9893c03c419f8a78c95e5828f83bf",
+  "cargo_lock_sha256": "17cd3183ee8e5aef7ce82b90cacf591d0836bf469871c8ece9a09a71f0b378d7",
+  "build_exit": "0",
+  "scope": "compiled only; actual OS UDP tests pending",
+  "pre_verification": "源码摘要一致：114个文件；不是编译/行为测试结果。\n",
+  "post_verification": "源码摘要一致：114个文件；不是编译/行为测试结果。\n"
+}

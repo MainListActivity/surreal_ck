@@ -1,0 +1,90 @@
+[
+  {
+    "event": "source_verification",
+    "sources": 56,
+    "all_match": true,
+    "binary_matches_receipt": true
+  },
+  {
+    "event": "launch",
+    "window_id": 39845892,
+    "size": [
+      1180,
+      812
+    ],
+    "observed": "尚未配置可信更新服务，暂不能打开应用。"
+  },
+  {
+    "event": "resize_attempt",
+    "result": "not_applied_to_client",
+    "reason": "shared desktop focus race; paused awaiting exclusive desktop window",
+    "client_size": [
+      1180,
+      812
+    ],
+    "browser_resized": true,
+    "browser_not_navigated_or_closed": true
+  },
+  {
+    "event": "desktop_released",
+    "condition": "authentication worker confirmed no active input"
+  },
+  {
+    "event": "small_window",
+    "size": [
+      251,
+      210
+    ],
+    "screenshot": "03-small-top.png",
+    "observed": "brand/title readable; content can extend below viewport"
+  },
+  {
+    "event": "scroll_down",
+    "screenshot": "04-small-bottom.png",
+    "observed": "retry button and full lock notice visible"
+  },
+  {
+    "event": "retry_clicked",
+    "screenshot": "05-after-retry.png",
+    "observed": "remains locked with missing trusted configuration",
+    "limitation": "Screenshot does not independently prove retry thread executed; AX marks button disabled despite visible yellow button. No transient state captured."
+  },
+  {
+    "event": "scroll_up",
+    "screenshot": "06-small-top-return.png",
+    "observed": "brand/title visible again"
+  },
+  {
+    "event": "restore_large",
+    "size": [
+      1179,
+      810
+    ],
+    "screenshot": "07-restored-large.png",
+    "observed": "gate centered"
+  },
+  {
+    "event": "close",
+    "window_disappeared": true,
+    "exit_code": 0,
+    "stderr_stdout_bytes": 0
+  },
+  {
+    "event": "final_source_recheck",
+    "head": "a170aa6a4f00cd89e24731b7734b508b381a77d6",
+    "sources": 56,
+    "mismatches": []
+  },
+  {
+    "event": "desktop_released_after_test",
+    "browser_restored_approximately": [
+      1190,
+      874
+    ],
+    "browser_original": [
+      1212,
+      886
+    ],
+    "browser_not_navigated_or_closed": true
+  }
+]

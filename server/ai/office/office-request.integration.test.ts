@@ -708,6 +708,7 @@ test("VO03 续跑关联守卫：其他请求、其他 assignee 和取消终态�
       status,
       result: { waiting_on: caseName === "other-assignee" ? notificationId : "user_notification:different" },
     }).collect();
+    await stack.triggerRuntime.reconcile({ database: fixture.database, employeeId: pmId });
     const pm = await stack.employeeRuntime.openSession(fixture.database, pmId);
     try {
       await createOfficeRequest(pm, {

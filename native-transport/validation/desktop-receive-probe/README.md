@@ -1,0 +1,95 @@
+# 桌面安全接收原生验证
+
+此独立小crate只编译候选后端，不构建WebRTC或整个客户端。生产`transfer::receive_supported()`仍只允许Linux/Android；这里通过编译不能恢复macOS/Windows接收，必须先通过下面的原生门槛。
+
+## 稳定命令
+
+在真实macOS或Windows runner的仓库根目录运行：
+
+```sh
+cargo check --locked --manifest-path native-transport/validation/desktop-receive-probe/Cargo.toml --tests
+cargo test --locked --manifest-path native-transport/validation/desktop-receive-probe/Cargo.toml
+cargo clippy --locked --manifest-path native-transport/validation/desktop-receive-probe/Cargo.toml --tests -- -D warnings
+```
+
+Windows还必须在**原本就具有符号链接创建能力**的runner执行：
+
+```sh
+cargo test --locked --manifest-path native-transport/validation/desktop-receive-probe/Cargo.toml -- --ignored
+```
+
+不能为了跑测试提权、修改系统安全设置或开启Developer Mode。没有这项能力时，三项symlink/reparse测试未验收，不得把其余测试通过当作完整安全接收支持。默认执行的junction测试还有真实FSCTL正控制；正控制失败必须报错，不得当作攻击被成功阻止。
+
+现有Linux开发环境仅做以下实际目标的metadata检查，不链接、不模拟原生API；`CARGO_TARGET_DIR`固定复用`native-client/target`，`CARGO_PROFILE_DEV_DEBUG=0`，使用`--offline`且不下载依赖：
+
+```sh
+cargo check --offline --locked --manifest-path native-transport/validation/desktop-receive-probe/Cargo.toml --target aarch64-apple-darwin --tests
+cargo check --offline --locked --manifest-path native-transport/validation/desktop-receive-probe/Cargo.toml --target x86_64-pc-windows-gnu --tests
+```
+
+## macOS候选边界
+
+- 只接受本地APFS，不尝试网络卷、FUSE、外部提供商或不支持的文件系统。逐层`openat(O_DIRECTORY|O_NOFOLLOW)`固定目标，不跟随用户路径里的符号链接。目录必须有读取权限；路径如`/tmp`、`/var`的符号链接别名不自动归一化，用户需选择真实路径。
+- 在目标内创建/打开固定名称`.surreal-ck-receive`，对实际FD验证所有者为当前有效UID、其他用户无mode权限、无扩展ACL。使用`fstatx_np`和`filesec_query_property(FILESEC_ACL)`，不是将`acl_get_fd_np`的任意NULL/ENOENT当成无ACL。
+- 根内每次创建独有0700子目录与0600文件。在数据到来前验证权限。拒绝继承ACL，不修改用户已有目录的权限。源目录项只有当前UID可以修改，所以从固定子dirfd以`renameatx_np(..., RENAME_EXCL)`发布不会被另一个本地用户换源。不同于Linux的直接inode链接，这不是对同UID文件修改者的隔离。
+- 取消、失败和正常发布后，仅从固定私有dirfd删除payload和空子目录。不从用户目标目录按顶层staging名称清理；因此正常运行也保留空staging根。攻击者移动根后可以留下多个空根。进程崩溃或无法再证明私有权限时可能遗留临时数据，不递归清理不可信路径。
+- 用户目标父路径移动/替换后报错，固定FD不会转向替换目录。若恰在发布后移动，已校验文件可能留在原目录；不按旧路径删除它。`RENAME_EXCL`失败不降级普通rename/copy。
+
+Apple官方资料：[open/openat](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/man/man2/open.2)、[renameatx_np与RENAME_EXCL](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/man/man2/rename.2)、[filesec接口声明](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/fcntl.h)、[fstatx_np声明](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/stat.h)、[fstatx的ACL属性填充](https://github.com/apple-oss-distributions/Libc/blob/main/sys/statx_np.c)。本模块自行声明缓存libc未导出的公开filesec API，需要ARM与Intel原生链接验证。
+
+## Windows候选边界
+
+- 仅本地固定盘NTFS，固定卷根和逐级目录HANDLE；严格单文件名路径，不接受UNC、设备路径、ADS或已有reparse层。
+- 临时文件创建时设置当前用户SID专用protected DACL，不继承父目录ACL；独占打开并保持同一文件对象的清理HANDLE。
+- 仅使用`NtSetInformationFile(FileRenameInformation)`从已校验文件HANDLE发布，`RootDirectory`固定目标目录，`ReplaceIfExists=FALSE`。不用`MoveFile`、路径`CreateHardLink`或检查后按路径重开源。
+- 正常取消只对源HANDLE设置`FileDispositionInfo`，不按临时文件名删除。成功后关闭清理guard，不能误删最终文件。进程崩溃时尚不保证回收命名临时文件。
+- 创建阶段并持两套已核对同身份的目录HANDLE，严格套不分享WRITE/DELETE，另一套允许WRITE但同样拒DELETE。独占staging创建后，祖先每层包含不可删除的下一层，最终目录包含不可删除的staging，此时才释放严格套，让rename内部打开不会被自身WRITE分享限制挡住。
+- NTFS非空目录不能新建改变路径解析的name-surrogate junction/symlink，这是交接后的保护依据，不能泛称所有reparse tag或其他文件系统。已有Cloud Filter等tag也拒绝。实际FSCTL测试先在空目录成功设置同一种tag作为正控制，再对接收期间的祖先和最终目录要求ERROR_DIR_NOT_EMPTY，最后必须成功发布。symlink FSCTL测试需要runner原有权限。
+- 双套句柄交接、rename内部打开及运行期reparse转换尚未原生执行。没有native通过记录之前，本候选不是可启用的平台支持。
+
+Microsoft官方资料：[NtCreateFile的RootDirectory和创建选项](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntcreatefile)、[FILE_RENAME_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_rename_info)、[重命名所需访问与目标内部打开](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information)、[NTFS reparse点限制](https://learn.microsoft.com/en-us/windows/win32/fileio/reparse-points)。
+
+## 不能省略的原生验收
+
+1. macOS ARM和Intel、本地APFS；Windows MSVC、本地NTFS。日志记录OS/文件系统/架构/精确commit，所有普通测试与具备权限时的ignored测试均执行，不能只编译或过滤掉失败项。
+2. 创建、校验、同步、发布后文件身份与原已打开文件一致，目标已有和临时出现的普通文件、目录、symlink/reparse均不覆盖；空文件和Unicode名称正确。
+3. 攻击者移动/替换各祖先及staging根，结果只能安全失败或发布到原固定目录；不得转向替换目录，不得清理无关文件。Windows还需反复尝试运行期将目录转为reparse。
+4. macOS继承扩展ACL即使mode显示0700也必须拒绝；Windows必须验证新文件DACL已protected且只允许当前用户SID。使用预先准备的**另一个普通本地账号**尝试读/写/改名staging内容，验证确实被OS拒绝；此仓库不创建账号、凭据或改变机器安全策略。
+5. 取消、hash失败、连接关闭、写入/flush/sync失败必须没有COMPLETE；现有Linux传输层协议测试不替代两平台原生集成测试。加入实际权限拒绝、磁盘满和进程中断，分别确认安全性与已披露残留范围。
+6. 未列出的文件系统明确fail-closed。相同OS账户能控制本进程或读写其私有对象、管理员/内核攻击不在隔离承诺内；不承诺发布后本地目录写入者永远不能删除或改名文件，也不承诺掉电后目录项持久化。
+
+只有原生后端测试和真实transport接收/最终ACK集成均通过后，另行审查并启用生产平台分支。不能仅以本harness的交叉检查或CI配置存在宣称macOS/Windows接收已恢复。
+
+## 2026-11-10复核记录（不构成原生验收）
+
+- Linux云环境中，使用缓存依赖和已安装target，`aarch64-apple-darwin`、`x86_64-pc-windows-gnu`的`check --tests`与`clippy --tests -- -D warnings`通过；候选harness格式检查通过。没有链接、没有运行任何Apple/Windows测试。
+- `x86_64-apple-darwin`缺少target，检查报E0463；未安装新target或下载SDK/MinGW。Windows MSVC未检查。交叉metadata检查不验证Darwin符号、APFS ACL或NTFS句柄行为。
+- 新增原生测试定义：macOS额外硬链接拒绝、准备后私有权限改变时拒绝发布且保留staging；Windows已有目录写句柄阻止准备、late目录保留、固定父HANDLE发布空Unicode文件。它们仅通过目标编译，尚未执行。
+- Microsoft当前`FILE_RENAME_INFO`文档明确允许相对`FileName`搭配目录`RootDirectory`；源码使用的是这一组合。仍需原生测试验证分享模式交接及内部打开，不能把结构字段可编译当作API成功的证据。
+- 复核未改变生产分支或支持开关；候选仍冻结在独立harness范围。macOS私有staging只隔离其他UID，不将文件FD身份检查误称为阻止同UID替换payload名称的机制；权限/ACL改变后无法证明私有性时故意不清理。
+
+## 发布事实回归与 runner 开关
+
+候选后端已对齐生产层 `publish_tracked(file, &mut published)` 契约：原子提交成功后立即记录发布事实，再执行后置核验。macOS 新增真实 `RENAME_EXCL` 后移动父目录的确定性测试，必须返回错误、保留 `published=true` 与原目录内文件，并保留替换目录的无关文件。Windows 同样在句柄重命名成功后、任何后置检查之前记录事实。生产平台开关保持关闭。
+
+现有独立 workflow 可在 `macos-15`、`macos-15-intel`、`windows-2022` 执行默认原生负例。对于已经具备 symlink 权限的 Windows runner，可显式设置 `DESKTOP_RECEIVE_SYMLINK_TESTS=1` 后运行 `scripts/native-client/check-desktop-receive.sh x86_64-pc-windows-msvc`，额外执行全部 ignored 测试。权限不足即失败，不自动跳过、不提权。脚本记录 HEAD、目标和 dirty 状态；CI 必须保存完整日志，不能把 dirty 源码执行记录当作 clean commit 的证据。该开关未加入默认 workflow，默认仍保留既有缺口。此脚本不覆盖跨用户隔离、完整传输/ACK、实际满盘与崩溃验收。
+
+## 2026-11-11 Windows 原生发布失败修复（待复跑）
+
+[Windows Server 2022 原生 job](https://github.com/MainListActivity/surreal_ck/actions/runs/42963540816/job/130335406878) 在 `079aed6` 上实际运行：默认8通过、3发布失败、3ignored；三个发布成功路径均返回 Win32 参数错误87，ignored套件未进入。此次将发布改为与 `NtCreateFile` 配套的 `NtSetInformationFile(FileRenameInformation)`，按其原生结构契约使用固定父HANDLE和单组件UTF-16名，缓冲区长度包含完整结构和名称，仍 `ReplaceIfExists=FALSE`。失败保留 NTSTATUS 与对应 Win32 错误，不使用路径fallback。新增长度为一个字符的实际发布回归，late普通目标测试必须得到名称碰撞状态，防止参数错误使负例假通过。这是待原生复跑的修复，不能把交叉检查当作Windows通过记录。
+
+## 完整 Transfer 原生验证（测试专用，生产仍关闭）
+
+`native-transport`仅在`cfg(test)`且目标为macOS/Windows时将候选Destination接入真实Transfer；普通library、应用依赖与集成测试链接的library仍使用拒绝接收stub，`receive_supported()`不变，没有可被打包误开的feature。Windows API依赖仅为target dev-dependency。独立desktop-receive workflow在真实ARM/Intel Mac、Windows MSVC上额外执行：
+
+```sh
+cargo test --locked --manifest-path native-transport/Cargo.toml --lib transfer:: -- --nocapture
+cargo test --locked --manifest-path native-transport/Cargo.toml --test receive_production_gate -- --nocapture
+cargo clippy --locked --manifest-path native-transport/Cargo.toml --all-targets -- -D warnings
+```
+
+Transfer测试使用真实WebRTC ICE/DTLS/SCTP及事件/取消状态机，网络仅为进程内虚拟路由；磁盘使用真实候选API。覆盖明确批准前不接收数据、最终保存ACK、hash损坏、分块乱序/重复、取消、发布准入与取消竞争、已有/late目标冲突、空文件、连接关闭。集成测试另行链接非`cfg(test)`library并验证生产能力仍关闭。
+
+进程中断测试会启动同一测试binary的精确子用例，等真实首块接收后或真实保存成功但最终ACK未交付时由父进程终止子进程。然后核实未完成目标不存在/已保存文件仍在、无关文件不变、新Transfer会话可在原目录成功保存。Linux匿名staging应消失；macOS/Windows在partial阶段应留下一个命名staging payload，后续会话不能复用或清理它。这个子用例默认ignored是因为它必须由父测试提供独占夹具启动，不是省略验收；父用例必须成功且日志记录两个阶段。只清理本次测试独占的临时目录，不引入生产自动回收。
+
+这些测试不等于断电/内核崩溃恢复、不提供跨进程传输receipt恢复，也不实现自动orphan清理。另一个现成普通账号对staging的真实访问攻击、隔离文件系统上的真实磁盘满/配额耗尽仍需单独验收。不能创建账号、提权、更改安全设置或填满共享runner磁盘来冒充完成。上述Windows/Mac新增完整Transfer测试在原生CI成功前只算测试定义，不能用Linux回归或交叉检查代替。

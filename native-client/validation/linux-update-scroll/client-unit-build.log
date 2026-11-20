@@ -1,0 +1,19 @@
+error[E0432]: unresolved import `nsh_engine`
+   --> /workspace/scratch/115bfa675150/linux-gui-runtime/native-client/src/file_ui.rs:380:9
+    |
+380 |     use nsh_engine::{EngineConfig, Root};
+    |         ^^^^^^^^^^ use of unresolved module or unlinked crate `nsh_engine`
+    |
+    = help: you might be missing a crate named `nsh_engine`
+
+error[E0432]: unresolved import `nsh_testing`
+   --> /workspace/scratch/115bfa675150/linux-gui-runtime/native-client/src/file_ui.rs:381:9
+    |
+381 |     use nsh_testing::Headless;
+    |         ^^^^^^^^^^^ use of unresolved module or unlinked crate `nsh_testing`
+    |
+    = help: you might be missing a crate named `nsh_testing`
+
+error: aborting due to 2 previous errors
+
+For more information about this error, try `rustc --explain E0432`.

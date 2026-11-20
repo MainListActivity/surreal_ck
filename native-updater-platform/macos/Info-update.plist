@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<!-- 合并到宿主Info.plist；SUFeedURL和SUPublicEDKey必须由已授权发布配置提供。 -->
+<key>SUEnableAutomaticChecks</key><false/>
+<key>SUAutomaticallyUpdate</key><false/>
+<key>SUAllowsAutomaticUpdates</key><true/>
+<key>SUSendProfileInfo</key><false/>
+<key>SUVerifyUpdateBeforeExtraction</key><true/>
+<key>SUAllowedURLSchemes</key><array><string>https</string></array>
+</dict></plist>

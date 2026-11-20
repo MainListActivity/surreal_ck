@@ -84,6 +84,11 @@ class RewriteTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 fence.secure(link)
 
+    def test_root_group_read_only_path_is_already_trusted(self):
+        path = unittest.mock.Mock()
+        path.lstat.return_value = type('FileInfo', (), {'st_uid': 0, 'st_gid': 1000, 'st_mode': 0o100640})()
+        self.assertIs(fence.secure(path), path.lstat.return_value)
+
     def test_alternatives_binary_keeps_iptables_argv_zero(self):
         with patch.object(fence, "executable", return_value="/fixture/xtables-nft-multi"), \
                 patch.object(fence.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run:

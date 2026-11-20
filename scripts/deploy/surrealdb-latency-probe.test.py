@@ -126,6 +126,11 @@ class ProbeTests(unittest.TestCase):
             self.assertEqual(probe.indexed_lookup('data', info, execute.rows), (None, {}))
 
     def test_metadata_cannot_inject_statements(self):
+        name = '953lb2sli64ha56neo25'
+        self.assertEqual(probe.identifier(name), '`' + name + '`')
+        execute = FakeExecutor()
+        execute.databases['main'].append(name)
+        self.assertTrue(probe.sample(execute, workspace_limit=0, repetitions=1)['complete'])
         for value in ['foo`; DELETE data;', 'a.b', 'a\nb']:
             with self.assertRaises(probe.ProbeError):
                 probe.identifier(value)
@@ -208,9 +213,10 @@ class ProbeTests(unittest.TestCase):
             path = Path(directory) / 'credentials'
             path.write_text('SURREAL_USER=root\nSURREAL_PASS="private password"\n')
             with patch.object(probe, 'ENV_FILE', path), patch.object(probe.os, 'geteuid', return_value=0), patch.object(probe.os, 'fstat') as fstat:
-                fstat.return_value = SimpleNamespace(st_uid=0, st_mode=stat.S_IFREG | 0o600)
-                self.assertEqual(probe.credentials(), ('root', 'private password'))
-                for uid, mode in [(1000, 0o600), (0, 0o640), (0, 0o622)]:
+                for mode in (0o600, 0o640):
+                    fstat.return_value = SimpleNamespace(st_uid=0, st_gid=1000, st_mode=stat.S_IFREG | mode)
+                    self.assertEqual(probe.credentials(), ('root', 'private password'))
+                for uid, mode in [(1000, 0o640), (0, 0o660), (0, 0o622), (0, 0o644), (0, 0o641), (0, 0o650)]:
                     fstat.return_value = SimpleNamespace(st_uid=uid, st_mode=stat.S_IFREG | mode)
                     with self.assertRaises(probe.ProbeError):
                         probe.credentials()

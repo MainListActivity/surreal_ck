@@ -167,14 +167,14 @@ def request(url, data=None, headers=None):
         return json.load(response)
 
 
-def trusted_file(path):
+def trusted_file(path, forbidden=0o022):
     info = path.stat()
-    if info.st_uid != 0 or info.st_mode & 0o022 or path.is_symlink():
+    if info.st_uid != 0 or info.st_mode & forbidden or path.is_symlink():
         raise RuntimeError("host configuration and maintenance hooks must be root-owned and not group/world writable")
 
 
 def host_env(path):
-    trusted_file(path)
+    trusted_file(path, forbidden=0o037)
     values = {}
     for line in path.read_text().splitlines():
         if not line.strip() or line.lstrip().startswith("#"):
@@ -213,7 +213,7 @@ def sql(endpoint, auth, query, namespace=None, database=None):
 
 
 def identifier(name):
-    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+    if not re.fullmatch(r"[A-Za-z0-9_]+", name):
         raise RuntimeError("unsupported namespace/database/table identifier; operator review required")
     return "`" + name + "`"
 

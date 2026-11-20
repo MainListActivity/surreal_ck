@@ -1,0 +1,77 @@
+bun test v1.3.12 (700fc117)
+
+source/server/src/db/member-identity-guard.integration.test.ts:
+(pass) 061 member identity defensive regression > 首次 participant 认证创建合法成员 [902.75ms]
+(pass) 061 member identity defensive regression > 首次 admin 认证创建合法管理员 [865.20ms]
+(pass) 061 member identity defensive regression > 自身身份字段拒绝，展示更新保留，停用后旧会话及重新认证拒绝 [858.61ms]
+(pass) 061 member identity defensive regression > JWT Owner、控制面及PM自有analyst创建激活保持正常 [781.80ms]
+
+source/shared/sql/workspace-template/index.test.ts:
+(pass) workspace template scripts > 自动发现合法编号的 SurQL 增量并严格按版本加载 [1.93ms]
+(pass) workspace template scripts > 重复迁移版本会在加载任何脚本前给出明确错误 [0.55ms]
+(pass) workspace template scripts > 迁移版本断档会在加载任何脚本前指出缺失版本 [0.41ms]
+(pass) workspace template scripts > 非法 SurQL 文件名会在加载任何脚本前给出明确错误 [0.36ms]
+(pass) workspace template scripts > 模板包 schema 增量保留旧 column_defs，并新增可容纳稳定表 key、名称、字段与列别名的 sheet_defs [0.90ms]
+(pass) workspace template scripts > 跨数据表引用增量为模板字段声明受约束的目标数据表 key [0.70ms]
+(pass) workspace template scripts > 模板样例数据增量约束稳定记录 key，并允许每条记录携带字段值 [0.71ms]
+(pass) workspace template scripts > 默认仪表盘增量把结构化页面声明加入 workbook_template [0.76ms]
+(pass) workspace template scripts > 模板检查规则增量保存版本化受限声明并扩展体检问题分类 [0.66ms]
+(pass) workspace template scripts > 问题修正增量定义处理状态和只追加幂等审计事件 [0.53ms]
+(pass) workspace template scripts > 真人派单增量支持多问题、活动指针、复核权限和幂等事件 [0.66ms]
+(pass) workspace template scripts > 业务记录更新证据迁移由运行时安全展开动态表事件 [0.63ms]
+(pass) workspace template scripts > 模板快捷任务增量保存任务声明，并让实例化数据表保留稳定模板 key [0.42ms]
+(pass) workspace template scripts > 默认目录的迁移版本由实际最高脚本推导，无需维护 TypeScript 清单 [0.87ms]
+(pass) workspace template scripts > 通用 workspace schema 不包含垂直模板数据播种 [0.62ms]
+(pass) workspace template scripts > OIP-18 风险提醒 schema 以每日运行和提醒唯一索引保证幂等，并仅允许 employee 创建 [0.72ms]
+(pass) workspace template scripts > 资源配额增量定义三个递增套餐、工作区绑定和数据表级计量闸门 [0.51ms]
+(pass) workspace template scripts > deferred cleanup migration is a harmless runtime-materialization marker [0.50ms]
+(pass) workspace template scripts > 运营导入批次增量保存可恢复状态、逐表结果和幂等逐行回执 [0.49ms]
+(pass) workspace template scripts > 导入撤销增量保留目标版本戳、终态与不可删除的审计回执 [0.46ms]
+(pass) workspace template scripts > 数据体检增量持久运行范围、终态和跨重扫稳定问题身份 [0.52ms]
+(pass) workspace template scripts > workbook_template：类型由业务数据定义——底层不枚举行业类型，仅管理员可增改删，workbook 引用为可选 record [0.60ms]
+(pass) workspace template scripts > fn::current_user：JWT 会话($auth NONE)按 $token.sub 反查，RECORD 会话直接返回 $auth，函数对所有会话可调用 [0.54ms]
+(pass) workspace template scripts > grid 业务表归属 workspace database：无 workspace 字段，PERMISSIONS 只表达本 workspace 角色 [1.25ms]
+(pass) workspace template scripts > workflow_run 表归属 workspace database：无 workspace 字段，owner_user 默认归因到当前会话 [0.78ms]
+(pass) workspace template scripts > workflow_run 权限归属走 fn::current_user()：admin JWT 会话（$auth NONE）也能落 run 行 [0.65ms]
+(pass) workspace template scripts > Mastra runtime storage schema covers workflow statuses, memory, and observability tables [0.61ms]
+(pass) workspace template scripts > resource 库表归属 workspace database：四张表齐全、无 workspace 字段、归因 DEFAULT $auth [0.74ms]
+(pass) workspace template scripts > resource_embedding 保留 (resource, profile_key) 唯一索引与 status 枚举；profile 仅管理员可写 [0.60ms]
+(pass) workspace template scripts > 资源库身份修复兼容 JWT admin 与 RECORD 会话 [0.50ms]
+(pass) workspace template scripts > activity_event 表归属 workspace database：归因 fn::current_user()、verb 枚举、静态表挂 event [0.55ms]
+(pass) workspace template scripts > 通知终态增量把结构化 answer 纳入与 resolution 同一守卫事件 [0.48ms]
+(pass) workspace template scripts > VER03 持久化触发表以幂等键唯一索引收敛重复投递，且只允许 employee 自写 [0.53ms]
+(pass) workspace template scripts > 044 通知 purpose 默认桶通用化：DEFAULT info、枚举不变、READONLY 保留 [0.48ms]
+(pass) workspace template scripts > VER05 用量账本按 (employee, day) 唯一、计量来源分列且含 signal CAS 位 [0.57ms]
+522 |   test("keeps JWT access placeholders by default and can render them for backend execution", async () => {
+523 |     const rawScripts = await loadTemplateScripts();
+524 |     const rawSql = rawScripts.map((script) => script.sql).join("\n");
+525 | 
+526 |     // 001 两处 + 007 两处（admin / participant 各一）
+527 |     expect(rawSql.match(/<__OIDC_JWKS_URL__>/g)?.length).toBe(4);
+                                                               ^
+error: expect(received).toBe(expected)
+
+Expected: 4
+Received: 6
+
+      at <anonymous> (/workspace/scratch/115bfa675150/fork-runtime-probe/source/shared/sql/workspace-template/index.test.ts:527:58)
+(fail) workspace template scripts > keeps JWT access placeholders by default and can render them for backend execution [0.98ms]
+(pass) workspace template scripts > LCA14 返工：049 增量为 resource_item.evidence 补 FLEXIBLE 子定义并修复既有隐式子字段 [0.73ms]
+(pass) workspace template scripts > 11.1：050 只新增 creditor_roster / enterprise_ledger 结构 [0.62ms]
+(pass) workspace template scripts > 11.1：051 只新增 claim_access_token / claim_submission / claim_attachment 结构 [0.66ms]
+(pass) workspace template scripts > 11.1：052 为 claim_submission.rate_segments 补 FLEXIBLE 子定义 [0.59ms]
+(pass) workspace template scripts > 11.1：053 只新增 interest_calculation 追加式快照表 [0.65ms]
+(pass) workspace template scripts > 11.1：054 为 interest_calculation.segments 补 FLEXIBLE 子定义 [0.54ms]
+(pass) workspace template scripts > 11.1：055 新增 reconciliation_finding 与 claim_supplement [0.61ms]
+(pass) workspace template scripts > a1e2791c/ad5d63f0：059 funnel_event 追加式漏斗事件——去 subject、触发点幂等、无内容字段 [0.87ms]
+(pass) workspace template scripts > 返工 R4：060 收紧 funnel_event 写入、first_login 只计真实绑定、ai_proposal_adopted 只计首次确认 [0.73ms]
+(pass) workspace template scripts > PG-1：057 为 chat_delivery 增 run_diagnostic FLEXIBLE 字段（纯增量） [0.51ms]
+(pass) workspace template scripts > PG-1：058 建 chat_write_fence 提案写栅栏表（纯新增结构） [0.63ms]
+
+1 tests failed:
+(fail) workspace template scripts > keeps JWT access placeholders by default and can render them for backend execution [0.98ms]
+
+ 50 pass
+ 1 fail
+ 338 expect() calls
+Ran 51 tests across 2 files. [3.54s]

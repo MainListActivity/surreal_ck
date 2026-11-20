@@ -17,7 +17,7 @@ import time
 
 
 ENV_FILE = Path('/etc/surrealdb/surrealdb.env')
-IDENTIFIER = r'[A-Za-z_][A-Za-z0-9_]*'
+IDENTIFIER = r'[A-Za-z0-9_]+'
 METRICS = ('p50', 'p95', 'max')
 
 
@@ -37,7 +37,7 @@ def credentials():
     fd = os.open(ENV_FILE, os.O_RDONLY | os.O_NOFOLLOW)
     with os.fdopen(fd) as handle:
         info = os.fstat(handle.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o037:
             raise ProbeError('unsafe_credentials_file')
         values = {}
         for line in handle:

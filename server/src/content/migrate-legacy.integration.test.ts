@@ -38,7 +38,7 @@ describe("legacy content migration", () => {
           source: content_source:fixture, source_url: "https://example.invalid/law",
           fetched_at: time::now(), title: "测试法规", body_text: "第一条 测试",
           body_sha256: "fixture-hash", source_form: "full_text", evidence: [],
-          field_issues: [], processing: {}, content_kind_payload: {},
+          field_issues: [], processing: {}, content_kind_payload: { precise_counter: 9007199254740993 },
           created_by_subject: "operator:fixture"
         };
         UPDATE content_item:fixture SET current_version = content_version:fixture;
@@ -84,10 +84,14 @@ describe("legacy content migration", () => {
       expect(summary.cites_article).toBe(1);
       await expect(migrateLegacyPlatformContent({ source, target, writesFrozen: true })).resolves.toEqual(summary);
       await expect(assertLegacyContentMigrated(source, target)).resolves.toBeUndefined();
-      const [versions] = await target.query<[{ public_id: string; body_sha256: string }[]]>(
-        "SELECT public_id, body_sha256 FROM content_version:fixture;",
+      const [versions] = await target.query<[{ public_id: string; body_sha256: string; content_kind_payload: { precise_counter: bigint } }[]]>(
+        "SELECT public_id, body_sha256, content_kind_payload FROM content_version:fixture;",
       );
-      expect(versions[0]).toMatchObject({ public_id: "version-stable", body_sha256: "fixture-hash" });
+      expect(versions[0]).toMatchObject({
+        public_id: "version-stable",
+        body_sha256: "fixture-hash",
+        content_kind_payload: { precise_counter: 9_007_199_254_740_993n },
+      });
       await target.query(`CREATE content_source:post_cutover CONTENT {
         source_key: "post-cutover", label: "新库合法新增", base_url: "https://example.invalid/new",
         status: "active", allowed_actions: ["submit"]
@@ -98,7 +102,7 @@ describe("legacy content migration", () => {
       await source.query("UPDATE content_source:fixture SET label = '测试来源';");
       const brokenReference = `CREATE content_source_record:broken CONTENT {
         source: content_source:missing, record_key: "broken", item: content_item:fixture,
-        source_url: "https://example.invalid/broken"
+        source_url: "https://example.invalid/broken", first_seen_at: d"2026-01-01T00:00:00Z"
       };`;
       await source.query(brokenReference);
       await target.query(brokenReference);

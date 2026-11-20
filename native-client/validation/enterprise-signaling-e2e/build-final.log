@@ -1,0 +1,43 @@
+   Compiling surreal-ck-enterprise-e2e v0.1.0 (/workspace/scratch/115bfa675150/enterprise-signaling-e2e-harness)
+warning: struct `InvitationSummary` is never constructed
+  --> /workspace/scratch/115bfa675150/native-client-probe/surreal_ck/native-signaling/src/protocol.rs:37:12
+   |
+37 | pub struct InvitationSummary {
+   |            ^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `EnterprisePeer` is never constructed
+  --> /workspace/scratch/115bfa675150/native-client-probe/surreal_ck/native-client/src/enterprise_peer.rs:16:12
+   |
+16 | pub struct EnterprisePeer {
+   |            ^^^^^^^^^^^^^^
+
+warning: associated items `invite`, `accept`, `start_monitor`, `poll_answer`, `send_text`, and `close` are never used
+   --> /workspace/scratch/115bfa675150/native-client-probe/surreal_ck/native-client/src/enterprise_peer.rs:24:18
+    |
+ 22 | impl EnterprisePeer {
+    | ------------------- associated items in this implementation
+ 23 |     /// 当前实验只走显式直连/STUN；不静默启用任意公共TURN。
+ 24 |     pub async fn invite(
+    |                  ^^^^^^
+...
+ 48 |     pub async fn accept(
+    |                  ^^^^^^
+...
+ 81 |     fn start_monitor(signaling: Signaling, chat: Arc<Chat>, answered: bool) -> Self {
+    |        ^^^^^^^^^^^^^
+...
+106 |     pub async fn poll_answer(&mut self) -> Result<bool, String> {
+    |                  ^^^^^^^^^^^
+...
+133 |     pub async fn send_text(&self, text: &str) -> Result<(), String> {
+    |                  ^^^^^^^^^
+...
+143 |     pub async fn close(self) -> Result<(), String> {
+    |                  ^^^^^
+
+warning: `surreal-ck-enterprise-e2e` (lib) generated 3 warnings
+warning: `surreal-ck-enterprise-e2e` (lib test) generated 1 warning (1 duplicate)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.90s
+  Executable unittests lib.rs (native-client/target/debug/deps/surreal_ck_enterprise_e2e-425888259e265b02)
