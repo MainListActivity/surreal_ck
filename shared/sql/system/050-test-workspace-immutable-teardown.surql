@@ -39,7 +39,7 @@ DEFINE EVENT OVERWRITE quota_materialization_terminal_guard ON TABLE quota_mater
       AND $before.status INSIDE ["succeeded", "superseded"]
     )
   THEN {
-    THROW "immutable-control-plane-record:quota_materialization_operation";
+    THROW "immutable-terminal-operation:quota_materialization_operation";
   };
 
 DEFINE EVENT OVERWRITE quota_operator_intent_immutable ON TABLE quota_operator_intent
