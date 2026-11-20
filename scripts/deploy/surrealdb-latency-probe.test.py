@@ -4,9 +4,13 @@ import importlib.util
 import io
 import json
 import math
+import os
 from pathlib import Path
 import stat
+import socket
+import subprocess
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -50,9 +54,132 @@ class FakeExecutor:
         return 'surrealdb-3.3.0-native-quota.1'
 
 
+class WriteExecutor:
+    def __init__(self, failure=None, collision=False):
+        self.calls = []
+        self.failure = failure
+        self.collision = collision
+
+    def __call__(self, statement, namespace=None, database=None, bindings=None):
+        self.calls.append((statement, namespace, database, bindings))
+        if namespace is not None:
+            assert namespace == 'sck_latency_probe'
+        if database is not None:
+            assert database.startswith('w_') and len(database) == 34
+        if self.failure and statement.startswith(self.failure):
+            raise RuntimeError('sensitive-server-error')
+        if statement == 'INFO FOR NS;':
+            return {'databases': {'w_' + 'b' * 32: 'DEFINE DATABASE existing'} if self.collision else {}}
+        return []
+
+    def version(self):
+        return 'surrealdb-4.0.1-native-quota.1'
+
+
 class ProbeTests(unittest.TestCase):
     def make_report(self, **kwargs):
         return probe.sample(FakeExecutor(), workspace_limit=0, repetitions=1, **kwargs)
+
+    def test_bindings_are_separate_from_fixed_sql_text(self):
+        executor = probe.Executor(('root', 'private-password'), 30)
+        rows = [{'key': f'b0_{i}', 'value': i} for i in range(100)]
+        with patch.object(executor, 'request', return_value=b'{"result":[{"status":"OK","result":[]}]}') as request:
+            executor('INSERT INTO probe_row $rows;', 'sck_latency_probe', 'w_123', bindings={'rows': rows})
+        method, path, body, ns, db = request.call_args.args
+        self.assertEqual((method, path, ns, db), ('POST', '/rpc', 'sck_latency_probe', 'w_123'))
+        self.assertEqual(json.loads(body)['params'], ['INSERT INTO probe_row $rows;', {'rows': rows}])
+        self.assertNotIn('private-password', body.decode())
+
+    def test_write_sample_scopes_fixed_statements_and_comparison(self):
+        executor = WriteExecutor()
+        report = probe.write_sample(executor)
+        self.assertTrue(report['complete'])
+        self.assertEqual(report['cleanup'], 'removed')
+        self.assertEqual([entry['kind'] for entry in report['entries']],
+                         ['create', 'insert', 'batch_insert', 'upsert', 'update', 'delete'])
+        self.assertTrue(all(len(entry['samples_ms']) == 5 for entry in report['entries']))
+        measured = [call for call in executor.calls if 'TIMEOUT' in call[0]]
+        self.assertEqual(len(measured), 30)
+        self.assertEqual(len(set(call[0] for call in measured)), 6)
+        self.assertTrue(all(call[1:3] == ('sck_latency_probe', report['temporary_database']) for call in measured))
+        batches = [call[3]['rows'] for call in measured if '$rows' in call[0]]
+        self.assertEqual([len(rows) for rows in batches], [100] * 5)
+        self.assertEqual(executor.calls[-1][:3],
+                         (f'REMOVE DATABASE IF EXISTS `{report["temporary_database"]}`;', 'sck_latency_probe', None))
+        other = probe.write_sample(WriteExecutor())
+        self.assertNotEqual(report['temporary_database'], other['temporary_database'])
+        self.assertTrue(probe.compare(report, other, 1e12)['pass'])
+        other['entries'][0]['latency_ms']['max'] = 1e12
+        self.assertFalse(probe.compare(report, other, 2)['pass'])
+        other['entries'][0]['db'] = '_system'
+        with self.assertRaises(probe.ProbeError):
+            probe.compare(report, other, 2)
+
+    def test_write_failures_always_attempt_cleanup_without_secret_output(self):
+        for failure in ('DEFINE TABLE', 'CREATE type::record', 'REMOVE DATABASE'):
+            executor = WriteExecutor(failure)
+            report = probe.write_sample(executor, repetitions=1)
+            self.assertFalse(report['complete'])
+            self.assertTrue(executor.calls[-1][0].startswith('REMOVE DATABASE IF EXISTS `w_'))
+            self.assertNotIn('sensitive-server-error', json.dumps(report))
+            with self.assertRaises(probe.ProbeError):
+                probe.compare(report, report, 2)
+        with patch.object(probe.secrets, 'token_hex', return_value='b' * 32):
+            executor = WriteExecutor(collision=True)
+            report = probe.write_sample(executor, repetitions=1)
+        self.assertFalse(report['complete'])
+        self.assertEqual(report['cleanup'], 'not_created')
+        self.assertFalse(any(call[0].startswith(('DEFINE DATABASE', 'REMOVE DATABASE')) for call in executor.calls))
+
+    def test_write_cli_uses_same_credentials_and_json_output(self):
+        for failure, expected in ((None, 0), ('REMOVE DATABASE', 1)):
+            output = io.StringIO()
+            with patch.object(probe, 'credentials', return_value=('root', 'private-password')), \
+                    patch.object(probe, 'Executor', return_value=WriteExecutor(failure)), \
+                    contextlib.redirect_stdout(output):
+                self.assertEqual(probe.main(['write-sample', '--repeat', '1']), expected)
+            self.assertEqual(json.loads(output.getvalue())['complete'], expected == 0)
+            self.assertNotIn('private-password', output.getvalue())
+
+    @unittest.skipUnless(os.environ.get('SURREAL_BINARY'), '需 SURREAL_BINARY 才运行隔离真实引擎写探针')
+    def test_write_sample_real_binary_parameter_binding_and_cleanup(self):
+        with socket.socket() as listener:
+            listener.bind(('127.0.0.1', 0))
+            port = listener.getsockname()[1]
+        process = subprocess.Popen([os.environ['SURREAL_BINARY'], 'start', '--allow-all', '--bind', f'127.0.0.1:{port}',
+                                    '--user', 'root', '--pass', 'test-latency', 'memory'],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        connection = probe.HTTPConnection
+        executor = probe.Executor(('root', 'test-latency'), 30)
+        try:
+            with patch.object(probe, 'HTTPConnection', side_effect=lambda host, ignored, **kwargs: connection(host, port, **kwargs)):
+                for attempt in range(100):
+                    try:
+                        executor.version()
+                        break
+                    except probe.ProbeError:
+                        time.sleep(.05)
+                else:
+                    self.fail('isolated probe database did not start')
+                captured = []
+
+                def execute(statement, namespace=None, database=None, bindings=None):
+                    if statement.startswith('REMOVE DATABASE'):
+                        db = statement.split('`')[1]
+                        captured.extend(executor('SELECT key, value FROM probe_row;', namespace, db))
+                    return executor(statement, namespace, database, bindings)
+
+                report = probe.write_sample(execute, repetitions=2)
+                self.assertTrue(report['complete'], report)
+                self.assertEqual(len(captured), 206)
+                values = {row['key']: row['value'] for row in captured}
+                self.assertEqual((values['upsert'], values['update']), (2, 2))
+                self.assertNotIn('d0', values)
+                self.assertNotIn('d1', values)
+                self.assertNotIn(report['temporary_database'], executor('INFO FOR NS;', 'sck_latency_probe')['databases'])
+        finally:
+            process.terminate()
+            process.wait(timeout=10)
 
     def test_default_discovery_and_repetitions_are_read_only(self):
         execute = FakeExecutor()

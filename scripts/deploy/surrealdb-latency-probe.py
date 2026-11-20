@@ -9,6 +9,7 @@ import math
 import os
 from pathlib import Path
 import re
+import secrets
 import shlex
 import stat
 import statistics
@@ -66,7 +67,7 @@ class Executor:
 
     def request(self, method, path, body=None, namespace=None, database=None):
         headers = {'Accept': 'application/json', 'Authorization': self.authorization,
-                   'Content-Type': 'text/plain'}
+                   'Content-Type': 'application/json' if path == '/rpc' else 'text/plain'}
         if namespace is not None:
             identifier(namespace)
             headers['surreal-ns'] = namespace
@@ -92,9 +93,17 @@ class Executor:
             raise ProbeError('invalid_server_version')
         return value
 
-    def __call__(self, statement, namespace=None, database=None):
+    def __call__(self, statement, namespace=None, database=None, bindings=None):
         try:
-            result = json.loads(self.request('POST', '/sql', statement.encode(), namespace, database))
+            if bindings is None:
+                result = json.loads(self.request('POST', '/sql', statement.encode(), namespace, database))
+            else:
+                body = json.dumps({'id': 'latency-probe', 'method': 'query', 'params': [statement, bindings]},
+                                  ensure_ascii=False, allow_nan=False).encode()
+                response = json.loads(self.request('POST', '/rpc', body, namespace, database))
+                if not isinstance(response, dict) or 'error' in response:
+                    raise ProbeError('query_failed')
+                result = response.get('result')
             if (not isinstance(result, list) or len(result) != 1
                     or result[0].get('status') != 'OK' or 'result' not in result[0]):
                 raise ProbeError('query_failed')
@@ -158,15 +167,16 @@ def indexed_lookup(table, info, rows):
     return None, {}
 
 
-def measure(execute, statement, ns, db, repetitions, timeout, clock):
+def measure(execute, statement, ns, db, repetitions, timeout, clock, bindings=None):
     statement += f' TIMEOUT {timeout}s;'
     entry = {'status': 'ok', 'statement_hash': hashlib.sha256(statement.encode()).hexdigest()}
     samples = []
     result = None
-    for _ in range(repetitions):
+    for index in range(repetitions):
+        params = bindings(index) if bindings is not None else None
         start = clock()
         try:
-            result = execute(statement, ns, db)
+            result = execute(statement, ns, db, bindings=params) if params is not None else execute(statement, ns, db)
         except Exception:
             entry.update(status='error', reason='query_failed')
             break
@@ -218,6 +228,61 @@ def sample(execute, workspace_limit=5, repetitions=5, timeout=30, clock=time.per
     return report
 
 
+def write_sample(execute, repetitions=5, timeout=30, clock=time.perf_counter):
+    ns = 'sck_latency_probe'
+    db = 'w_' + secrets.token_hex(16)
+    report = {'format_version': 1, 'created_at': datetime.now(timezone.utc).isoformat(),
+              'settings': {'mode': 'write', 'repetitions': repetitions, 'timeout_s': timeout, 'batch_size': 100},
+              'temporary_database': db, 'scopes': [{'ns': ns, 'db': 'w_*'}],
+              'issues': [], 'entries': [], 'cleanup': 'not_created'}
+    attempted = False
+    try:
+        execute('DEFINE NAMESPACE IF NOT EXISTS `sck_latency_probe`;')
+        if db in mapping(execute('INFO FOR NS;', ns), 'databases'):
+            raise ProbeError('temporary_database_collision')
+        attempted = True
+        execute(f'DEFINE DATABASE {identifier(db)};', ns)
+        for statement in ('DEFINE TABLE probe_row SCHEMAFULL;',
+                          'DEFINE FIELD key ON TABLE probe_row TYPE string;',
+                          'DEFINE FIELD value ON TABLE probe_row TYPE int;',
+                          'DEFINE INDEX probe_row_key_unique ON TABLE probe_row FIELDS key UNIQUE;'):
+            execute(statement, ns, db)
+        seed_rows = [
+            {'key': 'upsert', 'value': 0}, {'key': 'update', 'value': 0},
+            *({'key': f'd{i}', 'value': 0} for i in range(repetitions))]
+        for start in range(0, len(seed_rows), 100):
+            execute('INSERT INTO probe_row $rows;', ns, db, bindings={'rows': seed_rows[start:start + 100]})
+        cases = [
+            ('create', 'CREATE type::record("probe_row", $key) CONTENT $row',
+             lambda i: {'key': f'c{i}', 'row': {'key': f'c{i}', 'value': i}}),
+            ('insert', 'INSERT INTO probe_row $row',
+             lambda i: {'row': {'key': f'i{i}', 'value': i}}),
+            ('batch_insert', 'INSERT INTO probe_row $rows',
+             lambda i: {'rows': [{'key': f'b{i}_{j}', 'value': j} for j in range(100)]}),
+            ('upsert', 'INSERT INTO probe_row $row ON DUPLICATE KEY UPDATE value = $input.value',
+             lambda i: {'row': {'key': 'upsert', 'value': i + 1}}),
+            ('update', 'UPDATE probe_row SET value = $value WHERE key = $key',
+             lambda i: {'key': 'update', 'value': i + 1}),
+            ('delete', 'DELETE probe_row WHERE key = $key', lambda i: {'key': f'd{i}'}),
+        ]
+        for kind, statement, bindings in cases:
+            entry, _ = measure(execute, statement, ns, db, repetitions, timeout, clock, bindings)
+            report['entries'].append({'ns': ns, 'db': db, 'table': 'probe_row', 'kind': kind, **entry})
+    except Exception:
+        report['issues'].append('write_setup_failed')
+    finally:
+        if attempted:
+            try:
+                execute(f'REMOVE DATABASE IF EXISTS {identifier(db)};', ns)
+                report['cleanup'] = 'removed'
+            except Exception:
+                report['cleanup'] = 'failed'
+                report['issues'].append('cleanup_failed')
+    report['complete'] = (not report['issues'] and len(report['entries']) == 6
+                          and all(entry['status'] == 'ok' for entry in report['entries']))
+    return report
+
+
 def validated_entries(report):
     if (report.get('format_version') != 1 or report.get('complete') is not True
             or report.get('issues') != [] or not report.get('entries')):
@@ -225,6 +290,11 @@ def validated_entries(report):
     entries = {}
     for entry in report['entries']:
         key = tuple(entry[name] for name in ('ns', 'db', 'table', 'kind'))
+        if report['settings'].get('mode') == 'write':
+            if (report.get('cleanup') != 'removed' or key[0] != 'sck_latency_probe'
+                    or key[1] != report.get('temporary_database') or not re.fullmatch(r'w_[0-9a-f]{32}', key[1])):
+                raise ProbeError('invalid_write_scope')
+            key = (key[0], 'w_*', *key[2:])
         if key in entries or entry['status'] not in ('ok', 'skipped'):
             raise ProbeError('invalid_report_entry')
         if entry['status'] == 'ok':
@@ -294,13 +364,17 @@ def nonnegative(value):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='仅 loopback HTTP /sql 的只读维护延迟探针')
+    parser = argparse.ArgumentParser(description='仅 loopback HTTP 的维护延迟探针；写入限专用随机临时库')
     subparsers = parser.add_subparsers(dest='command', required=True)
     probe = subparsers.add_parser('sample')
     probe.add_argument('--workspaces', type=nonnegative, default=5)
     probe.add_argument('--repeat', type=positive, default=5)
     probe.add_argument('--timeout', type=positive, default=30)
     probe.add_argument('--out')
+    writer = subparsers.add_parser('write-sample', help='仅在 sck_latency_probe 的随机临时库中写入并清理')
+    writer.add_argument('--repeat', type=positive, default=5)
+    writer.add_argument('--timeout', type=positive, default=30)
+    writer.add_argument('--out')
     comparison = subparsers.add_parser('compare')
     comparison.add_argument('baseline', type=Path)
     comparison.add_argument('current', type=Path)
@@ -308,10 +382,11 @@ def main(argv=None):
     comparison.add_argument('--out')
     args = parser.parse_args(argv)
     try:
-        if args.command == 'sample':
+        if args.command in ('sample', 'write-sample'):
             executor = Executor(credentials(), args.timeout)
             version = executor.version()
-            report = sample(executor, args.workspaces, args.repeat, args.timeout)
+            report = (sample(executor, args.workspaces, args.repeat, args.timeout) if args.command == 'sample'
+                      else write_sample(executor, args.repeat, args.timeout))
             report['server_version'] = version
             passed = report['complete']
         else:

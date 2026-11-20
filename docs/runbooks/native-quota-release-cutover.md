@@ -228,6 +228,39 @@ p50 为中位数，p95 为 nearest-rank（5 次时等于 max），不代表数�
 JSON 包含 server version、ns/db/表/类别、样本耗时、p50/p95/max 和查询 SHA-256
 指纹，不含查询或数据值；指纹不同（包括 LIMIT 样本值变化）时拒绝直接比较。
 默认写 stdout，`--out` 新建 0600 文件并拒绝覆盖/符号链接，复测请换新的文件名。
+
+#### 隔离写延迟探针
+
+同一安装脚本提供 `write-sample`。它只在固定 namespace `sck_latency_probe` 下创建
+`w_<随机 32 位十六进制>` 临时 database，不接受业务 namespace/database 参数，也不
+枚举或写入业务库。namespace 会保留供后续探针复用。每次定义一张 SCHEMAFULL 表
+及唯一索引，用固定语句文本与独立 HTTP `/rpc` 绑定参数（兼容 3.3 的 JSON 值类型），
+只读查询仍走 `/sql`。测量 CREATE、单条 INSERT、
+100 条批量 INSERT、唯一键冲突 `ON DUPLICATE KEY UPDATE`、UPDATE、DELETE。
+更新、冲突和删除均使用预置行；准备数据、建库建表、清理不计入耗时。批量耗时是
+整批 100 条的往返时间，不是单条耗时；每类默认重复 5 次，可用 `--repeat` 调整。
+
+在 3.3 围栏生效后、升级前采样；在 4.0 升级成功后、启动 origin 和 unfence 前采样：
+
+```bash
+sudo /usr/local/sbin/sck-surrealdb-latency-probe write-sample \
+  --repeat 5 --out /var/lib/surreal-ck/latency/3.3-write-baseline.json
+
+# 升级后，保持围栏和 origin 停止；不要覆盖基线。
+sudo /usr/local/sbin/sck-surrealdb-latency-probe write-sample \
+  --repeat 5 --out /var/lib/surreal-ck/latency/4.0-write-current.json
+
+sudo /usr/local/sbin/sck-surrealdb-latency-probe compare \
+  /var/lib/surreal-ck/latency/3.3-write-baseline.json \
+  /var/lib/surreal-ck/latency/4.0-write-current.json --max-ratio 2.0
+```
+
+凭证、loopback 限制、文件权限、脱敏和退出码沿用只读探针规则；此子命令**会写入
+临时数据**。无论测量成功与否都会尝试 `REMOVE DATABASE`；清理失败时 `cleanup=failed`、
+`complete=false`，退出 1，禁止放行。JSON 保留实际随机 database，比较时仅将已清理
+成功的专用临时库规范化为 `w_*`，不将不同业务库当作同一库。不能将写报告与读报告
+混比。遇到进程被强杀/主机掉电等无法执行 finally 的情况，保持围栏，由运营核对
+报告中的临时库名后清理该库；不得通过删除失败条目规避比较门禁。
 compare 可离线执行，不访问数据库或凭证。退出码：0 成功；1 采样不完整、不可比或
 超阈值；2 权限/文件/协议/报告格式错误。stdout 和报告仍含库表名称，须按内部运维
 元数据保护，不公开传播。探针没有 DDL/DML 写入、重建索引或解除围栏操作。
