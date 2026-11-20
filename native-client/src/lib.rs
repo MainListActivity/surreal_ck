@@ -18,10 +18,14 @@ pub mod enterprise_peer;
 mod enterprise_tools;
 mod file_dialogs;
 mod file_ui;
+mod first_screen;
+#[cfg(feature = "github-manual-updates")]
+mod github_update_ui;
 mod identity_ui;
 pub mod model;
 mod network_config;
 mod network_ui;
+#[cfg_attr(feature = "github-manual-updates", allow(dead_code))]
 mod startup;
 mod ui;
 mod verification_ui;
@@ -49,18 +53,32 @@ fn video_components(components: &surreal_ck_native_video_view::macos::Components
 fn video_components(components: &surreal_ck_native_video_view::windows::Components) {
     surreal_ck_native_video_view::windows::register(components);
 }
+#[cfg(feature = "github-manual-updates")]
+fn update_panel() -> impl IntoElement {
+    github_update_ui::github_update_panel()
+}
+#[cfg(not(feature = "github-manual-updates"))]
+fn update_panel() -> impl IntoElement {
+    view()
+}
 #[component]
 pub fn Collaboration() -> impl IntoElement {
+    use first_screen::{ConversationFilter, Delivery, Page, Session};
+    use ui::icons::{INK, Icon};
     apply_theme();
+    let page = signal(Page::Messages);
     let draft = signal(String::new());
-    let show_connection = signal(true);
     let remote = signal(String::new());
     let local = signal(String::new());
     let connected = signal(false);
     let busy = signal(false);
     let sending = signal(false);
     let status = signal("离线".to_owned());
-    let messages = signal(Vec::<String>::new());
+    let session = signal(Session::Offline);
+    let identity = signal(first_screen::IdentitySummary::default());
+    let messages = signal(Vec::<first_screen::Message>::new());
+    let query = signal(String::new());
+    let filter = signal(ConversationFilter::All);
     let (commands, updates, verification_gate) = bridge::start();
     let verification = verification_ui::VerificationUi::new(verification_gate, connected, busy);
     let verification_commands = commands.clone();
@@ -90,33 +108,28 @@ pub fn Collaboration() -> impl IntoElement {
                 }
                 Update::DirectFailed => network.direct_failed(),
                 Update::Connected(mode) => {
-                    show_connection.set(false);
                     connected.set(true);
                     busy.set(false);
+                    session.set(Session::Connected);
                     status.set(mode.label().into());
                 }
-                Update::Text(text) => messages.update(|m| {
-                    if m.len() >= 1000 {
-                        m.remove(0);
-                    }
-                    m.push(format!("对方：{text}"));
-                }),
+                Update::Text(text) => messages.update(|m| first_screen::received(m, text)),
                 Update::Queued(text) => {
                     sending.set(false);
                     if draft.get_untracked() == text {
                         draft.set(String::new());
                     }
-                    messages.update(|m| {
-                        if m.len() >= 1000 {
-                            m.remove(0);
-                        }
-                        m.push(format!("我（已交给通道）：{text}"));
-                    });
+                    messages.update(|m| first_screen::queued(m, &text));
                 }
                 Update::Status(s) => {
                     if s == "failed" || s == "disconnected" || s == "closed" {
                         connected.set(false);
                         busy.set(false);
+                        session.set(if s == "failed" {
+                            Session::Failed(format!("连接状态 {s}"))
+                        } else {
+                            Session::Offline
+                        });
                     }
                     status.set(format!("连接状态：{s}"));
                 }
@@ -124,6 +137,10 @@ pub fn Collaboration() -> impl IntoElement {
                     files.failed();
                     sending.set(false);
                     busy.set(false);
+                    messages.update(|m| first_screen::failed(m));
+                    if !connected.get_untracked() {
+                        session.set(Session::Failed(s.clone()));
+                    }
                     status.set(format!("失败：{s}"));
                 }
                 Update::Closed => {
@@ -132,6 +149,8 @@ pub fn Collaboration() -> impl IntoElement {
                     sending.set(false);
                     busy.set(false);
                     connected.set(false);
+                    messages.update(|m| first_screen::failed(m));
+                    session.set(Session::Offline);
                     status.set("离线".into());
                 }
             }
@@ -143,20 +162,431 @@ pub fn Collaboration() -> impl IntoElement {
     let send = commands.clone();
     let emergency_close = commands.clone();
     let close = commands;
-    let content = view()
-        .bg(move || theme().background)
-        .text_color(move || theme().foreground)
-        .p_4()
+    let send_message = std::rc::Rc::new(move || {
+        let text = draft.get_untracked();
+        if !connected.get_untracked() || sending.get_untracked() || text.trim().is_empty() {
+            return;
+        }
+        sending.set(true);
+        messages.update(|m| first_screen::pending(m, text.clone()));
+        if send.try_send(Command::Send(text)).is_err() {
+            sending.set(false);
+            messages.update(|m| first_screen::failed(m));
+            status.set("发送队列已满，请重试".into());
+        }
+    });
+    let submit_message = send_message.clone();
+    let wide = || window().width >= px(960.0);
+    // 有连接、正在关闭或媒体尚未确认关闭时，才在顶部显示状态条和停止按钮。
+    let media_active = move || connected.get() || busy.get() || call.needs_stop();
+    let session_alert = move || session.get().failed();
+    let stop_media = move || {
+        ui::danger(
+            "断开并停止媒体",
+            move || !connected.get() && !busy.get() && !call.needs_stop(),
+            move || {
+                verification.cancel();
+                if emergency_close.try_send(Command::Close).is_ok() {
+                    network.reset();
+                    connected.set(false);
+                    busy.set(true);
+                    session.set(Session::Offline);
+                    status.set("正在关闭连接和媒体，等待设备确认…".into());
+                } else {
+                    status.set("关闭请求尚未送达，请重试；设备状态未改变。".into());
+                }
+            },
+        )
+    };
+    let conversation_list = move || {
+        let visible = move || {
+            first_screen::visible_conversations(connected.get(), &query.get(), filter.get())
+        };
+        let empty = move || {
+            first_screen::conversation_empty(
+                &identity.get(),
+                connected.get(),
+                filter.get(),
+                &query.get(),
+            )
+        };
+        view()
+            .gap_3()
+            .child(
+                view()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        text("消息")
+                            .text_size(px(22.0))
+                            .font_weight(FontWeight::BOLD)
+                            .test_id("conversation-heading"),
+                    )
+                    .child(view().flex_1())
+                    .child(when(first_screen::is_preview, || {
+                        ui::badge(first_screen::PREVIEW_BADGE)
+                    })),
+            )
+            .child(ui::search_field(query, first_screen::SEARCH_PLACEHOLDER))
+            .child(
+                ui::segment_track()
+                    .child(ui::segment(
+                        ConversationFilter::All.label(),
+                        move || filter.get() == ConversationFilter::All,
+                        move || filter.set(ConversationFilter::All),
+                    ))
+                    .child(ui::segment(
+                        ConversationFilter::Unread.label(),
+                        move || filter.get() == ConversationFilter::Unread,
+                        move || filter.set(ConversationFilter::Unread),
+                    ))
+                    .child(ui::segment(
+                        ConversationFilter::Group.label(),
+                        move || filter.get() == ConversationFilter::Group,
+                        move || filter.set(ConversationFilter::Group),
+                    )),
+            )
+            .child(when(
+                move || visible().is_empty(),
+                move || {
+                    ui::empty_state(
+                        Icon::Chat,
+                        move || empty().0.to_owned(),
+                        move || empty().1.to_owned(),
+                    )
+                    .child(when(
+                        move || identity.get().can_sign_in(),
+                        move || {
+                            ui::action("登录企业账号", || false, move || page.set(Page::Members))
+                        },
+                    ))
+                },
+            ))
+            .child(when(
+                move || !visible().is_empty(),
+                move || {
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap_3()
+                        .p_3()
+                        .rounded(px(10.0))
+                        .bg(rgba(ui::GOLD_TINT).to_hsla())
+                        .child(ui::avatar(|| "直".to_owned(), 40.0))
+                        .child(
+                            view()
+                                .flex_1()
+                                .gap_1()
+                                .child(
+                                    text(move || {
+                                        visible()
+                                            .first()
+                                            .map(|conversation| conversation.title.clone())
+                                            .unwrap_or_default()
+                                    })
+                                    .text_size(px(15.0))
+                                    .font_weight(FontWeight::SEMIBOLD),
+                                )
+                                .child(ui::note(move || session.get().line())),
+                        )
+                },
+            ))
+    };
+    // 消息页：会话头、气泡记录、底部输入。没有会话时显示空状态，不编造联系人。
+    let messages_page = view()
+        .flex_1()
+        .style_when(move || page.get() != Page::Messages, |style| style.hidden())
+        .child(when(
+            move || !wide(),
+            move || view().px_4().pt(px(12.0)).child(conversation_list()),
+        ))
+        .child(when(
+            move || connected.get(),
+            move || {
+                view()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .px_5()
+                    .py_3()
+                    .border_b_1()
+                    .border_color(move || theme().border)
+                    .child(ui::avatar(|| "直".to_owned(), 36.0))
+                    .child(
+                        view()
+                            .flex_1()
+                            .gap_1()
+                            .child(
+                                text(move || first_screen::direct_conversation().title)
+                                    .text_size(px(17.0))
+                                    .font_weight(FontWeight::BOLD),
+                            )
+                            .child(ui::note(move || session.get().line())),
+                    )
+            },
+        ))
+        .child(when(session_alert, move || {
+            view()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .px_5()
+                .py_2()
+                .bg(move || theme().accent)
+                .child(Icon::Warning.view(INK, 16.0))
+                .child(
+                    text(move || session.get().line())
+                        .text_size(px(13.0))
+                        .text_color(move || theme().destructive),
+                )
+        }))
+        .child(when(
+            move || !connected.get() && messages.get().is_empty(),
+            move || {
+                ui::empty_state(
+                    Icon::Chat,
+                    || first_screen::NO_CONVERSATION.to_owned(),
+                    || first_screen::NO_CONVERSATION_HINT.to_owned(),
+                )
+                .flex_1()
+                .child(
+                    text(move || session.get().line())
+                        .test_id("session-state")
+                        .text_size(px(12.0))
+                        .text_color(move || theme().muted_foreground),
+                )
+            },
+        ))
+        .child(when(
+            move || connected.get() && messages.get().is_empty(),
+            || {
+                view()
+                    .flex_1()
+                    .items_center()
+                    .justify_center()
+                    .child(ui::note(|| first_screen::EMPTY_MESSAGES.to_owned()))
+            },
+        ))
+        .child(
+            virtual_list(
+                move || messages.get().len(),
+                move |at| {
+                    let index = at.index();
+                    let mine = move || {
+                        messages
+                            .get()
+                            .get(index)
+                            .map(|message| message.mine)
+                            .unwrap_or(false)
+                    };
+                    let failed = move || {
+                        messages
+                            .get()
+                            .get(index)
+                            .is_some_and(|message| message.delivery == Delivery::Failed)
+                    };
+                    view()
+                        .flex_row()
+                        .px_5()
+                        .py_1()
+                        .style_when(mine, |style| style.justify_end())
+                        .child(
+                            view()
+                                .max_w(px(520.0))
+                                .gap_1()
+                                .style_when(mine, |style| style.items_end())
+                                .child(
+                                    text("对方")
+                                        .text_size(px(12.0))
+                                        .text_color(move || theme().muted_foreground)
+                                        .style_when(mine, |style| style.hidden()),
+                                )
+                                .child(
+                                    view()
+                                        .label(move || {
+                                            messages
+                                                .get()
+                                                .get(index)
+                                                .map(|message| message.label())
+                                                .unwrap_or_default()
+                                        })
+                                        .px_3()
+                                        .py_2()
+                                        .rounded(px(12.0))
+                                        .border_1()
+                                        .border_color(move || bubble_border(mine()))
+                                        .bg(move || bubble_fill(mine()))
+                                        .child(
+                                            text(move || {
+                                                messages
+                                                    .get()
+                                                    .get(index)
+                                                    .map(|message| message.text.clone())
+                                                    .unwrap_or_default()
+                                            })
+                                            .text_size(px(15.0)),
+                                        ),
+                                )
+                                .child(
+                                    text(move || {
+                                        messages
+                                            .get()
+                                            .get(index)
+                                            .and_then(|message| message.status().map(str::to_owned))
+                                            .unwrap_or_default()
+                                    })
+                                    .text_size(px(12.0))
+                                    .text_color(move || status_color(failed()))
+                                    .style_when(move || !mine(), |style| style.hidden()),
+                                ),
+                        )
+                },
+            )
+            .estimated_item_size(px(64.0))
+            .style_when(move || messages.get().is_empty(), |style| style.hidden())
+            .flex_1(),
+        )
+        .child(
+            view().px_5().pt(px(8.0)).pb(px(16.0)).child(
+                view()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .pl(px(10.0))
+                    .pr(px(6.0))
+                    .py_1()
+                    .border_1()
+                    .border_color(move || theme().input)
+                    .rounded(px(12.0))
+                    .bg(move || theme().card)
+                    .child(ui::composer(
+                        draft,
+                        first_screen::COMPOSER_PLACEHOLDER,
+                        move || submit_message(),
+                    ))
+                    .child(ui::send_control(
+                        first_screen::SEND_LABEL,
+                        move || !connected.get() || sending.get() || draft.get().trim().is_empty(),
+                        move || send_message(),
+                    )),
+            ),
+        );
+    // 会议首页：入口与进行中列表。会议能力接入前入口保持禁用，并说明下一步，不显示假舞台。
+    let meeting_page = view()
+        .gap_4()
+        .style_when(move || page.get() != Page::Meeting, |style| style.hidden())
+        .child(ui::page_header("会议", || {
+            "从会话里一键发起，或用会议号加入。".to_owned()
+        }))
+        .child(
+            view()
+                .flex_row()
+                .flex_wrap()
+                .gap_3()
+                .child(
+                    ui::entry_card(Icon::Video, true, first_screen::MEETING_START, || {
+                        "先检查麦克风和摄像头，再邀请会话成员。".to_owned()
+                    })
+                    .child(ui::action("开始", || true, || {})),
+                )
+                .child(
+                    ui::entry_card(Icon::Link, false, first_screen::MEETING_JOIN, || {
+                        "输入同事发来的会议号。".to_owned()
+                    })
+                    .child(ui::secondary("加入", || true, || {})),
+                ),
+        )
+        .child(ui::note(move || {
+            first_screen::meeting_unavailable(&identity.get()).to_owned()
+        }))
+        .child(ui::section_label("进行中"))
+        .child(ui::card().child(ui::empty_state(
+            Icon::Video,
+            || first_screen::NO_LIVE_MEETINGS.to_owned(),
+            || first_screen::NO_LIVE_MEETINGS_HINT.to_owned(),
+        )));
+    // 设置：关于、更新与开发者诊断入口；诊断降到最后，不与普通设置同等显眼。
+    let settings_page = view()
+        .gap_4()
+        .style_when(move || page.get() != Page::Settings, |style| style.hidden())
+        .child(ui::page_header("设置", || {
+            first_screen::PURPOSE.to_owned()
+        }))
+        .child(ui::section_label("关于"))
+        .child(
+            ui::card()
+                .child(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap_3()
+                        .child(ui::brand_mark(44.0))
+                        .child(
+                            view()
+                                .flex_1()
+                                .gap_1()
+                                .child(
+                                    text("吉吉 · 团队协同")
+                                        .text_size(px(15.0))
+                                        .font_weight(FontWeight::SEMIBOLD),
+                                )
+                                .child(
+                                    text(concat!("当前版本：", env!("CARGO_PKG_VERSION")))
+                                        .text_size(px(13.0))
+                                        .text_color(move || theme().muted_foreground),
+                                ),
+                        ),
+                )
+                .child(when(first_screen::is_preview, || {
+                    ui::warning_card(first_screen::PREVIEW_LABEL)
+                })),
+        )
+        .child(when(first_screen::is_preview, || {
+            ui::card().child(update_panel())
+        }))
+        .child(ui::section_label("高级"))
+        .child(
+            ui::card().child(
+                ui::card_row(
+                    || first_screen::DIAGNOSTICS_TITLE.to_owned(),
+                    || first_screen::DIAGNOSTICS_NOTICE.to_owned(),
+                )
+                .child(ui::secondary(
+                    "打开开发者诊断",
+                    || false,
+                    move || page.set(Page::Diagnostics),
+                )),
+            ),
+        );
+    // 通讯录：账号与工作区、成员目录。登录是使用其他模块的前提，放在这里集中处理。
+    let members_page = view()
+        .gap_4()
+        .style_when(move || page.get() != Page::Members, |style| style.hidden())
+        .child(ui::page_header("通讯录", move || {
+            identity.get().workspace_line()
+        }))
+        .child(ui::card().child(ui::empty_state(
+            Icon::People,
+            move || first_screen::members_empty(&identity.get()).0.to_owned(),
+            move || first_screen::members_empty(&identity.get()).1,
+        )))
+        .child(ui::card().child(identity_ui::enterprise_identity(identity)));
+    // 开发者诊断：手动 P2P、STUN/TURN、连接指纹、媒体与文件调试。安全能力保留，只是不在首屏。
+    let diagnostics_page = view()
         .gap_3()
-        .child(text("直连会话").text_size(px(24.0)))
-        .child(identity_ui::enterprise_identity())
+        .style_when(
+            move || page.get() != Page::Diagnostics,
+            |style| style.hidden(),
+        )
+        .child(
+            text("开发者诊断 · 手动直连")
+                .text_size(px(22.0))
+                .font_weight(FontWeight::BOLD),
+        )
+        .child(ui::note(|| first_screen::DIAGNOSTICS_NOTICE.to_owned()))
         .child(text(move || status.get()).text_color(move || theme().muted_foreground))
         .child(verification.panel(verification_commands, busy))
-        .child(ui::action("连接设置",||false,move||show_connection.set(!show_connection.get_untracked())))
-        .child(view().gap_3().style_when(move||!show_connection.get(),|style|style.hidden())
-        .child(text(
-            "原生协作预览 · 连接码含网络地址，仅交给可信对方。未验证公网中继和通话；请确认对端身份后发送文件。",
-        ))
         .child(
             view()
                 .flex_row()
@@ -165,15 +595,23 @@ pub fn Collaboration() -> impl IntoElement {
                     "创建邀请",
                     move || busy.get(),
                     move || {
-                        let settings = match network.direct_settings() { Ok(s) => s, Err(e) => { status.set(e); return; } };
+                        let settings = match network.direct_settings() {
+                            Ok(s) => s,
+                            Err(e) => {
+                                status.set(e);
+                                return;
+                            }
+                        };
                         verification.cancel();
                         network.reset();
                         busy.set(true);
                         connected.set(false);
+                        session.set(Session::Connecting);
                         local.set(String::new());
                         status.set("正在生成邀请…".into());
                         if offer.try_send(Command::Offer(settings)).is_err() {
                             busy.set(false);
+                            session.set(Session::Failed("操作繁忙".into()));
                             status.set("操作繁忙，请重试".into());
                         }
                     },
@@ -190,12 +628,12 @@ pub fn Collaboration() -> impl IntoElement {
                         verification.cancel();
                         network.reset();
                         connected.set(false);
+                        session.set(Session::Offline);
                         let _ = close.try_send(Command::Close);
                         local.set(String::new());
                     },
                 )),
         )
-        .child(network.panel(network_commands, remote, local, connected, busy, status))
         .child(ui::field(remote, "粘贴对方的完整连接码"))
         .child(
             view()
@@ -205,17 +643,25 @@ pub fn Collaboration() -> impl IntoElement {
                     "接受邀请并生成应答",
                     move || busy.get() || remote.get().trim().is_empty(),
                     move || {
-                        let settings = match network.direct_settings() { Ok(s) => s, Err(e) => { status.set(e); return; } };
+                        let settings = match network.direct_settings() {
+                            Ok(s) => s,
+                            Err(e) => {
+                                status.set(e);
+                                return;
+                            }
+                        };
                         verification.cancel();
                         network.reset();
                         busy.set(true);
                         connected.set(false);
+                        session.set(Session::Connecting);
                         local.set(String::new());
                         if answer
                             .try_send(Command::Answer(remote.get_untracked(), settings))
                             .is_err()
                         {
                             busy.set(false);
+                            session.set(Session::Failed("操作繁忙".into()));
                         }
                     },
                 ))
@@ -233,134 +679,195 @@ pub fn Collaboration() -> impl IntoElement {
                     },
                 )),
         )
-        )
-        .child(
-            virtual_list(
-                move || messages.get().len(),
-                move |at| {
-                    text(move || messages.get().get(at.index()).cloned().unwrap_or_default()).p_3()
-                },
-            )
-            .estimated_item_size(px(52.0))
-            .h(px(180.0)),
-        )
+        .child(network.panel(network_commands, remote, local, connected, busy, status))
         .child(call.view(call_commands, connected))
-        .child(files.panel(file_commands,connected))
-        .child(ui::field(draft, "输入消息"))
-        .child(ui::action(
-            "发送消息",
-            move || !connected.get() || sending.get() || draft.get().trim().is_empty(),
-            move || {
-                let text = draft.get_untracked();
-                sending.set(true);
-                if send.try_send(Command::Send(text)).is_err() {
-                    sending.set(false);
-                    status.set("发送队列已满，请重试".into());
-                }
-            },
-        ));
+        .child(files.panel(file_commands, connected));
+    let nav = move || {
+        view()
+            .gap_1()
+            .items_center()
+            .child(ui::nav_item(
+                "消息",
+                Icon::Chat,
+                move || page.get() == Page::Messages,
+                move || page.set(Page::Messages),
+            ))
+            .child(ui::nav_item(
+                "会议",
+                Icon::Video,
+                move || page.get() == Page::Meeting,
+                move || page.set(Page::Meeting),
+            ))
+            .child(ui::nav_item(
+                "通讯录",
+                Icon::People,
+                move || page.get() == Page::Members,
+                move || page.set(Page::Members),
+            ))
+    };
+    let settings_nav = move || {
+        ui::nav_item(
+            "设置",
+            Icon::Gear,
+            move || matches!(page.get(), Page::Settings | Page::Diagnostics),
+            move || page.set(Page::Settings),
+        )
+    };
+    // 顶部状态条：有连接或媒体时出现，诊断页常驻；汇总会话、采集状态和停止按钮。
+    // 放在滚动区外，滚动诊断内容时停止按钮仍然可见。
+    let status_strip = view()
+        .flex_row()
+        .flex_wrap()
+        .items_center()
+        .gap_3()
+        .px_4()
+        .py_2()
+        .border_b_1()
+        .border_color(move || theme().border)
+        .bg(move || theme().accent)
+        .style_when(
+            move || !media_active() && page.get() != Page::Diagnostics,
+            |style| style.hidden(),
+        )
+        .child(ui::status_dot(move || session.get().line(), session_alert))
+        .child(call.privacy_compact())
+        .child(view().flex_1())
+        .child(stop_media());
     view()
         .flex_1()
-        .flex_row()
         .p_safe_area()
         .bg(move || theme().background)
-        .child(when(
-            || window().width >= px(960.0),
-            || {
-                view()
-                    .w(px(72.0))
-                    .p_3()
-                    .gap_4()
-                    .items_center()
-                    .border_1()
-                    .border_color(move || theme().border)
-                    .child(image(ui::brand()).w(px(44.0)).h(px(44.0)))
-                    .child(text("吉吉").text_color(move || theme().foreground))
-                    .child(
-                        view()
-                            .p_2()
-                            .rounded(move || theme().radius)
-                            .bg(move || theme().primary)
-                            .child(text("消息").text_color(move || theme().primary_foreground)),
-                    )
-            },
-        ))
-        .child(when(
-            || window().width >= px(960.0),
-            move || {
-                view()
-                    .w(px(280.0))
-                    .p_4()
-                    .gap_4()
-                    .border_1()
-                    .border_color(move || theme().border)
-                    .child(
-                        text("消息")
-                            .text_size(px(22.0))
-                            .text_color(move || theme().foreground),
-                    )
-                    .child(
-                        view()
-                            .p_3()
-                            .gap_2()
-                            .rounded(move || theme().radius)
-                            .bg(move || theme().muted)
-                            .child(text("直连会话").text_color(move || theme().foreground))
-                            .child(
-                                text(move || {
-                                    if connected.get() {
-                                        "已连接"
-                                    } else {
-                                        "尚未连接"
-                                    }
-                                })
-                                .text_color(move || theme().muted_foreground),
-                            ),
-                    )
-                    .child(
-                        text("这里仅显示当前真实会话，不生成示例联系人或聊天记录。")
-                            .text_color(move || theme().muted_foreground),
-                    )
-                    .child(
-                        text("当前消息只保存在本次会话内存中。")
-                            .text_color(move || theme().muted_foreground),
-                    )
-            },
-        ))
+        .text_color(move || theme().foreground)
         .child(
             view()
                 .flex_1()
+                .flex_row()
+                .child(when(wide, move || {
+                    view()
+                        .w(px(ui::RAIL_WIDTH))
+                        .min_w(px(ui::RAIL_WIDTH))
+                        .py(px(14.0))
+                        .gap_2()
+                        .items_center()
+                        .border_r_1()
+                        .border_color(move || theme().sidebar_border)
+                        .bg(move || theme().sidebar)
+                        .child(ui::brand_mark(ui::RAIL_BRAND))
+                        .child(view().h(px(10.0)))
+                        .child(nav())
+                        .child(view().flex_1())
+                        .child(settings_nav())
+                }))
+                .child(when(
+                    move || wide() && page.get().shows_conversation_column(),
+                    move || {
+                        view()
+                            .w(px(ui::SESSION_COLUMN))
+                            .min_w(px(ui::SESSION_COLUMN))
+                            .px_4()
+                            .py_4()
+                            .border_r_1()
+                            .border_color(move || theme().border)
+                            .bg(move || theme().background)
+                            .child(conversation_list())
+                    },
+                ))
                 .child(
                     view()
-                        .p_2()
-                        .gap_2()
-                        .child(call.privacy_view())
-                        .child(ui::action(
-                            "断开并停止媒体",
-                            move || !connected.get() && !busy.get() && !call.needs_stop(),
-                            move || {
-                                verification.cancel();
-                                if emergency_close.try_send(Command::Close).is_ok() {
-                                    network.reset();
-                                    connected.set(false);
-                                    busy.set(true);
-                                    status.set("正在关闭连接和媒体，等待设备确认…".into());
-                                } else {
-                                    status.set("关闭请求尚未送达，请重试；设备状态未改变。".into());
-                                }
-                            },
-                        )),
-                )
-                .child(
-                    scroll()
-                        .test_id("conversation-scroll")
                         .flex_1()
-                        .child(content),
+                        .child(status_strip)
+                        .child(
+                            scroll()
+                                .test_id("conversation-scroll")
+                                .flex_1()
+                                .style_when(
+                                    move || !page.get().uses_content_scroll(),
+                                    |style| style.hidden(),
+                                )
+                                .child(
+                                    view()
+                                        .w_full()
+                                        .max_w(px(ui::CONTENT_MAX))
+                                        .self_center()
+                                        .p(px(28.0))
+                                        .gap_4()
+                                        .child(when(
+                                            move || page.get() == Page::Diagnostics,
+                                            move || {
+                                                ui::secondary(
+                                                    "返回设置",
+                                                    || false,
+                                                    move || page.set(Page::Settings),
+                                                )
+                                            },
+                                        ))
+                                        .child(meeting_page)
+                                        .child(members_page)
+                                        .child(settings_page)
+                                        .child(diagnostics_page),
+                                ),
+                        )
+                        .child(
+                            view()
+                                .flex_1()
+                                .style_when(
+                                    move || page.get().uses_content_scroll(),
+                                    |style| style.hidden(),
+                                )
+                                .child(messages_page),
+                        ),
                 ),
         )
+        .child(when(
+            move || !wide(),
+            move || {
+                view()
+                    .flex_row()
+                    .items_center()
+                    .justify_around()
+                    .px_2()
+                    .py_1()
+                    .border_t_1()
+                    .border_color(move || theme().sidebar_border)
+                    .bg(move || theme().sidebar)
+                    .child(nav().flex_row())
+                    .child(settings_nav())
+            },
+        ))
+}
+
+fn bubble_fill(mine: bool) -> AdaptiveColor {
+    if mine {
+        rgba(ui::GOLD_TINT).to_hsla().into()
+    } else {
+        theme().card
+    }
+}
+
+fn bubble_border(mine: bool) -> AdaptiveColor {
+    if mine {
+        rgba(ui::GOLD_TINT).to_hsla().into()
+    } else {
+        theme().border
+    }
+}
+
+fn status_color(failed: bool) -> AdaptiveColor {
+    if failed {
+        theme().destructive
+    } else {
+        theme().muted_foreground
+    }
+}
+
+#[cfg(feature = "github-manual-updates")]
+#[component]
+pub fn App() -> impl IntoElement {
+    collaboration()
 }
 
 /// 发布入口：在验证并持久化可信更新策略之前，不创建协作会话或网络线程。
+#[cfg(not(feature = "github-manual-updates"))]
 #[component]
 pub fn App() -> impl IntoElement {
     apply_theme();
@@ -416,6 +923,7 @@ pub fn App() -> impl IntoElement {
         .child(when(move || ready.get(), collaboration))
 }
 
+#[cfg(not(feature = "github-manual-updates"))]
 fn check_update(ready: Signal<bool>, status: Signal<String>, can_retry: Signal<bool>) {
     ready.set(false);
     can_retry.set(false);

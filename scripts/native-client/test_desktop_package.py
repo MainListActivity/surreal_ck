@@ -65,7 +65,7 @@ class DesktopPackageTests(unittest.TestCase):
             root = Path(tmp); out = root / 'raw'
             builder.stage(self.event(root, 'macos'), 'macos', out,
                 dict(app_id='top.maplayer.collaboration', version='0.1.0', build=1), 'aarch64-apple-darwin')
-            contents = out / 'SurrealCK.app/Contents'
+            contents = out / '吉吉.app/Contents'
             info = plistlib.loads((contents / 'Info.plist').read_bytes())
             self.assertEqual(info['CFBundleIdentifier'], 'top.maplayer.collaboration')
             self.assertIn('NSMicrophoneUsageDescription', info)

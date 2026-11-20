@@ -1,6 +1,6 @@
 //! 固定 062 信令接口。没有公开 SQL、bearer、root、任意表或任意数据库入口。
 use crate::{
-    members::{connect_authenticated, rpc, DatabaseSocket},
+    members::{connect_authenticated, rpc, rpc_outcome, DatabaseSocket},
     IdentityClient, IdentityError, Result, Session, SurrealConfig,
 };
 use serde::Deserialize;
@@ -22,6 +22,7 @@ const ACCEPT: &str = include_str!("../sql/signal-accept.surql");
 const REJECT: &str = include_str!("../sql/signal-reject.surql");
 const ANSWER: &str = include_str!("../sql/signal-answer.surql");
 const END: &str = include_str!("../sql/signal-end.surql");
+const PROBE: &str = include_str!("../sql/signal-probe.surql");
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct SignalBinding {
@@ -124,7 +125,7 @@ impl SignalConnection {
             .iter()
             .find(|workspace| workspace.slug == slug)
             .ok_or(IdentityError::Forbidden)?;
-        session.require_scope(workspace)?;
+        session.require_collaboration_scope(workspace)?;
         // admin TYPE JWT 没有可冒充的 RECORD $auth.id；绝不从 UI 或 member 列表代填 sender。
         if session.access.as_deref() != Some("participant") {
             return Err(IdentityError::SignalRecordRequired);
@@ -132,32 +133,42 @@ impl SignalConnection {
         let mut socket = connect_authenticated(&session, config, workspace).await?;
         let result = timeout(
             Duration::from_secs(15),
-            rpc(
-                &mut socket,
-                3,
-                "query",
-                json!([IDENTITY, {"subject":session.subject()}]),
-            ),
+            rpc(&mut socket, 3, "query", json!([IDENTITY, {}])),
         )
         .await
         .map_err(|_| IdentityError::Network)??;
         let rows = statement_rows(result)?;
         if rows.len() != 1 {
-            return Err(IdentityError::SignalRecordRequired);
+            return Err(IdentityError::SignalIdentityMissing);
+        }
+        // 数据库按已验签 $token.sub 绑定；本地 Session subject 必须与之逐字一致，防止会话混淆。
+        if rows[0].get("subject").and_then(Value::as_str) != Some(session.subject()) {
+            return Err(IdentityError::SignalIdentityMissing);
         }
         let member_id = rows[0]
             .get("id")
             .and_then(Value::as_str)
-            .ok_or(IdentityError::SignalRecordRequired)?
+            .ok_or(IdentityError::SignalIdentityMissing)?
             .to_owned();
-        member_key(&member_id).map_err(|_| IdentityError::SignalRecordRequired)?;
+        member_key(&member_id).map_err(|_| IdentityError::SignalMemberKey)?;
+        // 身份查询不触及 native_signal；连接前确认本库已应用 062，避免进入监听后才在首次收件箱失败。
+        let probe = timeout(
+            Duration::from_secs(15),
+            rpc_outcome(&mut socket, 4, "query", json!([PROBE, {}])),
+        )
+        .await
+        .map_err(|_| IdentityError::Network)??
+        .map_err(|error| rpc_failure(&error))?;
+        if !statement_rows(probe)?.is_empty() {
+            return Err(IdentityError::SignalUnavailable);
+        }
         session.ensure_current()?;
         Ok(Self {
             socket,
             session,
             database: workspace.db_name.clone(),
             member_id,
-            request_id: 3,
+            request_id: 4,
             closed: false,
             last_inbox: None,
             last_read: None,
@@ -186,10 +197,7 @@ impl SignalConnection {
         }
         let peer_key = member_key(peer)?;
         let rows = self
-            .run(
-                SignalCommand::Revalidate,
-                json!({"subject":self.session.subject(),"peer":peer_key}),
-            )
+            .run(SignalCommand::Revalidate, json!({"peer":peer_key}))
             .await?;
         validate_peer_rows(&rows, &self.member_id, peer)
     }
@@ -372,7 +380,7 @@ impl SignalConnection {
             .ok_or(IdentityError::SignalUnavailable)?;
         let result = timeout(
             Duration::from_secs(15),
-            rpc(
+            rpc_outcome(
                 &mut self.socket,
                 self.request_id,
                 "query",
@@ -382,7 +390,8 @@ impl SignalConnection {
         .await;
         self.session.ensure_current()?;
         let value = match result {
-            Ok(Ok(value)) => value,
+            Ok(Ok(Ok(value))) => value,
+            Ok(Ok(Err(error))) => return Err(rpc_failure(&error)),
             Ok(Err(IdentityError::Database)) => return Err(IdentityError::SignalUnavailable),
             _ => {
                 self.closed = true;
@@ -504,13 +513,37 @@ fn validate_peer_rows(rows: &[Value], current: &str, peer: &str) -> Result<()> {
     }
     Ok(())
 }
+/// RPC 层错误只按结构化 kind 分类，不回显 message（可能含上游细节）。
+fn rpc_failure(error: &Value) -> IdentityError {
+    if error.get("kind").and_then(Value::as_str) == Some("NotAllowed") {
+        IdentityError::SignalDenied
+    } else {
+        IdentityError::SignalUnavailable
+    }
+}
+/// 语句级 ERR：仅把「native_signal* 表不存在」识别为 062 未应用，其余保持不可用。
+fn statement_failure(statement: &Value) -> IdentityError {
+    let details = statement.get("details");
+    let table = details
+        .filter(|d| d.get("kind").and_then(Value::as_str) == Some("Table"))
+        .and_then(|d| d.get("details"))
+        .and_then(|d| d.get("name"))
+        .and_then(Value::as_str);
+    if statement.get("kind").and_then(Value::as_str) == Some("NotFound")
+        && table.is_some_and(|name| name.starts_with("native_signal"))
+    {
+        IdentityError::SignalSchemaMissing
+    } else {
+        IdentityError::SignalUnavailable
+    }
+}
 fn statement_rows(value: Value) -> Result<Vec<Value>> {
     let statements = value
         .as_array()
         .filter(|rows| rows.len() == 1)
         .ok_or(IdentityError::SignalUnavailable)?;
     if statements[0].get("status").and_then(Value::as_str) != Some("OK") {
-        return Err(IdentityError::SignalUnavailable);
+        return Err(statement_failure(&statements[0]));
     }
     statements[0]
         .get("result")
@@ -536,8 +569,19 @@ fn member_key(value: &str) -> Result<&str> {
     let key = value
         .strip_prefix("user:")
         .ok_or(IdentityError::SignalInput)?;
+    // Surreal 对含连字符、纯数字等复杂 ID 会转义：SurrealQL 文本用角括号，JSON-RPC 用反引号。
+    // 信令参数只要中间的裸 ID。
+    let key = key
+        .strip_prefix('\u{27e8}')
+        .and_then(|inner| inner.strip_suffix('\u{27e9}'))
+        .or_else(|| {
+            key.strip_prefix('`')
+                .and_then(|inner| inner.strip_suffix('`'))
+        })
+        .unwrap_or(key);
     if key.is_empty()
         || key.len() > 128
+        || json_rpc_coerces(key)
         || !key
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
@@ -545,6 +589,26 @@ fn member_key(value: &str) -> Result<&str> {
         return Err(IdentityError::SignalInput);
     }
     Ok(key)
+}
+/// fork 的 JSON-RPC 会把 UUID / 日期形状的字符串参数转成 uuid / datetime（`:` 已被字符集拒绝）。
+/// 这类键作为 `$peer`/`$sender`/`$recipient` 传回会指向别的记录，必须拒绝而不是静默错配。
+/// 生产 user 键由 CREATE 随机生成（20 位字母数字），不会落入此类。
+fn json_rpc_coerces(key: &str) -> bool {
+    let bytes = key.as_bytes();
+    let uuid = bytes.len() == 36
+        && bytes.iter().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => *byte == b'-',
+            _ => byte.is_ascii_hexdigit(),
+        });
+    let date = bytes.len() >= 10
+        && bytes[..10]
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| match index {
+                4 | 7 => *byte == b'-',
+                _ => byte.is_ascii_digit(),
+            });
+    uuid || date
 }
 fn datetime(value: &str) -> Result<()> {
     if value.len() < 20

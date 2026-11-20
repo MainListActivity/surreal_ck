@@ -16,10 +16,13 @@ import sys
 spec = importlib.util.spec_from_file_location('receipt', Path(__file__).with_name('build-receipt.py'))
 receipt = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(receipt)
+icon_spec = importlib.util.spec_from_file_location('brand_icon', Path(__file__).resolve().parents[2] / 'native-client/scripts/brand_icon.py')
+brand_icon = importlib.util.module_from_spec(icon_spec)
+icon_spec.loader.exec_module(brand_icon)
 # 共用安装器 receipt 范围，包含企业信令源码。
 
 FEATURES = {
-    'macos': ['desktop', 'experimental-enterprise-media', 'experimental-enterprise-files', 'experimental-macos-video'],
+    'macos': ['desktop', 'github-manual-updates', 'experimental-enterprise-media', 'experimental-enterprise-files', 'experimental-macos-video'],
     'windows': ['desktop', 'experimental-enterprise-media', 'experimental-enterprise-files', 'experimental-windows-video', 'windows-auto-update'],
 }
 HOSTS = {'macos': {'aarch64-apple-darwin', 'x86_64-apple-darwin'},
@@ -128,16 +131,19 @@ def stage(event, target, out, snapshot, host):
     allowed = {b'\xcf\xfa\xed\xfe', b'\xfe\xed\xfa\xcf'}
     if (target == 'macos' and magic not in allowed) or (target == 'windows' and magic[:2] != b'MZ'):
         raise ValueError('不是预期平台可执行文件；magic 检查不能替代原生加载验证')
+    # 品牌图标先于创建输出目录完成源/产物锁校验；失败不留下半成品。
+    icon = brand_icon.verify() if target == 'macos' else None
     out.mkdir(parents=True)
     if target == 'macos':
-        contents = out / 'SurrealCK Enterprise Test Only.app/Contents'
+        contents = out / '吉吉.app/Contents'
         (contents / 'MacOS').mkdir(parents=True)
         (contents / 'Resources').mkdir()
+        icon = brand_icon.install_app_icon(contents / 'Resources/AppIcon.icns')
         installed = contents / 'MacOS/surreal-collaboration'
         with (contents / 'Info.plist').open('wb') as f:
             plistlib.dump(dict(CFBundleExecutable=installed.name,
                               CFBundleIdentifier='top.maplayer.collaboration.enterprise-preview',
-                              CFBundleName='SurrealCK Enterprise Test Only', CFBundlePackageType='APPL',
+                              CFBundleName='吉吉', CFBundleDisplayName='吉吉', CFBundleIconFile='AppIcon.icns', CFBundlePackageType='APPL',
                               CFBundleShortVersionString=snapshot['version'],
                               CFBundleVersion=str(snapshot['build']), NSHighResolutionCapable=True,
                               NSCameraUsageDescription='企业测试通话由用户操作后请求摄像头。',
@@ -157,11 +163,15 @@ def stage(event, target, out, snapshot, host):
         dependency_closure='unverified', runtime_validation='not-run',
         app_resources='brand SVG and theme embedded; dependency resource closure and launch unverified',
         media_runtime='not-bundled; ffmpeg/ffplay availability and device permissions unverified')
+    if icon is not None:
+        report['app_icon'] = icon
     (out / 'preview-receipt.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
-    (out / 'TEST-ONLY.txt').write_text(
-        '仅企业实验 staging，不是已验收安装器。未签名/公证；动态依赖闭包未验证。\n'
-        'ffmpeg/ffplay 未捆绑，媒体功能不可假定可用。\n'
-        '强制更新门保持不变；缺少有效配置/策略仍锁定。不得进入正式 Release 索引。\n', encoding='utf-8')
+    note = ('仅企业实验 staging，不是已验收安装器。未公证；动态依赖闭包未验证。\n'
+            'ffmpeg/ffplay 未捆绑，媒体功能不可假定可用。\n')
+    note += ('macOS 预览版使用手动 GitHub 更新检查，不启用签名策略强制更新；企业登录仍需配置。\n'
+             '预览版只下载并校验 SHA-256，DMG 需手动安装；下载完成不等于已升级。\n'
+             if target == 'macos' else '强制更新门保持不变；缺少有效配置/策略仍锁定。\n')
+    (out / 'TEST-ONLY.txt').write_text(note + '不得进入正式 Release 索引。\n', encoding='utf-8')
     return report
 
 

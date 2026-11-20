@@ -9,6 +9,7 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('preview', pathlib.Path(__file__).with_name('desktop-enterprise-preview.py'))
 preview = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(preview)
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 class PreviewTests(unittest.TestCase):
@@ -89,6 +90,15 @@ class PreviewTests(unittest.TestCase):
                 if target == 'macos':
                     info = plistlib.loads(next(out.rglob('Info.plist')).read_bytes())
                     self.assertEqual(info['CFBundleExecutable'], 'surreal-collaboration')
+                    self.assertEqual(info['CFBundleDisplayName'], '吉吉')
+                    self.assertEqual(info['CFBundleIconFile'], 'AppIcon.icns')
+                    packaged = (out / '吉吉.app/Contents/Resources/AppIcon.icns').read_bytes()
+                    self.assertEqual(packaged, (ROOT / 'native-client/assets/app-icon/AppIcon.icns').read_bytes())
+                    self.assertNotEqual(packaged, (ROOT / 'assets/icon.icns').read_bytes())
+                    note = (out / 'TEST-ONLY.txt').read_text(encoding='utf-8')
+                    self.assertIn('DMG 需手动安装', note)
+                    self.assertIn('下载完成不等于已升级', note)
+                    self.assertEqual(report['app_icon']['icns_sha256'], preview.receipt.digest(out / '吉吉.app/Contents/Resources/AppIcon.icns'))
                 with self.assertRaises(ValueError): preview.stage(event, target, out, {}, '')
 
     def test_reject_missing_features_wrong_main_and_duplicate(self):

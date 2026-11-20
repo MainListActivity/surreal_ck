@@ -244,10 +244,18 @@ test("VO05 实际 fork + admin/participant/employee + Mastra：开岗、DDL、�
     managerSession = await employeeSession(fixture, managerId);
     const [[count]] = await fixture.root.query<[{ count: number }[]]>("SELECT count() FROM user WHERE virtual_profile.role_key = 'data-analyst' GROUP ALL");
     expect(count?.count).toBe(1);
-    await expect(analyst.query("UPDATE $employee SET is_admin = true", {
-      employee: new StringRecordId(analystId) }).collect()).rejects.toThrow(/identity/);
-    await expect(managerSession.query("UPDATE $employee SET subject = 'hijacked'", {
-      employee: new StringRecordId(analystId) }).collect()).rejects.toThrow(/provisioning/);
+    // 061 把身份字段 FOR update NONE：写入被静默忽略（引擎也可能抛错）；
+    // 无论表现为哪种，员工都不能提权自己或改写他人身份。
+    const [[identityBefore]] = await fixture.root.query<[{ is_admin: boolean; subject: string }[]]>(
+      "SELECT is_admin, subject FROM $employee", { employee: new StringRecordId(analystId) });
+    await analyst.query("UPDATE $employee SET is_admin = true", {
+      employee: new StringRecordId(analystId) }).collect().catch(() => undefined);
+    await managerSession.query("UPDATE $employee SET subject = 'hijacked'", {
+      employee: new StringRecordId(analystId) }).collect().catch(() => undefined);
+    const [[identityAfter]] = await fixture.root.query<[{ is_admin: boolean; subject: string }[]]>(
+      "SELECT is_admin, subject FROM $employee", { employee: new StringRecordId(analystId) });
+    expect(identityAfter?.is_admin).toBe(false);
+    expect(identityAfter?.subject).toBe(identityBefore?.subject);
     const [secrets] = await analyst.query<[unknown[]]>("SELECT id FROM employee_credential");
     expect(secrets).toHaveLength(0);
     const [human] = await managerSession.query<[unknown[]]>(`CREATE user:forbidden CONTENT {

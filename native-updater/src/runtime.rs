@@ -144,50 +144,160 @@ fn checked_url(raw: &str, hosts: &[String]) -> Result<url::Url, RuntimeError> {
     }
     Ok(u)
 }
+/// 细分的 HTTPS 失败原因，用于给用户可读、可区分的提示；安全检查本身不放宽。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FetchError {
+    /// 非 https、非 443、带凭据/fragment 或主机不在白名单（含重定向目标）。
+    UnsafeUrl,
+    Timeout,
+    /// TLS 握手或证书校验失败（不会降级为明文或跳过校验）。
+    Tls(String),
+    /// DNS 解析失败、连接被拒绝或网络不可达。
+    Connect(String),
+    /// 非 2xx 响应；`rate_limited` 表示 403/429 且带速率限制标记。
+    Status {
+        code: u16,
+        rate_limited: bool,
+    },
+    TooLarge,
+    TooManyRedirects,
+    Other(String),
+}
+
+impl std::fmt::Display for FetchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsafeUrl => write!(f, "地址不是允许的 HTTPS 主机"),
+            Self::Timeout => write!(f, "连接超时"),
+            Self::Tls(detail) => write!(f, "TLS 安全连接失败（{detail}）"),
+            Self::Connect(detail) => write!(f, "无法建立连接（{detail}）"),
+            Self::Status {
+                code,
+                rate_limited: true,
+            } => write!(f, "HTTP {code}，触发速率限制"),
+            Self::Status { code, .. } => write!(f, "HTTP {code}"),
+            Self::TooLarge => write!(f, "响应超过允许大小"),
+            Self::TooManyRedirects => write!(f, "重定向次数过多"),
+            Self::Other(detail) => write!(f, "{detail}"),
+        }
+    }
+}
+
+fn classify_io(e: &std::io::Error) -> FetchError {
+    use std::io::ErrorKind::*;
+    let text = e.to_string();
+    let lower = text.to_ascii_lowercase();
+    if matches!(e.kind(), TimedOut | WouldBlock) {
+        FetchError::Timeout
+    } else if ["certificate", "tls", "handshake", "unknownissuer", "alert"]
+        .iter()
+        .any(|k| lower.contains(k))
+    {
+        FetchError::Tls(text)
+    } else if matches!(
+        e.kind(),
+        ConnectionRefused | ConnectionReset | ConnectionAborted | NotConnected | AddrNotAvailable
+    ) {
+        FetchError::Connect(text)
+    } else {
+        FetchError::Other(text)
+    }
+}
+
+/// 把 ureq 错误映射到可区分的原因。
+pub fn classify(e: &ureq::Error) -> FetchError {
+    match e {
+        ureq::Error::Timeout(_) => FetchError::Timeout,
+        ureq::Error::Tls(detail) => FetchError::Tls((*detail).to_owned()),
+        ureq::Error::Rustls(inner) => FetchError::Tls(inner.to_string()),
+        ureq::Error::Pem(inner) => FetchError::Tls(inner.to_string()),
+        ureq::Error::TlsRequired | ureq::Error::RequireHttpsOnly(_) => FetchError::UnsafeUrl,
+        ureq::Error::HostNotFound => FetchError::Connect("DNS 解析失败".into()),
+        ureq::Error::ConnectionFailed => FetchError::Connect("连接失败".into()),
+        ureq::Error::ConnectProxyFailed(detail) => FetchError::Connect(detail.clone()),
+        ureq::Error::StatusCode(code) => FetchError::Status {
+            code: *code,
+            rate_limited: false,
+        },
+        ureq::Error::BodyExceedsLimit(_) => FetchError::TooLarge,
+        ureq::Error::TooManyRedirects => FetchError::TooManyRedirects,
+        ureq::Error::Io(io) => classify_io(io),
+        other => FetchError::Other(other.to_string()),
+    }
+}
+
+/// GitHub 在 403/429 上用这些头标记速率限制。
+pub fn is_rate_limited(code: u16, remaining: Option<&str>, retry_after: bool) -> bool {
+    code == 429 || (code == 403 && (remaining == Some("0") || retry_after))
+}
+
 /// 真正HTTPS，最多5次显式验证重定向；限制响应字节和每次请求时间。
 pub fn fetch_https(raw: &str, max_bytes: u64, hosts: &[String]) -> Result<Vec<u8>, RuntimeError> {
+    fetch_https_detailed(raw, max_bytes, hosts, &[]).map_err(|e| match e {
+        FetchError::UnsafeUrl => RuntimeError::Security(UpdateError::UnsafeDownload),
+        _ => RuntimeError::DownloadFailed,
+    })
+}
+
+/// 与 fetch_https 相同的 TLS、主机白名单、重定向与大小限制，但返回细分错误。
+pub fn fetch_https_detailed(
+    raw: &str,
+    max_bytes: u64,
+    hosts: &[String],
+    headers: &[(&str, &str)],
+) -> Result<Vec<u8>, FetchError> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .max_redirects(0)
         .max_redirects_will_error(false)
         .http_status_as_error(false)
+        .https_only(true)
         .timeout_global(Some(Duration::from_secs(60)))
         .build()
         .into();
-    let mut u = checked_url(raw, hosts)?;
+    let unsafe_url = |_| FetchError::UnsafeUrl;
+    let mut u = checked_url(raw, hosts).map_err(unsafe_url)?;
     for _ in 0..=5 {
-        let mut response = agent
+        let mut request = agent
             .get(u.as_str())
             // 每次启动必须真实访问端点，不能把中间缓存当作最新策略。
             .header("Cache-Control", "no-cache, no-store")
-            .header("Pragma", "no-cache")
-            .call()
-            .map_err(|_| RuntimeError::DownloadFailed)?;
+            .header("Pragma", "no-cache");
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let mut response = request.call().map_err(|e| classify(&e))?;
         if response.status().is_redirection() {
             let location = response
                 .headers()
                 .get("location")
                 .and_then(|s| s.to_str().ok())
-                .ok_or(RuntimeError::DownloadFailed)?;
-            u = checked_url(
-                u.join(location)
-                    .map_err(|_| RuntimeError::DownloadFailed)?
-                    .as_str(),
-                hosts,
-            )?;
+                .ok_or_else(|| FetchError::Other("重定向缺少 Location".into()))?;
+            let next = u.join(location).map_err(|_| FetchError::UnsafeUrl)?;
+            u = checked_url(next.as_str(), hosts).map_err(unsafe_url)?;
             continue;
         }
-        if response.status() != 200 {
-            return Err(RuntimeError::DownloadFailed);
+        let code = response.status().as_u16();
+        if code != 200 {
+            let remaining = response
+                .headers()
+                .get("x-ratelimit-remaining")
+                .and_then(|v| v.to_str().ok());
+            let retry_after = response.headers().contains_key("retry-after");
+            return Err(FetchError::Status {
+                code,
+                rate_limited: is_rate_limited(code, remaining, retry_after),
+            });
         }
         return response
             .body_mut()
             .with_config()
             .limit(max_bytes)
             .read_to_vec()
-            .map_err(|_| RuntimeError::DownloadFailed);
+            .map_err(|e| classify(&e));
     }
-    Err(RuntimeError::DownloadFailed)
+    Err(FetchError::TooManyRedirects)
 }
+
 pub fn run_startup(
     config: &RuntimeConfig,
     progress: impl FnMut(Progress),

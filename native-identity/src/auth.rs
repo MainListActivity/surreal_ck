@@ -291,6 +291,7 @@ impl IdentityClient {
             access_token: access,
             subject: claims.sub,
             expires_at,
+            token_expires_at: claims.exp,
             database: claims.db,
             access: claims.ac,
             roles: claims.roles,
@@ -400,6 +401,8 @@ pub struct Session {
     pub(crate) access_token: Zeroizing<String>,
     pub(crate) subject: String,
     pub(crate) expires_at: u64,
+    /// access token 自身的 exp；scope 换票不得超过它（不延长有效期）。
+    pub(crate) token_expires_at: u64,
     pub(crate) database: Option<String>,
     pub(crate) access: Option<String>,
     pub(crate) roles: Vec<String>,
@@ -419,6 +422,10 @@ impl Session {
     }
     pub fn database(&self) -> Option<&str> {
         self.database.as_deref()
+    }
+    /// 当前 token 的 `ac` claim；仅用于宿主决定是否需要协作换票，不代表权限。
+    pub fn access(&self) -> Option<&str> {
+        self.access.as_deref()
     }
     pub fn ensure_current(&self) -> Result<()> {
         if unix_now()? >= self.expires_at {
@@ -442,6 +449,19 @@ impl Session {
             return Err(IdentityError::Token);
         }
         Ok(())
+    }
+    /// 成员目录 / 信令等协作直连：除与工作区角色一致的 token 外，也接受同库
+    /// `ac=participant` 的 RECORD 会话（管理员经 collaboration-scope 降级所得）。
+    /// 只放宽 ac 一项：db 必须是该工作区；participant 永远不会被当作 admin 接受。
+    pub(crate) fn require_collaboration_scope(&self, workspace: &Workspace) -> Result<()> {
+        self.ensure_current()?;
+        if self.database.as_deref() != Some(&workspace.db_name) {
+            return Err(IdentityError::WorkspaceNotSelected);
+        }
+        if self.access.as_deref() == Some(WorkspaceRole::Participant.access_name()) {
+            return Ok(());
+        }
+        self.require_scope(workspace)
     }
 }
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]

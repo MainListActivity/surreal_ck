@@ -54,6 +54,10 @@ pub enum IdentityError {
     Database,
     #[error("此信令需要已验证的真人 RECORD 会话；不能用管理员 system 身份代替")]
     SignalRecordRequired,
+    #[error("当前成员会话未能绑定到本工作区的真人记录；信令未启用")]
+    SignalIdentityMissing,
+    #[error("成员记录标识格式无法用于信令")]
+    SignalMemberKey,
     #[error("信令不存在、已过期、状态已变化或数据库拒绝操作")]
     SignalUnavailable,
     #[error("信令完整绑定或响应不匹配")]
@@ -64,6 +68,10 @@ pub enum IdentityError {
     SignalUncertain,
     #[error("信令请求过于频繁，请等待后重试")]
     SignalRateLimited,
+    #[error("本工作区数据库尚未启用信令结构（062 native_signal 迁移未应用）；信令未启用")]
+    SignalSchemaMissing,
+    #[error("数据库拒绝了信令会话（认证已失效或权限不足）；请重新连接")]
+    SignalDenied,
 }
 pub type Result<T> = std::result::Result<T, IdentityError>;
 

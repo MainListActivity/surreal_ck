@@ -84,6 +84,39 @@ pub fn android_may_request_unattended(
     };
     target >= minimum && self_update && declares_update_permission && can_install_packages
 }
+/// 解析 Android `Context.getFilesDir()` 的真实路径。
+///
+/// 原生 Android 上 `/data/user/0` 是指向 `/data/data` 的系统符号链接，核心更新器的
+/// `secure_directory` 会拒绝路径中的任何链接。这里只解析应用包目录之上的系统布局链接：
+/// `<包目录>` 与 `<包目录>/files` 本身必须是真实目录，解析后包名与 `files` 不得改变，
+/// 因此应用私有区里的意外链接仍会被拒绝，交给核心的同一安全检查继续把关。
+#[cfg(unix)]
+pub fn resolve_android_files_dir(raw: &std::path::Path) -> Option<std::path::PathBuf> {
+    use std::{fs, path::Component};
+    if !raw.is_absolute()
+        || !raw
+            .components()
+            .skip(1)
+            .all(|c| matches!(c, Component::Normal(_)))
+    {
+        return None;
+    }
+    let files = raw.file_name()?;
+    let package_dir = raw.parent()?;
+    let package = package_dir.file_name()?;
+    if files != "files" {
+        return None;
+    }
+    for app_owned in [raw, package_dir] {
+        if !fs::symlink_metadata(app_owned).ok()?.file_type().is_dir() {
+            return None;
+        }
+    }
+    let real = fs::canonicalize(raw).ok()?;
+    let real_package = real.parent()?;
+    (real.file_name()? == files && real_package.file_name()? == package).then_some(real)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

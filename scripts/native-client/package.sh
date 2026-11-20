@@ -25,6 +25,21 @@ case "$target" in
 esac
 if [[ "$target" == macos ]]; then
   python scripts/native-client/build-desktop-app.py --platform macos --out "$out/raw"
+elif [[ "$target" == linux ]]; then
+  # Official Linux packages include enterprise media/files/signaling at pack
+  # time. NSH generates path deps with default features only; do not change
+  # Cargo.toml default or desktop graphs (check-enterprise-signaling.sh).
+  real_cargo=$(command -v cargo)
+  wrap="$root/native-client/.nsh/official-linux-cargo"
+  mkdir -p "$wrap"
+  cat > "$wrap/cargo" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+python "$root/scripts/native-client/enable-official-linux-enterprise-features.py"
+exec "$real_cargo" "\$@"
+EOF
+  chmod +x "$wrap/cargo"
+  PATH="$wrap:$PATH" nsh "${args[@]}"
 else
   nsh "${args[@]}"
 fi
@@ -68,7 +83,7 @@ case "$target" in
     tar -czf "$archive" -C "$out/raw" "$app_name"
     cp "$archive" "$out/SurrealCK-linux-$(uname -m).tar.gz" ;;
   macos)
-    app="$out/raw/SurrealCK.app"
+    app="$out/raw/吉吉.app"
     test -d "$app"
     # 正式协同入口必须包含强制更新器；仅消费已有核验 SDK 和签名身份。
     bash native-updater-platform/macos/embed-framework.sh "$app"

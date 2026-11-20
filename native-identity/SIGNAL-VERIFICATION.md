@@ -5,8 +5,8 @@
 ## 实测边界
 
 - 使用已有固定 fork `3.3.0-native-quota.1+sha.f30704bce914`，二进制 SHA256：`6f6bcc72f8c23848295ed32d6a265f5bf0baad11e7be446294a5ade1b06a84f2`。
-- 测试仅启动随机 loopback 端口和 memory 存储。Root 仅执行夹具 schema、种子成员与模拟控制面撤销；所有信令操作都使用实际 RECORD SIGNIN 得到的成员 token，执行生产的 `use → authenticate → query` 路径。
-- 夹具加载仓库的 061/062，再仅在本地覆盖 participant SIGNIN 以建立合成测试身份。生产 OIDC/JWKS 验证另由已有密码学测试覆盖；本测试不能证明线上 IdP、原生注册、生产 WSS/TLS 或默认关着的客户端功能已经可用。
+- 测试仅启动随机 loopback 端口和 memory 存储。Root 仅执行夹具 schema、种子成员与模拟控制面撤销；所有信令操作都使用本地 ES256 签发、与生产 collaboration-scope 降级票据同形（UUID `sub`、`ns/db/ac=participant/RL/email`）的 JWT，经生产 061 participant ACCESS（`TYPE RECORD WITH JWT URL` + AUTHENTICATE，JWKS 由 loopback 提供）认证，执行生产的 `use → authenticate → query` 路径。
+- 夹具原样加载仓库的 061/062，不再覆盖 participant ACCESS。fork 的 JSON-RPC 会把 UUID / record / datetime 形状的字符串参数转成对应类型，所以身份与对端复核查询只用数据库已验签的 `$token.sub`，客户端再逐字比对返回的 subject；测试断言该转换存在，防止回归到 `subject = $subject`。生产 OIDC/JWKS 验证另由已有密码学测试覆盖；本测试不能证明线上 IdP、原生注册、生产 WSS/TLS 或默认关着的客户端功能已经可用。
 - 明文 HTTP/WS 与 Session 构造器仅在 `cfg(test)` 内部，公开生产构造器仍要求 HTTPS/WSS，没有 fixture feature、服务 token 回退或生产身份绕过。
 
 ## 已验证
@@ -43,3 +43,11 @@ cargo test --manifest-path native-identity/Cargo.toml --locked --offline --lib \
 `src/signaling_tests.rs` 的 `ForkFixture` 仅以 `pub(crate)`、`cfg(test)` 暴露。可在同一个 test crate 中包含真实 `src/lib.rs` 与上层 signaling/peer 源码，使用 `ForkFixture::start(binary)`、`session(name, database)` 或 `connection(name, database)`。现有三个合成人类成员为 `a` / `b` / `c`，两个隔离数据库为 `ws_signal` / `ws_other`。`revoke(name)` 只作用于本地 ws_signal。
 
 这允许后续真正 WebRTC Chat 端到端验收复用真实数据库权限，不向产品公开 Session 构造器。本记录尚未声称验证 WebRTC/Chat、音视频或客户端 UI。
+
+## 连接期结构探测与错误分类
+
+- `SignalConnection::connect` 在身份绑定后执行只读 `signal-probe.surql`；062 未应用（`native_signal` 不存在）时返回 `SignalSchemaMissing`，不再进入监听后在首次收件箱报「身份或工作区已变化」。探测不能写成 `WHERE false`：fork 会在解析表之前短路。
+- 语句级 ERR 仅按结构化 `kind/details` 分类；RPC 级 `NotAllowed` 归为 `SignalDenied`；不回显数据库 message。没有 `id` 的服务端通知帧被忽略。
+- `native-signaling` 只把真正的身份/作用域失败映射成「身份或工作区已变化」，限流、绑定和数据库失败保留原因。
+- 成员键若是 UUID / 日期形状会被 fork JSON-RPC 转型，`member_key` 直接拒绝；生产 user 键是 CREATE 随机生成的 20 位字母数字。
+- `real_fork_listening_cadence_and_unmigrated_workspace`：只到 061 的库连接即得 `SignalSchemaMissing`；完整 061/062 库按 UI 的 4 秒节奏跨越服务端 5 秒 ping 轮询收件箱并收到邀请。
