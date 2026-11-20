@@ -43,8 +43,10 @@ use surreal_ck_peer_transport::{
     },
     webrtc::{
         api::setting_engine::SettingEngine,
-        peer_connection::peer_connection_state::RTCPeerConnectionState,
-        sdp::session_description::RTCSessionDescription,
+        peer_connection::{
+            peer_connection_state::RTCPeerConnectionState,
+            sdp::session_description::RTCSessionDescription,
+        },
     },
 };
 
@@ -336,7 +338,7 @@ async fn run(
     }
     macro_rules! fail {
         ($error:expr) => {
-            emit!(MeetingUpdate::Error(map_error($error)));
+            emit!(MeetingUpdate::Error(map_error($error)))
         };
     }
     let rpc = match MeetingConnection::connect(&client, session, &config, &slug).await {
@@ -550,9 +552,9 @@ async fn set_device(
     generation: u64,
 ) {
     macro_rules! emit {
-        ($update:expr) => {
+        ($update:expr) => {{
             let _ = out.send((epoch, Event::Meeting(generation, $update))).await;
-        };
+        }};
     }
     if on {
         if lease.is_none() {
@@ -646,7 +648,7 @@ async fn emit_snapshot(
     };
     let local = meeting.local_join();
     let local_capture = media.capture_state();
-    let capture = local_capture.borrow();
+    let capture = local_capture.borrow().clone();
     let view = RoomSnapshot {
         room_id: snapshot.room.id.clone(),
         room_code: snapshot.room.code.clone(),
@@ -655,11 +657,7 @@ async fn emit_snapshot(
             RoomStatus::Open => RoomState::Active,
             RoomStatus::Ended => RoomState::Ended,
         },
-        host: contacts
-            .iter()
-            .find(|contact| contact.member_id == snapshot.room.host)
-            .map(|contact| contact.name.clone())
-            .unwrap_or_else(|| snapshot.room.host.clone()),
+        host: snapshot.room.host.clone(),
         local_join_id: local.map(str::to_owned),
         members: snapshot
             .members
