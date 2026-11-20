@@ -17,7 +17,10 @@ enum Command {
     #[cfg(feature = "experimental-enterprise-signaling")]
     Chat(u64, u64, enterprise_chat::Action),
 }
-enum Event {
+pub(crate) enum Event {
+    /// 会议 actor 的代际化更新；u64 为会议代际，epoch 由外层元组携带。
+    #[cfg(feature = "experimental-enterprise-meeting")]
+    Meeting(u64, crate::ui::meeting::MeetingUpdate),
     #[cfg(feature = "experimental-enterprise-files")]
     FileTools(
         u64,
@@ -439,7 +442,11 @@ fn abort(pending: &mut Option<tokio::task::JoinHandle<()>>) {
         job.abort();
     }
 }
-fn start() -> (
+fn start(
+    #[cfg(feature = "experimental-enterprise-meeting")] meeting: Option<
+        Arc<crate::meeting_actor::Shared>,
+    >,
+) -> (
     async_channel::Sender<Command>,
     async_channel::Receiver<(u64, Event)>,
 ) {
@@ -456,6 +463,16 @@ fn start() -> (
             let mut pending: Option<tokio::task::JoinHandle<()>> = None;
             let mut directory: Option<Directory> = None;
             let mut gate = CompletionGate::default();
+            #[cfg(feature = "experimental-enterprise-meeting")]
+            let mut meeting_generation: u64 = 0;
+            #[cfg(feature = "experimental-enterprise-meeting")]
+            let stop_meeting = |out: &async_channel::Sender<(u64, Event)>,
+                                epoch: u64,
+                                reason: crate::ui::meeting::UnavailableReason| {
+                if let Some(shared) = &meeting {
+                    crate::meeting_actor::stop(shared, out, epoch, reason);
+                }
+            };
             #[cfg(feature = "experimental-enterprise-signaling")]
             let mut chat_worker = enterprise_chat::Slot::default();
             let mut expiry = tokio::time::interval(std::time::Duration::from_secs(1));
@@ -470,6 +487,12 @@ fn start() -> (
                             }
                             #[cfg(feature = "experimental-enterprise-signaling")]
                             let close = enterprise_chat::shutdown(&mut chat_worker).await;
+                            #[cfg(feature = "experimental-enterprise-meeting")]
+                            stop_meeting(
+                                &out,
+                                gate.epoch,
+                                crate::ui::meeting::UnavailableReason::SignedOut,
+                            );
                             directory.take();
                             abort(&mut pending);
                             gate.invalidate(gate.epoch);
@@ -502,6 +525,12 @@ fn start() -> (
                             #[cfg(feature = "experimental-enterprise-signaling")]
                             Command::Chat(_, _, _) => unreachable!(),
                             Command::Logout(id, reason) => {
+                                #[cfg(feature = "experimental-enterprise-meeting")]
+                                stop_meeting(
+                                    &out,
+                                    id,
+                                    crate::ui::meeting::UnavailableReason::SignedOut,
+                                );
                                 directory.take();
                                 gate.invalidate(id);
                                 let message = reason.to_owned();
@@ -510,6 +539,12 @@ fn start() -> (
                                 let _ = out.send((id, Event::Cleared(message))).await;
                             }
                             Command::Login(id) => {
+                                #[cfg(feature = "experimental-enterprise-meeting")]
+                                stop_meeting(
+                                    &out,
+                                    id,
+                                    crate::ui::meeting::UnavailableReason::SignedOut,
+                                );
                                 directory.take();
                                 #[cfg(feature = "experimental-enterprise-signaling")]
                                 if let Err(error) = close {
@@ -542,6 +577,12 @@ fn start() -> (
                                     continue;
                                 };
                                 gate.start(id);
+                                #[cfg(feature = "experimental-enterprise-meeting")]
+                                stop_meeting(
+                                    &out,
+                                    id,
+                                    crate::ui::meeting::UnavailableReason::NoWorkspace,
+                                );
                                 let previous = previous.session.clone();
                                 let done = done.clone();
                                 pending = Some(tokio::spawn(async move {
@@ -560,15 +601,66 @@ fn start() -> (
                         match result {
                             Ok(next) if next.session.ensure_current().is_ok() => {
                                 let event = Event::Ready(next.view.clone(), next.message.clone());
+                                #[cfg(feature = "experimental-enterprise-meeting")]
+                                if let Some(shared) = &meeting {
+                                    match next.collaboration.clone() {
+                                        Some(session)
+                                            if next.view.selected_slug.is_some() =>
+                                        {
+                                            meeting_generation += 1;
+                                            if let Ok((client, database)) = configured() {
+                                                let contacts = next
+                                                    .view
+                                                    .chat_members
+                                                    .iter()
+                                                    .filter(|member| !member.pending)
+                                                    .map(|member| crate::ui::meeting::Contact {
+                                                        member_id: member.id.clone(),
+                                                        name: member.name.clone(),
+                                                    })
+                                                    .collect();
+                                                crate::meeting_actor::start(
+                                                    shared,
+                                                    id,
+                                                    meeting_generation,
+                                                    client,
+                                                    session,
+                                                    database,
+                                                    next.view.selected_slug.clone().unwrap_or_default(),
+                                                    contacts,
+                                                    out.clone(),
+                                                );
+                                            }
+                                        }
+                                        _ => crate::meeting_actor::stop(
+                                            shared,
+                                            &out,
+                                            id,
+                                            crate::ui::meeting::UnavailableReason::SignedOut,
+                                        ),
+                                    }
+                                }
                                 directory = Some(next);
                                 let _ = out.send((id, event)).await;
                             }
                             Ok(_) => {
+                                #[cfg(feature = "experimental-enterprise-meeting")]
+                                stop_meeting(
+                                    &out,
+                                    id,
+                                    crate::ui::meeting::UnavailableReason::SignedOut,
+                                );
                                 directory.take();
                                 let _ = out.send((id, Event::Cleared("登录已过期，请重新登录。".into()))).await;
                             }
                             Err(error) => {
                                 if directory.as_ref().is_some_and(|entry| entry.session.ensure_current().is_err()) {
+                                    #[cfg(feature = "experimental-enterprise-meeting")]
+                                    stop_meeting(
+                                        &out,
+                                        id,
+                                        crate::ui::meeting::UnavailableReason::SignedOut,
+                                    );
                                     directory.take();
                                     let _ = out.send((id, Event::Cleared("登录已过期，请重新登录。".into()))).await;
                                 } else {
@@ -585,6 +677,12 @@ fn start() -> (
             abort(&mut pending);
             #[cfg(feature = "experimental-enterprise-signaling")]
             let _ = enterprise_chat::shutdown(&mut chat_worker).await;
+            #[cfg(feature = "experimental-enterprise-meeting")]
+            stop_meeting(
+                &out,
+                0,
+                crate::ui::meeting::UnavailableReason::SignedOut,
+            );
             drop(directory);
         });
     });
@@ -623,6 +721,7 @@ fn summary_of(state: &IdentityViewState, available: bool) -> crate::first_screen
 /// 面板常驻挂载：只折叠账号设置，不能将采集隐私与停止区一起隐藏。
 pub fn enterprise_identity(
     summary: Signal<crate::first_screen::IdentitySummary>,
+    #[cfg(feature = "experimental-enterprise-meeting")] meeting: &crate::meeting_actor::Bridge,
 ) -> impl IntoElement {
     let expanded = signal(false);
     let available = identity_available();
@@ -641,14 +740,25 @@ pub fn enterprise_identity(
     let media = crate::enterprise_tools::MediaTools::new();
     #[cfg(feature = "experimental-enterprise-media")]
     cleanup(move || media.invalidate());
+    #[cfg(feature = "experimental-enterprise-meeting")]
+    let (commands, events) = start(Some(meeting.shared()));
+    #[cfg(not(feature = "experimental-enterprise-meeting"))]
     let (commands, events) = start();
     let cleanup_commands = commands.clone();
     cleanup(move || {
         cleanup_commands.close();
     });
     let browser_commands = commands.clone();
+    let meeting_bridge = meeting.clone();
     spawn(async move {
         while let Ok((id, event)) = events.recv().await {
+            #[cfg(feature = "experimental-enterprise-meeting")]
+            if let Event::Meeting(generation, update) = event {
+                if state.get_untracked().epoch == id {
+                    meeting_bridge.apply(generation, update);
+                }
+                continue;
+            }
             #[cfg(feature = "experimental-enterprise-files")]
             let event = match event {
                 Event::FileTools(generation, handle, notices) => {

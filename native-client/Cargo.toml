@@ -16,6 +16,7 @@ surreal-ck-peer-transport = { path = "../native-transport" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 async-channel = "2"
 serde_json = "1"
+bytes = "1"
 
 nsh-core = "0.4.0"
 nsh-base = { version = "0.4.0", default-features = false }
@@ -44,6 +45,7 @@ github-manual-updates = []
 experimental-enterprise-signaling = ["dep:surreal-ck-native-signaling"]
 experimental-enterprise-media = ["experimental-enterprise-signaling"]
 experimental-enterprise-files = ["experimental-enterprise-signaling"]
+experimental-enterprise-meeting = ["experimental-enterprise-media"]
 experimental-macos-video = ["surreal-ck-native-video-view/macos-appkit", "surreal-ck-native-video-view/experimental-host"]
 experimental-windows-video = ["surreal-ck-native-video-view/windows-d2d", "surreal-ck-native-video-view/experimental-host"]
 android-native-oauth = ["dep:jni", "dep:zeroize"]

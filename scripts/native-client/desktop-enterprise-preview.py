@@ -22,7 +22,7 @@ icon_spec.loader.exec_module(brand_icon)
 # 共用安装器 receipt 范围，包含企业信令源码。
 
 FEATURES = {
-    'macos': ['desktop', 'github-manual-updates', 'experimental-enterprise-media', 'experimental-enterprise-files', 'experimental-macos-video'],
+    'macos': ['desktop', 'github-manual-updates', 'experimental-enterprise-media', 'experimental-enterprise-files', 'experimental-enterprise-meeting', 'experimental-macos-video'],
     'windows': ['desktop', 'experimental-enterprise-media', 'experimental-enterprise-files', 'experimental-windows-video', 'windows-auto-update'],
 }
 HOSTS = {'macos': {'aarch64-apple-darwin', 'x86_64-apple-darwin'},
