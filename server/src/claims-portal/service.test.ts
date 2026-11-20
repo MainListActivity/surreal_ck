@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { QueryError } from "surrealdb";
 import { HttpError } from "../http-error";
 import { hashToken } from "./crypto";
 import {
@@ -269,6 +270,26 @@ function makeService(options?: {
 }
 
 describe("ClaimsPortalService", () => {
+  test("签发和作废遇到结构化事务冲突返回可重试的中文 409", async () => {
+    const { service, db, store } = makeService();
+    const query = db.query;
+    db.query = (sql, vars) => {
+      if (sql.includes("BEGIN TRANSACTION")) {
+        return Promise.reject(new QueryError({
+          code: -32000, message: "Conflict with another transaction", details: { kind: "TransactionConflict" },
+        }));
+      }
+      return query(sql, vars);
+    };
+    const conflict = { status: 409, code: "claims-token-conflict", message: "链接已被其他操作更改，请刷新后重试" };
+    await expect(service.mintToken({
+      workspaceDb: "ws_case_a", slug: "case-a", rosterId: store.roster.id, createdBy: "admin",
+    })).rejects.toMatchObject(conflict);
+    await expect(service.revokeToken({
+      workspaceDb: "ws_case_a", tokenId: "claim_access_token:t1", actor: "admin",
+    })).rejects.toMatchObject(conflict);
+  });
+
   test("无 pepper → mint/open 501 claims-portal-not-configured", async () => {
     const { service } = makeService({ pepper: null });
     await expect(

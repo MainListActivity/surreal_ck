@@ -1,4 +1,4 @@
-import { DateTime, RecordId, StringRecordId } from "surrealdb";
+import { DateTime, isRetryableConflict, RecordId, StringRecordId } from "surrealdb";
 import { extractNativeQuotaError } from "@surreal-ck/shared/native-quota";
 import { claimProgressStage, publicClaimStage, type ClaimProgressEvent, type ClaimProgressStage, type PublishedClaimDecision } from "@surreal-ck/shared/claims-portal";
 import { getRootDatabaseSession } from "../db/root-connection";
@@ -187,7 +187,7 @@ function issueError(cause: unknown): never {
   if (error.includes("claims-roster-not-found")) {
     throw new HttpError(404, "claims-roster-not-found", "名册中找不到所选债权人");
   }
-  if (error.includes("claim_access_token_one_active") || error.includes("transaction conflict")) {
+  if (isRetryableConflict(cause) || error.includes("claim_access_token_one_active") || /transaction conflict/i.test(error)) {
     throw new HttpError(409, "claims-token-conflict", "链接已被其他操作更改，请刷新后重试");
   }
   throw cause;
