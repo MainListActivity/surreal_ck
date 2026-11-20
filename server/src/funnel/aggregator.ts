@@ -148,7 +148,9 @@ export async function aggregateFunnelCounts(
   // 工作区标识按 slug → db_name 解析，工作区已不存在时退回用 slug 作哈希输入（口径差异见交付说明）。
   const inviteCounts = new Map<string, number>();
   const rows = rowsOf(
-    await client.query("SELECT created_at, workspace_slug FROM ops_invitation WHERE status = 'completed';"),
+    // 已打 test_kit_purged_at 的行不计入：清理后工作区已删，回退 slug 哈希域
+    // 会让同一邀请在 db_name 与 slug 两个 workspace_key 下重复计数。
+    await client.query("SELECT created_at, workspace_slug FROM ops_invitation WHERE status = 'completed' AND test_kit_purged_at = NONE;"),
   );
   for (const value of rows) {
     if (!value || typeof value !== "object") continue;
