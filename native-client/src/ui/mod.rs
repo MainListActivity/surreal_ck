@@ -16,7 +16,7 @@ pub const GOLD_TINT: u32 = 0xF5C54238;
 use nsh_base::{button, input, theme};
 use nsh_core::{element::ImageSrc, prelude::*};
 
-use self::icons::{Icon, INK, MUTED};
+use self::icons::{INK, Icon, MUTED};
 
 pub fn action(
     label: &'static str,
@@ -165,7 +165,6 @@ pub fn nav_item(
 ) -> impl IntoElement {
     button()
         .accessibility_label(label)
-        .selected(selected)
         .on_press(press)
         .w(px(RAIL_NAV))
         .py_2()
@@ -173,8 +172,9 @@ pub fn nav_item(
         .items_center()
         .justify_center()
         .rounded(px(12.0))
-        // selected_style 的 bg 在此 nsh 版本上不生效，选中态会落到 button 默认深色底；
-        // 显式按选中态给背景，未选中透明露出侧栏底色。
+        // 不设 .selected()：平台层会为 a11y selected 状态绘制系统选中色块
+        // （GTK/macos 均把 :selected 渲染成深色系统色，压住元素自定义 bg），
+        // 选中态完全由显式样式表达——金色圆角块 + 深色图标与文字。
         .bg(move || {
             if selected() {
                 theme().primary
@@ -184,7 +184,6 @@ pub fn nav_item(
         })
         .hover(|s| s.opacity(0.85))
         .active(|s| s.opacity(0.65))
-        .selected_style(|s| s.bg(theme().primary))
         .child(
             image(move || icon.src(if selected() { INK } else { MUTED }))
                 .w(px(22.0))
