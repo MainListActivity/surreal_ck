@@ -184,6 +184,7 @@ beforeAll(async () => {
       role: "participant"
     };
     -- 生产遗留坏行形态：name 非字符串（行先于严格字段类型写入）。
+    ALTER DATABASE COMPATIBILITY 3;
     DEFINE FIELD OVERWRITE name ON TABLE workspace TYPE any;
     DEFINE FIELD OVERWRITE name ON TABLE billing_account TYPE any;
     CREATE workspace:badname CONTENT {
@@ -200,6 +201,7 @@ beforeAll(async () => {
     };
     DEFINE FIELD OVERWRITE name ON TABLE workspace TYPE string;
     DEFINE FIELD OVERWRITE name ON TABLE billing_account TYPE string;
+    ALTER DATABASE COMPATIBILITY 4;
     CREATE platform_operator:alice CONTENT {
       subject: "operator:alice",
       display_name: "Alice",
