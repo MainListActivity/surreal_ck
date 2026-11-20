@@ -572,6 +572,23 @@ HTTP/WSS 写围栏、可恢复快照与兼容 origin 目录；按
 不原地 downgrade。此 workflow 的准备与本地测试不代表已对
 生产检查、审批或升级；不要为了验证 workflow 而派发生产任务。
 
+若按「暂停自动部署 → 合并 → 升级 DB → 发布 origin/前端」执行单次维护窗，upgrade
+必须加 `defer_origin_start=true`。默认模式要求 `current` 已含 4.0 契约，并会自行启动
+origin、健康后解除围栏；延后模式允许旧 `current`，但保留 origin 停止和围栏，报告状态
+为 `database_ready_origin_stopped`，不是整场维护完成。
+
+自动 `Deploy production` 被 disable 时不能把它当成可直接派发的手动入口。要保持它
+停用到维护结束，先用 `deploy-origin-manual.yml` 的 `sha`、`approval_ref` 发布匹配的
+main commit，再运行 `release-frontend-recovery.yml`，填写同一 `sha`、证据
+`evidence_pr` 和 `approval_ref`，完成其 barrier 后的运营核定评论；不能省略证据门禁。
+若选择一次运行完成 origin 与前端，需先 enable `deploy-production.yml`，再在冻结
+main 提交期间以 `--ref main` 手动派发；它没有 `sha` 输入，使用派发时的 main SHA。
+这会提前恢复自动触发，应明确协调，不要重跑绑定旧 SHA 的历史发布。
+两条路径均须等待 DB 维护 workflow 已结束、释放 `production-release` 锁。origin/前端
+发布成功并确认运行版本、健康后，由运营执行受审的 unfence hook；新 origin 启动后
+可能已有后台写入，发布失败不自动回退旧 DB。围栏需允许健康检查、运营和发布验证，
+但不能允许公众写入。
+
 ### 各次运行所用的 SurrealDB 构建
 
 - 2026-10-21 收口链的 Quality gate 运行（本 PR 头）使用与既有仓库标准一致的 Linux runner 与公司 fork 候选制品；具体 run 号与合并 SHA 记录在交接文档与 PR 描述中。

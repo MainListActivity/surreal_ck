@@ -41,13 +41,14 @@ test("当前制品的未认证 SurrealKV 在任何生产 SSH 前拒绝 upgrade",
 test("数据库维护仅手动、main、production 审批与全局发布锁", async () => {
   const text = await Bun.file(join(import.meta.dir, "../../../.github/workflows/surrealdb-upgrade.yml")).text();
   const workflow = Bun.YAML.parse(text) as {
-    on: Record<string, { inputs: Record<string, { default?: string; required?: boolean }> }>;
+    on: Record<string, { inputs: Record<string, { default?: string | boolean; required?: boolean }> }>;
     concurrency: { group: string; "cancel-in-progress": boolean };
     jobs: Record<string, { if: string; environment: string }>;
   };
   expect(Object.keys(workflow.on)).toEqual(["workflow_dispatch"]);
   expect(workflow.on.workflow_dispatch?.inputs.mode?.default).toBe("check");
   expect(workflow.on.workflow_dispatch?.inputs.approval_ref?.required).toBe(true);
+  expect(workflow.on.workflow_dispatch?.inputs.defer_origin_start?.default).toBe(false);
   expect(workflow.concurrency).toEqual({ group: "production-release", "cancel-in-progress": false });
   expect(workflow.jobs.maintenance?.if).toBe("github.ref == 'refs/heads/main'");
   expect(workflow.jobs.maintenance?.environment).toBe("production");
@@ -58,4 +59,6 @@ test("数据库维护仅手动、main、production 审批与全局发布锁", as
   expect(text).toContain("promotion-production.json");
   expect(text).toContain("linux-arm64.tgz");
   expect(text).toContain("systemd-run");
+  expect(text).toContain('--defer-origin-start');
+  expect(text).toContain('"$DEFER_ORIGIN_START" = true');
 });

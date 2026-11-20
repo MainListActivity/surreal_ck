@@ -23,6 +23,10 @@ on:
         options: [surrealkv, rocksdb]
         default: surrealkv
         required: true
+      defer_origin_start:
+        description: "仅升级 DB，保留 origin 停止和写围栏；之后另行发布兼容 origin/前端并人工验收解除围栏"
+        type: boolean
+        default: false
       approval_ref:
         type: string
         required: true
@@ -52,6 +56,7 @@ jobs:
       TARGET_RELEASE: ${{ inputs.target_release }}
       TARGET_IMAGE: ${{ inputs.target_image }}
       STORAGE_ENGINE: ${{ inputs.storage_engine }}
+      DEFER_ORIGIN_START: ${{ inputs.defer_origin_start }}
       APPROVAL_REF: ${{ inputs.approval_ref }}
       CONFIRMATION: ${{ inputs.confirmation }}
       ORIGIN_HOST: ${{ vars.ORIGIN_HOST }}
@@ -200,6 +205,9 @@ jobs:
             ssh origin "sudo -n install -m 700 '/var/tmp/$stage/surreal' '/var/lib/surreal-ck/db-upgrades/$stage/surreal'"
             target_args="--binary '/var/lib/surreal-ck/db-upgrades/$stage/surreal' --sha256 '$TARGET_SHA256'"
           fi
+          if [ "$DEFER_ORIGIN_START" = true ]; then
+            target_args="$target_args --defer-origin-start"
+          fi
           # 独立 systemd 单元继续运行；SSH/runner 断开不能解释成成功或触发再次升级。
           ssh origin "sudo -n systemd-run --unit='$stage' --wait --collect \
             --property='StandardOutput=file:/var/lib/surreal-ck/db-upgrades/$stage/report.json' \
@@ -218,6 +226,9 @@ jobs:
             printf '### SurrealDB maintenance\n```json\n' >> "$GITHUB_STEP_SUMMARY"
             cat surrealdb-report.json >> "$GITHUB_STEP_SUMMARY"
             printf '\n```\n' >> "$GITHUB_STEP_SUMMARY"
+            if [ "$(jq -r '.state // empty' surrealdb-report.json)" = database_ready_origin_stopped ]; then
+              echo '数据库阶段完成；origin 仍停止且写围栏保留。必须另行发布兼容 origin/前端、核验健康与版本，再人工解除围栏；不能据此宣布维护完成。' >> "$GITHUB_STEP_SUMMARY"
+            fi
           else
             echo '未取得成功检查/升级报告；查看失败步骤，禁止据此判断生产版本或重试升级。' >> "$GITHUB_STEP_SUMMARY"
           fi

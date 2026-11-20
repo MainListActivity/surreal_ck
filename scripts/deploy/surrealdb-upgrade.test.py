@@ -102,7 +102,7 @@ class SandboxTests(unittest.TestCase):
         self.unfence.touch()
         self.args = argparse.Namespace(confirmation=upgrade.CONFIRMATION, approval_ref="sandbox-only",
                                        binary=str(self.candidate), sha256=upgrade.digest(self.candidate), image="", receipt=None,
-                                       storage_engine="rocksdb")
+                                       storage_engine="rocksdb", defer_origin_start=False)
         self.report = {"version": upgrade.SOURCE, "binary": "/surreal", "systemd_exec_start_path": upgrade.PODMAN,
                        "container_image": upgrade.SOURCE_IMAGE, "architecture": "aarch64", "storage_engine": "rocksdb",
                        "free_bytes": 10 ** 12, "data_bytes": 10, "capabilities": capability(), "service_user": "test"}
@@ -168,6 +168,35 @@ class SandboxTests(unittest.TestCase):
         self.assertIn(("systemctl", "start", upgrade.SERVICE), self.calls)
         self.assertNotIn((str(self.unfence),), self.calls)
         self.assertNotIn(("systemctl", "start", upgrade.ORIGIN), self.calls)
+        self.assertEqual((self.data / "old-records").read_text(), "unchanged")
+
+    def test_default_mode_refuses_old_origin_before_fencing(self):
+        self.contract.write_text(f'forkRelease: "{upgrade.SOURCE}"')
+        with self.assertRaisesRegex(RuntimeError, "stage the compatible origin"):
+            upgrade.upgrade(self.args)
+        self.assertEqual(self.calls, [])
+
+    def test_deferred_origin_requires_no_current_contract_and_retains_fence(self):
+        self.args.defer_origin_start = True
+        self.contract.unlink()
+        result = upgrade.upgrade(self.args)
+        self.assertEqual(result["state"], "database_ready_origin_stopped")
+        self.assertEqual(result["write_fence"], "retained")
+        self.assertIn((str(self.fence),), self.calls)
+        self.assertIn(("systemctl", "stop", upgrade.ORIGIN), self.calls)
+        self.assertIn(("systemctl", "start", upgrade.SERVICE), self.calls)
+        self.assertNotIn(("systemctl", "start", upgrade.ORIGIN), self.calls)
+        self.assertNotIn((str(self.unfence),), self.calls)
+
+    def test_deferred_mode_count_mismatch_still_restores_old_database(self):
+        self.args.defer_origin_start = True
+        self.contract.unlink()
+        self.inventory.side_effect = [self.counts, self.counts, self.counts, {}]
+        with self.assertRaisesRegex(RuntimeError, "maintenance fence retained=True"):
+            upgrade.upgrade(self.args)
+        self.assertFalse(upgrade.DROPIN.exists())
+        self.assertNotIn(("systemctl", "start", upgrade.ORIGIN), self.calls)
+        self.assertNotIn((str(self.unfence),), self.calls)
         self.assertEqual((self.data / "old-records").read_text(), "unchanged")
 
     def test_uncertified_surrealkv_never_imports_or_switches(self):

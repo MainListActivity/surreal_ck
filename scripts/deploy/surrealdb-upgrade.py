@@ -407,9 +407,10 @@ def upgrade_locked(args, candidate):
         if not hook.is_absolute() or not hook.is_file():
             raise RuntimeError("root-owned maintenance fence/unfence executable paths are required")
         trusted_file(hook)
-    current_contract = ORIGIN_CONTRACT.read_text()
-    if f'forkRelease: "{TARGET}"' not in current_contract:
-        raise RuntimeError("stage the compatible origin release before upgrading the database")
+    if not args.defer_origin_start:
+        current_contract = ORIGIN_CONTRACT.read_text()
+        if f'forkRelease: "{TARGET}"' not in current_contract:
+            raise RuntimeError("stage the compatible origin release before upgrading the database")
     if report["free_bytes"] < report["data_bytes"] * 4 + 1024 ** 3:
         raise RuntimeError("insufficient disk for exports, snapshot and recovery copy")
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
@@ -504,6 +505,9 @@ def upgrade_locked(args, candidate):
         validate_capability(observed["capabilities"], args.storage_engine)
         if inventory(endpoint, auth) != before:
             raise RuntimeError("post-upgrade row counts differ")
+        if args.defer_origin_start:
+            return {"state": "database_ready_origin_stopped", "approval_ref": args.approval_ref,
+                    "write_fence": "retained", "backup": str(backup), "inspection": observed}
         run("systemctl", "start", ORIGIN)
         wait_health("http://127.0.0.1:8080", origin=True)
         released = True
@@ -533,6 +537,7 @@ def main():
     parser.add_argument("--image", default="")
     parser.add_argument("--receipt")
     parser.add_argument("--storage-engine", choices=["rocksdb", "surrealkv"], default="surrealkv")
+    parser.add_argument("--defer-origin-start", action="store_true")
     parser.add_argument("--approval-ref", required=True)
     parser.add_argument("--confirmation", default="")
     args = parser.parse_args()

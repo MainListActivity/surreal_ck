@@ -95,7 +95,10 @@ marker 32772 本身不绑定某个引擎；`storage.backend` 与 backend certifi
 2. 经审批在维护窗准备兼容 4.0 的 origin 发布目录与现有 `server.env`；旧 origin
    不能通过新的启动门禁。**先关闭公网写入并断开已有 WSS、停止 origin，再将
    `current` 指向已通过 Quality gate 的兼容发布目录，不要提前启动它**。
-   维护脚本会检查 `current` 中的 4.0 契约，不负责更换 origin 发布目录或 secrets。
+   默认维护模式会检查 `current/shared/src/native-quota/compatibility.ts` 中的
+   `forkRelease: "4.0.1-native-quota.1"`，不负责更换 origin 发布目录或 secrets。
+   若计划先升级数据库、再用发布 workflow 部署新 origin，则在 upgrade 时明确设置
+   `defer_origin_start=true`：允许 `current` 仍为旧版本，脚本不启动它，也不解除写围栏。
    配置 root 所有、不可被组/其他用户写入的
    `/etc/surreal-ck/surrealdb-upgrade.env`，其中
    `SURREAL_UPGRADE_FENCE` / `SURREAL_UPGRADE_UNFENCE` 指向同样受保护的绝对可执行路径。
@@ -125,8 +128,15 @@ marker 32772 本身不绑定某个引擎；`storage.backend` 与 backend certifi
    binary fallback 存在版本化 `/opt/surrealdb/releases/<release>/surreal`，只读挂载
    为 `/surreal-upgrade`；不调用主机 PATH 中的 surreal。
    重启正式服务后核验 binary/version/hash、`/health`、manifest、backend 生产认证、
-   32772 clean marker 与全部表行数，再启动 origin，要求
+   32772 clean marker 与全部表行数。默认模式再启动兼容 origin，要求
    `http://127.0.0.1:8080/health` 返回 `status=ok,surrealdb=up` 才解除围栏。
+   `defer_origin_start=true` 则返回 `database_ready_origin_stopped`，只表示数据库阶段
+   完成；origin 保持停止、写围栏保留，不读取旧 `current` 的契约。随后用手动发布流程
+   部署已通过 main CI 的兼容 origin 和前端，核验版本与健康，再由运营执行已审计的
+   `SURREAL_UPGRADE_UNFENCE` hook。保留的围栏必须允许发布所需的健康检查和维护访问，
+   仍阻断公众写入和原有长连接。不能以重跑 upgrade 代替最终解除围栏：已是目标版本
+   时仍只读 no-op。新应用启动后可能产生后台写入，不得再自动切回旧数据库；应用或前端
+   发布失败应保持围栏并人工向前修复。
 6. 失败时保持围栏与 origin 停止。尚未开放新格式业务写入时，恢复原 unit/drop-in，
    用旧镜像重启**从未交给 4.0 的原 RocksDB 目录**，这不是格式降级。
    若必须从 snapshot 恢复，则只恢复到另一个新路径，禁止覆盖旧/新现场；
