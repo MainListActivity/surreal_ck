@@ -1,0 +1,29 @@
+{
+  "binary": "/workspace/scratch/115bfa675150/native-client-probe/surreal_ck/native-client/target/debug/deps/surreal_ck_enterprise_media_e2e_r1-d9ced1bcedaab8fc",
+  "sha256": "c149fa2226a87461d38080ed91e715b4de11a1f1d87a8d96da1c9c35134ced50",
+  "bytes": 50058264,
+  "source_receipt_sha256": "e358bbd0d3698865d9d12db9155ee2495f8a48aa0c1e32b4ac31892c792ba384",
+  "build_result": {
+    "exit": 0,
+    "minimum_free_bytes": 1127968768,
+    "disk_guard_stopped": false,
+    "command": [
+      "cargo",
+      "test",
+      "--manifest-path",
+      "/workspace/scratch/115bfa675150/enterprise-signaling-media-e2e-harness/Cargo.toml",
+      "--locked",
+      "--offline",
+      "--lib",
+      "--features",
+      "experimental-enterprise-media",
+      "--no-run",
+      "--message-format=json",
+      "--config",
+      "profile.test.package.surreal-ck-enterprise-media-e2e-r1.debug=0",
+      "--config",
+      "profile.test.package.surreal-ck-enterprise-media-e2e-r1.strip=\"debuginfo\""
+    ],
+    "source_receipt_sha256": "e358bbd0d3698865d9d12db9155ee2495f8a48aa0c1e32b4ac31892c792ba384"
+  }
+}

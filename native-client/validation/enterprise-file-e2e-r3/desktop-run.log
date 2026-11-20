@@ -1,0 +1,22 @@
+PRE_RUN_HASHES
+e318ffe80d7a81215b4792aa6469eaead2d074008ab880a4368fb8672bc9c756  /workspace/scratch/115bfa675150/native-client-probe/surreal_ck/native-client/target/debug/deps/surreal_ck_enterprise_file_e2e_r3-ba66a0eb6749ea31
+6f6bcc72f8c23848295ed32d6a265f5bf0baad11e7be446294a5ade1b06a84f2  /workspace/scratch/115bfa675150/fork-runtime-probe/surreal
+0a9ae6237b4f30f4cdbc7be54accc3154fd9893c03c419f8a78c95e5828f83bf  /workspace/scratch/115bfa675150/enterprise-signaling-file-e2e-harness/source-receipt.json
+源码摘要一致：114个文件；不是编译/行为测试结果。
+
+running 2 tests
+test enterprise_file_e2e::authenticated_real_udp_file_confirm_hash_and_saved_ack ... PASS RECORD/company API fixture -> real OS UDP -> Peer.attach_files -> explicit confirmation API -> SHA256 saved file -> actual saved ACK -> confirmed close receipts
+ok
+test enterprise_file_e2e::authenticated_revocation_stops_file_and_retains_previously_saved_receipt ... PASS local member revocation -> lease invalid -> new file operations refused -> interrupted file not published -> previous committed receipts retained after real close
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 52 filtered out; finished in 13.06s
+
+源码摘要一致：114个文件；不是编译/行为测试结果。
+通过两个真实文件用例；日志：/workspace/scratch/115bfa675150/enterprise-signaling-file-e2e-harness/desktop-real-udp.log
+POST_RUN_HASHES
+e318ffe80d7a81215b4792aa6469eaead2d074008ab880a4368fb8672bc9c756  /workspace/scratch/115bfa675150/native-client-probe/surreal_ck/native-client/target/debug/deps/surreal_ck_enterprise_file_e2e_r3-ba66a0eb6749ea31
+6f6bcc72f8c23848295ed32d6a265f5bf0baad11e7be446294a5ade1b06a84f2  /workspace/scratch/115bfa675150/fork-runtime-probe/surreal
+0a9ae6237b4f30f4cdbc7be54accc3154fd9893c03c419f8a78c95e5828f83bf  /workspace/scratch/115bfa675150/enterprise-signaling-file-e2e-harness/source-receipt.json
+
+TEST_EXIT=0

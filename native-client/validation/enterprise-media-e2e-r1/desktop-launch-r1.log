@@ -1,0 +1,6 @@
+PRE_RUN
+/workspace/scratch/115bfa675150/run-media-desktop.sh: line 9: python: command not found
+POST_RUN
+/workspace/scratch/115bfa675150/run-media-desktop.sh: line 9: python: command not found
+TEST_EXIT=127
+POST_HASH_EXIT=127

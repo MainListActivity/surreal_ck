@@ -123,7 +123,7 @@ describe("native quota capability contract", () => {
         repository: "ghcr.io/mainlistactivity/surrealdb-native-quota",
         digest: `sha256:${"a".repeat(64)}`,
       },
-      sdk: { package: "surrealdb", version: "2.0.8" },
+      sdk: { package: "surrealdb", version: "2.2.2" },
       cli: { release: "3.3.0-native-quota.1" },
       contracts: { quota_major: 1, error_wire_code: -32010 },
       formats: { fork_storage_major: 32771, quota_catalog: 1, quota_usage: 1 },

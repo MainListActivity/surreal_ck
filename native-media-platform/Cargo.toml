@@ -1,0 +1,15 @@
+[package]
+name = "surreal-ck-native-media-platform"
+version = "0.1.0"
+edition = "2021"
+publish = false
+[dependencies]
+bytes = "1"
+tokio = { version = "1", features = ["process", "io-util", "rt-multi-thread", "macros", "time"] }
+thiserror = "2"
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21.1"
+
+[dev-dependencies]
+jni = "0.21.1"

@@ -1,0 +1,365 @@
+name: Native client installers
+
+on:
+  # Development branch builds upload workflow artifacts only, never publish/deploy.
+  push:
+    branches: [feat/native-collaboration-bootstrap]
+    paths:
+      - 'native-client/**'
+      - 'native-transport/**'
+      - 'native-updater/**'
+      - 'native-identity/**'
+      - 'native-updater-platform/**'
+      - 'native-media-platform/**'
+      - 'native-call/**'
+      - 'native-video-view/**'
+      - 'native-signaling/**'
+      - 'scripts/native-client/**'
+      # Candidate-only media recipes are not consumed by default installers.
+      - '!scripts/native-client/build-media-native.sh'
+      - '!scripts/native-client/build-media-runtime.py'
+      - '!scripts/native-client/media-sources.lock.json'
+      - '!scripts/native-client/smoke-media-runtime.py'
+      - '!scripts/native-client/test_media_native_build.py'
+      - '.github/workflows/native-client*'
+  workflow_dispatch:
+    inputs:
+      experimental_android_media:
+        description: Build an additional experimental Android media APK (test key, no device validation)
+        type: boolean
+        required: false
+        default: false
+  pull_request:
+    paths:
+      - 'native-client/**'
+      - 'native-transport/**'
+      - 'native-updater/**'
+      - 'native-identity/**'
+      - 'native-updater-platform/**'
+      - 'native-media-platform/**'
+      - 'native-call/**'
+      - 'native-video-view/**'
+      - 'native-signaling/**'
+      - 'scripts/native-client/**'
+      # Candidate-only media recipes are not consumed by default installers.
+      - '!scripts/native-client/build-media-native.sh'
+      - '!scripts/native-client/build-media-runtime.py'
+      - '!scripts/native-client/media-sources.lock.json'
+      - '!scripts/native-client/smoke-media-runtime.py'
+      - '!scripts/native-client/test_media_native_build.py'
+      - '.github/workflows/native-client*'
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: native-client-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'release' }}
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux
+            os: ubuntu-24.04
+            native_host: x86_64-unknown-linux-gnu
+          - target: android
+            os: ubuntu-24.04
+            native_host: x86_64-unknown-linux-gnu
+          - target: macos
+            os: macos-15
+            native_host: aarch64-apple-darwin
+          - target: macos
+            os: macos-15-intel
+            native_host: x86_64-apple-darwin
+          - target: windows
+            os: windows-2022
+            native_host: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.99.1'
+          components: rustfmt, clippy
+      - name: Assert actual native runner CPU and Rust host
+        shell: bash
+        run: bash scripts/native-client/check-native-host.sh '${{ matrix.native_host }}'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native-client
+          key: native-${{ matrix.os }}-${{ matrix.target }}
+      - name: Select OpenSSL 3 for Ed25519 policy checks on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          openssl_bin="$(brew --prefix openssl@3)/bin"
+          test -x "$openssl_bin/openssl"
+          "$openssl_bin/openssl" version
+          "$openssl_bin/openssl" version | grep -E '^OpenSSL 3\.'
+          echo "$openssl_bin" >> "$GITHUB_PATH"
+      - name: Test release asset collection
+        shell: bash
+        run: |
+          python scripts/native-client/check-version.py
+          python scripts/native-client/test_install_nsh.py
+          python scripts/native-client/test_brand_icon.py
+          python scripts/native-client/test_desktop_enterprise_preview.py
+          python scripts/native-client/test_public_inputs.py
+          python scripts/native-client/test_desktop_package.py
+          python scripts/native-client/test_desktop_media_package.py
+          python scripts/native-client/test_development_media.py
+          python scripts/native-client/test_sparkle_sdk.py
+          python scripts/native-client/test_collect.py
+          python scripts/native-client/test_native_host.py
+          python scripts/native-client/test_release_readiness.py
+          python scripts/native-client/test_update_policy.py
+          python scripts/native-client/test_android_host.py
+          python scripts/native-client/test_android_smoke.py
+          python scripts/native-client/test_windows_smoke.py
+          python scripts/native-client/test_media_runtime.py
+      - name: Install Linux build libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang llvm libgtk-4-dev libclang-dev libssl-dev pkg-config ffmpeg libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+      - uses: actions/setup-java@v4
+        if: matrix.target == 'android'
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Prepare Android SDK and Rust targets
+        if: matrix.target == 'android'
+        shell: bash
+        run: |
+          : "${ANDROID_HOME:?GitHub runner Android SDK is required}"
+          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [[ ! -x "$sdkmanager" ]]; then
+            sdkmanager="$ANDROID_HOME/cmdline-tools/12.0/bin/sdkmanager"
+          fi
+          test -x "$sdkmanager" || { echo '::error::Preinstalled Android sdkmanager is missing'; exit 1; }
+          "$sdkmanager" --version
+          "$sdkmanager" 'platforms;android-35' 'build-tools;35.0.1' 'ndk;29.0.14206865'
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
+          rustup target add aarch64-linux-android x86_64-linux-android
+      - name: Prepare locked Android updater host dependencies
+        if: matrix.target == 'android'
+        shell: bash
+        run: |
+          cargo fetch --manifest-path native-client/android-host/Cargo.toml --locked
+          # package.sh builds both ABIs, merges the updater DEX/manifest, and
+          # verifies JNI exports, signing and alignment of the final APK.
+      - name: Test and lint default native Rust crates
+        if: matrix.target == 'linux'
+        shell: bash
+        run: bash scripts/native-client/check-rust.sh
+      - name: Validate experimental enterprise signaling (not packaged)
+        if: matrix.target == 'linux'
+        shell: bash
+        run: bash scripts/native-client/check-enterprise-signaling.sh
+      - name: Configure compiler stack
+        if: matrix.target == 'windows'
+        shell: bash
+        run: echo "RUST_MIN_STACK=268435456" >> "$GITHUB_ENV"
+      - name: Prepare checksum-pinned official Sparkle SDK (no signing credentials)
+        if: matrix.target == 'macos'
+        run: python scripts/native-client/install-sparkle-sdk.py
+      - name: Detect macOS signing configuration
+        id: macos-signing
+        if: matrix.target == 'macos'
+        env:
+          SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
+          SPARKLE_FEED_URL: ${{ vars.SPARKLE_FEED_URL }}
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        shell: bash
+        run: |
+          if [[ -n "$SPARKLE_PUBLIC_ED_KEY" && -n "$SPARKLE_FEED_URL" && -n "$MACOS_SIGN_IDENTITY" ]]; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event_name }}" == 'release' ]]; then
+            echo '::error::Signed macOS packaging requires the SPARKLE_PUBLIC_ED_KEY secret, SPARKLE_FEED_URL var and MACOS_SIGN_IDENTITY secret'
+            exit 1
+          else
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            echo '::notice::Signing configuration absent; skipping official macOS packaging (unsigned Apple Silicon coverage lives in native-client-macos-arm64-preview.yml)'
+          fi
+      - name: Verify complete native renderer (macOS or Windows MSVC)
+        if: matrix.target == 'macos' || matrix.target == 'windows'
+        shell: bash
+        run: bash scripts/native-client/check-renderer.sh '${{ matrix.target }}'
+      - name: Build desktop entry point
+        if: matrix.target != 'android'
+        run: cargo build --manifest-path native-client/Cargo.toml --features desktop --bin surreal-collaboration
+      - name: Install pinned NSH distribution
+        if: matrix.target == 'linux' || matrix.target == 'android'
+        run: python scripts/native-client/install-nsh.py
+      - name: Build Linux, macOS or Android package
+        if: matrix.target != 'windows' && (matrix.target != 'macos' || steps.macos-signing.outputs.ready == 'true')
+        env:
+          SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
+          SPARKLE_FEED_URL: ${{ vars.SPARKLE_FEED_URL }}
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          APPLE_NOTARY_PROFILE: ${{ secrets.APPLE_NOTARY_PROFILE }}
+        shell: bash
+        run: bash scripts/native-client/package.sh '${{ matrix.target }}'
+      - name: Prepare independently pinned Windows development media (never Release)
+        if: matrix.target == 'windows' && github.event_name == 'push' && github.ref == 'refs/heads/feat/native-collaboration-bootstrap'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/native-client/fetch-development-media.py "$RUNNER_TEMP/verified-development-media"
+      - name: Build Windows installer
+        if: matrix.target == 'windows'
+        shell: pwsh
+        run: ./scripts/native-client/package-windows.ps1
+      - name: Build explicitly requested experimental Android media artifact
+        if: matrix.target == 'android' && github.event_name == 'workflow_dispatch' && inputs.experimental_android_media
+        shell: bash
+        run: |
+          # Consume the standard test key already used by the NSH base build.
+          # Do not create a new identity or infer production signing permission.
+          test -f "$HOME/.android/debug.keystore" || { echo 'Existing Android test key required'; exit 1; }
+          cargo fetch --manifest-path native-client/android-host/Cargo.toml --locked
+          ANDROID_NATIVE_MEDIA=1 bash scripts/native-client/build-android-host.sh
+          bash native-media-platform/scripts/test-android-host-pure.sh
+          input=$(find dist/native-client/android/raw -maxdepth 1 -name '*.apk' -print -quit)
+          test -n "$input"
+          mkdir -p dist/experimental-android
+          python scripts/native-client/package-android-host.py --enable-experimental-host \
+            --input-apk "$input" \
+            --output-apk dist/experimental-android/SurrealCK-stage5-media-test-only.apk \
+            --sdk "$ANDROID_HOME" \
+            --native-lib "arm64-v8a=$PWD/native-client/target/aarch64-linux-android/release/libnsh.so" \
+            --native-lib "x86_64=$PWD/native-client/target/x86_64-linux-android/release/libnsh.so" \
+            --java-source-dir native-updater-platform/android \
+            --java-source-dir native-media-platform/android/src \
+            --manifest-fragment native-updater-platform/android/manifest-fragment.xml \
+            --manifest-fragment native-media-platform/android/documents-manifest.xml \
+            --manifest-fragment native-media-platform/android/media-manifest.xml \
+            --keystore-existing "$HOME/.android/debug.keystore" \
+            --key-alias androiddebugkey --test-signing
+          sha256sum dist/experimental-android/*.apk > dist/experimental-android/SHA256SUMS.txt
+          printf '%s\n' 'Experimental media host; Android debug/test key; device installation and real media capture NOT VERIFIED.' > dist/experimental-android/STATUS.txt
+      - uses: actions/upload-artifact@v4
+        if: matrix.target == 'android' && github.event_name == 'workflow_dispatch' && inputs.experimental_android_media
+        with:
+          name: experimental-android-media-test-only
+          path: dist/experimental-android/*
+          if-no-files-found: error
+      - name: Collect release assets and checksum manifest
+        if: matrix.target != 'macos' || steps.macos-signing.outputs.ready == 'true'
+        shell: bash
+        run: python scripts/native-client/collect.py '${{ matrix.target }}' '${{ matrix.os }}'
+      - uses: actions/upload-artifact@v4
+        if: matrix.target != 'macos' || steps.macos-signing.outputs.ready == 'true'
+        with:
+          name: native-client-${{ matrix.target }}-${{ matrix.os }}
+          path: dist/release/*
+          if-no-files-found: error
+
+  android-install-smoke:
+    if: ${{ !cancelled() && github.event_name == 'push' && needs.package.result != 'cancelled' }}
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-client-android-ubuntu-24.04
+          path: android-package
+      - name: Install and launch the exact collaboration APK without granting permissions
+        shell: bash
+        run: |
+          apk=$(find android-package -maxdepth 1 -name 'SurrealCK-android-*.apk' -print)
+          test -n "$apk" && test "$(printf '%s\n' "$apk" | wc -l)" -eq 1
+          bash scripts/native-client/android-install-smoke.sh "$apk" "$RUNNER_TEMP/android-smoke"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-install-smoke-evidence
+          path: ${{ runner.temp }}/android-smoke/*
+          if-no-files-found: warn
+
+  windows-install-smoke:
+    if: ${{ !cancelled() && github.event_name == 'push' && needs.package.result != 'cancelled' }}
+    needs: package
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-client-windows-windows-2022
+          path: windows-package
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install and launch the exact collaboration installer without bypassing its gate
+        shell: pwsh
+        run: |
+          $setups = @(Get-ChildItem windows-package -File -Filter 'SurrealCK-windows-*-setup.exe')
+          if ($setups.Count -ne 1) { throw 'Expected exactly one collaboration setup EXE' }
+          ./scripts/native-client/windows-install-smoke.ps1 `
+            -SetupPath $setups[0].FullName `
+            -PackageEvidencePath windows-package/windows-windows-2022-package-evidence.json `
+            -BuildReceiptPath windows-package/windows-windows-2022-build-receipt.json `
+            -EvidenceDir "$env:RUNNER_TEMP/windows-smoke"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-install-smoke-evidence
+          path: ${{ runner.temp }}/windows-smoke/*
+          if-no-files-found: warn
+
+  # Validation only: public candidate bytes must already exist before activating
+  # a mandatory policy. Never upload missing bytes after switching live policy.
+  verify-published-release:
+    if: github.event_name == 'release'
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-client-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify live signed policy against every release installer
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: python scripts/native-client/check-release-readiness.py release-assets --repository "$RELEASE_REPOSITORY" --tag "$RELEASE_TAG" > release-assets/online-policy-preflight.json
+      - name: Attach missing verification evidence only (never installers)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: python scripts/native-client/attach-release-evidence.py release-assets
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-release-evidence
+          path: |
+            release-assets/*-build-receipt.json
+            release-assets/*-assets.json
+            release-assets/online-policy-preflight.json
+          if-no-files-found: error

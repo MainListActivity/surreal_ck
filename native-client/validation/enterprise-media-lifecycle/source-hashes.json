@@ -1,0 +1,7 @@
+{
+  "native-client/src/enterprise_peer.rs": "04aee2465c3dcd2f1ab5edec6ecf35d9ceb2b98586cc95cf6835d30a651f4f19",
+  "native-client/src/enterprise_media.rs": "d8b34da714477493f318cdbd2b0e5ccd8392c18f30cb01fcc1edc92fb7887717",
+  "native-client/src/call_bridge.rs": "fb23040a542397ee1024eefefca38d05d6eba9340ee7ff60eb46f7c0d3969b05",
+  "native-client/Cargo.toml": "9280e130f3833cabd7cda3bd221bbac95ee6c7d0a4daa1df70878ccdb7be5646",
+  "native-client/src/lib.rs": "bc6641a7bb50b556a1c900c2e0356e3d0e27ab1a1e0e03638c1c8cedee5187ca"
+}

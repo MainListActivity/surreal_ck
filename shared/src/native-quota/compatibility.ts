@@ -21,7 +21,7 @@ export const NATIVE_QUOTA_EXPECTED_CONTRACT = {
   quotaCatalogFormatRevision: 1,
   quotaUsageFormatRevision: 1,
   cliRelease: "3.3.0-native-quota.1",
-  surrealDbJsVersion: "2.0.8",
+  surrealDbJsVersion: "2.2.2",
   imageRepository: "ghcr.io/mainlistactivity/surrealdb-native-quota",
   backendCertificationRevision: "native-quota-contract-v1",
   productionBackends: ["rocksdb"],

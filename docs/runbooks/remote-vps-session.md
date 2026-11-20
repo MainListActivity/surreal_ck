@@ -27,9 +27,15 @@ bun scripts/remote-session.ts status
 
 ## 以 DB token 直连 SurrealDB
 
-`db` 子命令内部先 refresh 换产品 audience access token，再调
-`POST /api/session/switch-workspace {workspaceSlug}` 拿到 scope exchange 的 DB token。
-用 SDK signin 该 JWT 即可读写该 workspace（`ac`/`db`/`RL` claim 照常生效）。
+`db` 子命令内部先串行 refresh 换产品 audience access token，认证调用
+`GET /api/session/workspaces`，按 slug 精确匹配唯一条目并使用其权威 `dbName`（不从 slug 推导）。
+随后调用 `POST /api/session/switch-workspace {workspaceSlug}` 拿到 scope exchange 的 DB token。
+输出连接前仅解码 token 的 `db` claim 做响应一致性检查；这不是签名验证或授权依据，
+实际 token 验证仍由服务端和数据库完成。列表缺失、重复、畸形或 token 的库名不一致时拒绝输出连接，
+错误不回显 token 或数据库名。成功输出的 JSON 含 token，应按凭据处理，不写入日志。
+使用SDK先 `connect(url, { namespace, database })` 选定返回的库，再 `authenticate(token)`；
+不要把外部JWT当成employee SIGNIN材料或connect认证provider。数据库继续按`ac`/`db`及实际PERMISSIONS执行权限，
+participant携带`RL`也不获得管理员DDL能力。
 
 ## 写/发布平台内容
 
@@ -62,3 +68,9 @@ curl -X POST https://l.maplayer.top/api/content/publications \
 - 会话文件只放本机（0700 目录/0600 文件），不进 git、日志或任务证据。
 - 不要在 stdout/日志中打印 token 或兑换码；`status` 只输出非敏感字段。
 - 不要把 remote client token 用于非测试主体；server 端也会拒绝（OIDC_REMOTE_CLIENT_ID 双保险）。
+
+## 请求转发与错误脱敏
+
+兑换、续期、workspace查询和切换请求禁止自动跟随HTTP重定向（包括同源）；端点变化应先核实配置，
+不能靠307/308转发含凭据的表单。网络错误不回显请求URL或底层异常；OAuth上游错误只显示固定标准错误码白名单。
+本机假数据HTTP回归确认307只到达原端点，不会向Location发送请求；这不是生产认证成功证据。

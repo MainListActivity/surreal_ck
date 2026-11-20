@@ -1,0 +1,8 @@
+
+running 2 tests
+test enterprise_peer::enterprise_screen_e2e::authenticated_real_screen_capture_stop ... PASS actual X11 test-window capture / real enterprise OS UDP / native decoder / FramePublisher RGBA / actual capture and playback close; revocation=false; no camera or production grant claim
+ok
+test enterprise_peer::enterprise_screen_e2e::authenticated_revocation_closes_real_screen ... PASS actual X11 test-window capture / real enterprise OS UDP / native decoder / FramePublisher RGBA / actual capture and playback close; revocation=true; no camera or production grant claim
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 67 filtered out; finished in 15.08s

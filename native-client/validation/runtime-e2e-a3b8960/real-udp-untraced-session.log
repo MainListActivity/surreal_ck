@@ -1,0 +1,15 @@
+
+running 1 test
+
+thread 'real_udp_same_session_chat_files_three_tracks_and_negative_cases' (7) panicked at /workspace/scratch/115bfa675150/collaboration-runtime-e2e/native-call/tests/one_to_one_session.rs:355:42:
+called `Result::unwrap()` on an `Err` value: "ICE gathered no candidates: check OS network interfaces or authorized STUN/TURN configuration"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test real_udp_same_session_chat_files_three_tracks_and_negative_cases ... FAILED
+
+failures:
+
+failures:
+    real_udp_same_session_chat_files_three_tracks_and_negative_cases
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.01s
+

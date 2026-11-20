@@ -9,7 +9,7 @@ const EXPECTED = Object.freeze({
   forkId: "mainlistactivity/surrealdb-native-quota",
   release: "3.3.0-native-quota.1",
   manifestRevision: "native-quota-v1.0",
-  sdk: "2.0.8",
+  sdk: "2.2.2",
   capability: "native-quota-v1",
   backend: "rocksdb",
   contractRevision: "native-quota-contract-v1",

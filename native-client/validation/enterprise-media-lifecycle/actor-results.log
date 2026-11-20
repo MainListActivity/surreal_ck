@@ -1,0 +1,14 @@
+
+running 9 tests
+test call_bridge::enterprise::tests::only_explicit_enable_commands_require_active_membership ... ok
+test call_bridge::enterprise::tests::full_command_queue_cannot_discard_stop_intent ... ok
+test call_bridge::enterprise::tests::inactive_lease_cannot_attach_media ... ok
+test call_bridge::enterprise::tests::lost_close_owner_is_never_success ... ok
+test call_bridge::enterprise::tests::revoked_lease_stops_without_an_explicit_close_and_preserves_notice ... ok
+test call_bridge::enterprise::tests::dropping_handle_requests_shutdown_without_aborting_cleanup ... ok
+test call_bridge::enterprise::tests::attach_opens_no_capture_and_shutdown_is_repeatable ... ok
+test call_bridge::enterprise::tests::shutdown_waits_for_authoritative_result_and_preserves_failure ... ok
+test call_bridge::enterprise::tests::unread_full_notice_queue_cannot_block_device_shutdown ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
