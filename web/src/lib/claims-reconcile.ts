@@ -4,6 +4,7 @@
 // 四类差异枚举与 docs/claims-reconciliation/data-model.md 一致，不允许第五类。
 
 import { DateTime, StringRecordId } from "surrealdb";
+import { claimCsvCell, publicClaimStage, type ClaimProgressStage } from "@surreal-ck/shared/claims-portal";
 import type { InterestCalculationRow } from "./claims-interest";
 import type { SurrealConn } from "./surreal";
 
@@ -52,6 +53,7 @@ export type SubmissionInput = {
   interest_end?: unknown;
   interest_method?: unknown;
   status?: unknown;
+  portal_stage?: unknown;
 };
 
 export type AttachmentInput = {
@@ -71,6 +73,7 @@ export type ReconRow = {
   declared_principal: number | null;
   declared_penalty: number | null;
   declared_status: string | null;
+  portal_stage: ClaimProgressStage | null;
   /** 账面列：多条账面按识别码聚合求和。 */
   book_principal: number | null;
   book_interest: number | null;
@@ -98,7 +101,66 @@ export type ClaimSupplement = {
   body?: unknown;
   actor?: unknown;
   created_at?: unknown;
+  due_at?: unknown;
+  request_id?: unknown;
+  attachment_ids?: unknown;
 };
+
+type ClaimFollowUpToken = { roster_id?: unknown; status?: unknown; opened_at?: unknown };
+export const CLAIM_FOLLOW_UP_LABELS = {
+  not_opened: "未打开",
+  opened_unsubmitted: "已打开未提交",
+  submitted: "已提交",
+  needs_info: "待补正",
+  overdue: "补正超期",
+} as const;
+export type ClaimFollowUpState = keyof typeof CLAIM_FOLLOW_UP_LABELS;
+type ClaimFollowUp = { states: ClaimFollowUpState[]; dueAt: string | null };
+
+export function buildClaimFollowUp(input: {
+  submissions: SubmissionInput[];
+  tokens: ClaimFollowUpToken[];
+  supplements: ClaimSupplement[];
+  now: number;
+}): Map<string, ClaimFollowUp> {
+  const result = new Map<string, ClaimFollowUp>();
+  for (const token of input.tokens) {
+    const rosterId = idStr(token.roster_id);
+    if (token.status !== "active" || !rosterId) continue;
+    result.set(rosterId, { states: [token.opened_at ? "opened_unsubmitted" : "not_opened"], dueAt: null });
+  }
+  const answered = new Set(input.supplements.filter((row) => row.direction === "creditor_reply").map((row) => idStr(row.request_id)));
+  const requests = new Map<string, ClaimSupplement[]>();
+  for (const row of input.supplements) {
+    const id = idStr(row.submission_id);
+    if (row.direction !== "manager_request" || !id) continue;
+    const list = requests.get(id) ?? [];
+    list.push(row);
+    requests.set(id, list);
+  }
+  for (const submission of input.submissions) {
+    const rosterId = idStr(submission.roster_id);
+    const submissionId = idStr(submission.id);
+    const stage = publicClaimStage(submission.portal_stage, submission.status);
+    if (!rosterId || !submissionId || !stage) continue;
+    const states: ClaimFollowUpState[] = ["submitted"];
+    const thread = requests.get(submissionId) ?? [];
+    const pending = thread.filter((row) => !answered.has(idStr(row.id)));
+    let deadline = Number.POSITIVE_INFINITY;
+    if (stage === "needs_info" && (thread.length === 0 || pending.length > 0)) {
+      states.push("needs_info");
+      for (const request of pending) {
+        const ms = request.due_at instanceof DateTime
+          ? request.due_at.toDate().getTime()
+          : Date.parse(String(request.due_at));
+        if (Number.isFinite(ms)) deadline = Math.min(deadline, ms);
+      }
+      if (deadline < input.now) states.push("overdue");
+    }
+    result.set(rosterId, { states, dueAt: Number.isFinite(deadline) ? new Date(deadline).toISOString() : null });
+  }
+  return result;
+}
 
 function idStr(value: unknown): string | null {
   if (typeof value === "string" && value.length > 0) return value;
@@ -232,6 +294,7 @@ export function assembleReconciliation(input: {
       declared_principal: num(submission?.principal),
       declared_penalty: num(submission?.penalty),
       declared_status: text(submission?.status),
+      portal_stage: publicClaimStage(submission?.portal_stage, submission?.status),
       book_principal: ledger ? Math.round(ledger.principal * 100) / 100 : null,
       book_interest: ledger ? Math.round(ledger.book_interest * 100) / 100 : null,
       calculation: calc,
@@ -256,18 +319,18 @@ export function assembleReconciliation(input: {
 
 // ── 直连读写 ──────────────────────────────────────────────────────────────
 
-/** 载入对账所需全部行（只读名册/账面/申报/快照/附件/结论/往返）。 */
 export async function loadReconciliation(conn: SurrealConn): Promise<{
   rows: ReconRow[];
   findings: ReconFinding[];
   supplements: ClaimSupplement[];
+  followUp: Map<string, ClaimFollowUp>;
 }> {
-  const [roster, ledger, submissions, calculations, attachments, findings, supplements] = await Promise.all([
+  const [roster, ledger, submissions, calculations, attachments, findings, supplements, tokens] = await Promise.all([
     conn.query<RosterInput>(`SELECT id, identity_code, name, subject_type FROM creditor_roster;`),
     conn.query<LedgerInput>(`SELECT id, identity_code, principal, book_interest FROM enterprise_ledger;`),
     conn.query<SubmissionInput>(
       `SELECT id, roster_id, identity_code, principal, penalty,
-              interest_start, interest_end, interest_method, status
+              interest_start, interest_end, interest_method, status, portal_stage
        FROM claim_submission;`,
     ),
     conn.query<InterestCalculationRow>(
@@ -281,15 +344,17 @@ export async function loadReconciliation(conn: SurrealConn): Promise<{
        FROM reconciliation_finding;`,
     ),
     conn.query<ClaimSupplement>(
-      `SELECT id, submission_id, direction, body, actor, created_at
+      `SELECT id, submission_id, direction, body, actor, created_at, due_at, request_id, attachment_ids
        FROM claim_supplement
        ORDER BY created_at ASC, id ASC;`,
     ),
+    conn.query<ClaimFollowUpToken>(`SELECT roster_id, status, opened_at FROM claim_access_token WHERE status = "active";`),
   ]);
   return {
     rows: assembleReconciliation({ roster, ledger, submissions, calculations, attachments }),
     findings,
     supplements,
+    followUp: buildClaimFollowUp({ submissions, tokens, supplements, now: Date.now() }),
   };
 }
 
@@ -336,11 +401,14 @@ export async function saveFinding(conn: SurrealConn, patch: FindingPatch): Promi
 /** 管理人向债权人发出补充要求（追加式，不可改删）。 */
 export async function sendSupplementRequest(
   conn: SurrealConn,
-  input: { submission_id: string; body: string; actor: string },
+  input: { submission_id: string; body: string; actor: string; dueAt?: string; templateKey?: string },
 ): Promise<{ id: string }> {
   const body = input.body.trim();
   if (body.length === 0 || body.length > 4000) {
     throw new Error("补充要求需为 1–4000 字");
+  }
+  if (input.dueAt && !Number.isFinite(Date.parse(input.dueAt))) {
+    throw new Error("补正截止时间无效");
   }
   const created = await conn.createRecord<{ id: unknown }>("claim_supplement", {
     submission_id: new StringRecordId(input.submission_id),
@@ -348,8 +416,74 @@ export async function sendSupplementRequest(
     body,
     actor: input.actor,
     created_at: new DateTime(new Date()),
+    ...(input.dueAt ? { due_at: new DateTime(input.dueAt) } : {}),
+    ...(input.templateKey ? { template_key: input.templateKey } : {}),
   });
   return { id: idStr(created.id) ?? "" };
+}
+
+export async function advanceClaimProgress(
+  conn: SurrealConn,
+  input: { submissionId: string; stage: "accepted" | "under_review" | "final"; actor: string },
+): Promise<void> {
+  const changed = await conn.query<{ id: unknown }>(
+    `UPDATE $id SET portal_stage = $stage, portal_stage_by = $actor, updated_at = time::now() RETURN id;`,
+    { id: new StringRecordId(input.submissionId), stage: input.stage, actor: input.actor },
+  );
+  if (changed.length !== 1) throw new Error("未能更新申报进度，请确认管理员权限");
+}
+
+export type SupplementTemplate = { key: string; label: string; body: string };
+
+export function loadSupplementTemplates(conn: SurrealConn): Promise<SupplementTemplate[]> {
+  return conn.query<SupplementTemplate>("SELECT key, label, body FROM claim_supplement_template ORDER BY label;");
+}
+
+export async function saveSupplementTemplate(conn: SurrealConn, template: SupplementTemplate): Promise<void> {
+  const label = template.label.trim();
+  const body = template.body.trim();
+  if (!label || label.length > 100 || !body || body.length > 4000) {
+    throw new Error("请填写模板名称和正文");
+  }
+  const saved = await conn.query<SupplementTemplate>(
+    `INSERT INTO claim_supplement_template { key: $key, label: $label, body: $body }
+     ON DUPLICATE KEY UPDATE label = $input.label, body = $input.body RETURN key, label, body;`,
+    { key: template.key, label, body },
+  );
+  if (saved.length !== 1) throw new Error("未能保存补正模板，请确认管理员权限");
+}
+
+export async function publishClaimDecision(
+  conn: SurrealConn,
+  submissionId: string,
+  input: {
+    confirmedPrincipal: number | undefined;
+    confirmedInterest: number | undefined;
+    confirmedPenalty: number | undefined;
+    unconfirmedAmount: number | undefined;
+    reason: string;
+  },
+): Promise<void> {
+  const { confirmedPrincipal, confirmedInterest, confirmedPenalty, unconfirmedAmount } = input;
+  const reason = input.reason.trim();
+  if ([confirmedPrincipal, confirmedInterest, confirmedPenalty, unconfirmedAmount]
+    .some((amount) => typeof amount !== "number" || !Number.isFinite(amount) || amount < 0)
+    || !reason || reason.length > 4000) {
+    throw new Error("请填写非负金额和对外理由");
+  }
+  const submission = new StringRecordId(submissionId);
+  const [latest] = await conn.query<{ version: number }>(
+    "SELECT version FROM claim_decision WHERE submission_id = $submission ORDER BY version DESC LIMIT 1;",
+    { submission },
+  );
+  const created = await conn.query<{ id: unknown }>(
+    `CREATE claim_decision SET submission_id = $submission, version = $version,
+      confirmed_principal = $confirmedPrincipal, confirmed_interest = $confirmedInterest,
+      confirmed_penalty = $confirmedPenalty, unconfirmed_amount = $unconfirmedAmount, reason = $reason
+      RETURN id;`,
+    { submission, version: (latest?.version ?? 0) + 1, confirmedPrincipal, confirmedInterest, confirmedPenalty, unconfirmedAmount, reason },
+  );
+  if (created.length !== 1) throw new Error("未能发布结论，请确认管理员权限");
 }
 
 // ── CSV 导出 ────────────────────────────────────────────────────────────────
@@ -370,6 +504,36 @@ function csvCell(value: string | number | null | undefined): string {
 
 function money(value: number | null): string | null {
   return value === null ? null : value.toFixed(2);
+}
+
+export async function buildClaimCorrespondenceCsv(conn: SurrealConn, submissionId?: string): Promise<string> {
+  const scope = submissionId ? " WHERE submission_id = $submission" : "";
+  const params = submissionId ? { submission: new StringRecordId(submissionId) } : undefined;
+  const creditorFields = "submission_id.identity_code AS identity_code, submission_id.roster_id.name AS name";
+  const [supplements, decisions] = await Promise.all([
+    conn.query<ClaimSupplement & { identity_code: string; name: string; attachment_names?: string[] }>(
+      `SELECT ${creditorFields}, id, direction, body, created_at, due_at, request_id,
+        attachment_ids.file_name AS attachment_names FROM claim_supplement${scope}
+        ORDER BY created_at ASC, id ASC;`, params,
+    ),
+    conn.query<{
+      identity_code: string; name: string; id: unknown; published_at: unknown; version: number; reason: string;
+      confirmed_principal: number; confirmed_interest: number; confirmed_penalty: number; unconfirmed_amount: number;
+    }>(`SELECT ${creditorFields}, id, published_at, version, reason, confirmed_principal, confirmed_interest,
+        confirmed_penalty, unconfirmed_amount FROM claim_decision${scope} ORDER BY published_at ASC, id ASC;`, params),
+  ]);
+  const lines = [
+    ["识别码", "债权人名称", "时间（UTC）", "类型", "记录", "关联补正请求", "截止时间（UTC）", "关联附件",
+      "结论版本", "确认本金", "确认利息", "确认违约金", "未确认金额", "正文或理由"],
+    ...supplements.map((row) => [row.identity_code, row.name, idStr(row.created_at),
+      row.direction === "manager_request" ? "补正要求" : "补正回复",
+      idStr(row.id), idStr(row.request_id), idStr(row.due_at), row.attachment_names?.join("；"),
+      null, null, null, null, null, row.body]),
+    ...decisions.map((row) => [row.identity_code, row.name, idStr(row.published_at), "审查结论",
+      idStr(row.id), null, null, null, row.version, row.confirmed_principal, row.confirmed_interest,
+      row.confirmed_penalty, row.unconfirmed_amount, row.reason]),
+  ];
+  return "\uFEFF" + lines.map((row) => row.map(claimCsvCell).join(",")).join("\r\n") + "\r\n";
 }
 
 /** 导出对账结果 CSV（UTF-8 BOM，Excel 可直接打开；行数 = 债权人行数）。 */

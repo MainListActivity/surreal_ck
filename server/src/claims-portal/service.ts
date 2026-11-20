@@ -1,5 +1,8 @@
-import { DateTime, StringRecordId } from "surrealdb";
+import { DateTime, isRetryableConflict, RecordId, StringRecordId } from "surrealdb";
+import { extractNativeQuotaError } from "@surreal-ck/shared/native-quota";
+import { claimProgressStage, publicClaimStage, type ClaimProgressEvent, type ClaimProgressStage, type PublishedClaimDecision } from "@surreal-ck/shared/claims-portal";
 import { getRootDatabaseSession } from "../db/root-connection";
+import { SurrealNativeQuotaClient } from "../db/native-quota/client";
 import { toIsoDateTimeString, toStringRecordId, toSurrealNone } from "../db/surreal-values";
 import { HttpError } from "../http-error";
 import { resolveWorkspaceBySlug } from "../../ai/office/employee-service";
@@ -70,6 +73,7 @@ type SubmissionRow = {
   statement?: unknown;
   status?: unknown;
   submitted_at?: unknown;
+  portal_stage?: unknown;
   manager_note?: unknown;
   created_at?: unknown;
   updated_at?: unknown;
@@ -94,6 +98,9 @@ type SupplementRow = {
   body?: unknown;
   actor?: unknown;
   created_at?: unknown;
+  due_at?: unknown;
+  request_id?: unknown;
+  attachment_ids?: unknown;
 };
 
 function idOf(value: unknown): string | null {
@@ -120,6 +127,23 @@ function requirePepper(getPepper: () => string | null): string {
     throw new HttpError(501, "claims-portal-not-configured", "CLAIMS_PORTAL_TOKEN_PEPPER is not configured");
   }
   return pepper;
+}
+
+function invalidPortalSession(): HttpError {
+  return new HttpError(401, "claims-session-invalid", "会话已失效，请重新打开链接");
+}
+
+function hasPortalRecordId(value: unknown, table: string): value is string {
+  if (typeof value !== "string" || !value.startsWith(`${table}:`)) return false;
+  const id = value.slice(table.length + 1);
+  return /^(?:[a-zA-Z0-9_-]{1,128}|⟨[a-zA-Z0-9_-]{1,128}⟩)$/u.test(id);
+}
+
+function supplementRecord(value: unknown, table: "claim_supplement" | "claim_attachment"): StringRecordId {
+  if (!hasPortalRecordId(value, table)) {
+    throw new HttpError(400, "claims-supplement-reference-invalid", "补正请求或附件无效");
+  }
+  return new StringRecordId(value);
 }
 
 function requireAttachmentConfig(getConfig: () => ReturnType<typeof getClaimsAttachmentConfig>) {
@@ -150,6 +174,23 @@ function asDateMs(value: unknown): number | null {
 
 function portalPath(slug: string, token: string): string {
   return `/claims/${encodeURIComponent(slug)}/${encodeURIComponent(token)}`;
+}
+
+export const MAX_CLAIMS_TOKEN_BATCH = 500;
+
+function issueError(cause: unknown): never {
+  const quota = extractNativeQuotaError(cause);
+  if (quota?.code === "quota_exceeded") {
+    throw new HttpError(409, "claims-token-quota", "案件记录配额不足，未更改任何链接");
+  }
+  const error = cause instanceof Error ? cause.message : "";
+  if (error.includes("claims-roster-not-found")) {
+    throw new HttpError(404, "claims-roster-not-found", "名册中找不到所选债权人");
+  }
+  if (isRetryableConflict(cause) || error.includes("claim_access_token_one_active") || /transaction conflict/i.test(error)) {
+    throw new HttpError(409, "claims-token-conflict", "链接已被其他操作更改，请刷新后重试");
+  }
+  throw cause;
 }
 
 export class ClaimsPortalService {
@@ -185,63 +226,104 @@ export class ClaimsPortalService {
     rosterId: string;
     createdBy: string;
   }): Promise<{ tokenPlaintext: string; tokenId: string; portalPath: string; status: string }> {
+    const [issued] = await this.issueTokens({ ...input, rosterIds: [input.rosterId] }, false);
+    return { tokenPlaintext: issued!.tokenPlaintext, tokenId: issued!.tokenId, portalPath: issued!.portalPath, status: "active" };
+  }
+
+  async mintTokenBatch(input: { workspaceDb: string; slug: string; rosterIds: unknown; createdBy: string }) {
+    return this.issueTokens(input, true);
+  }
+
+  private async issueTokens(
+    input: { workspaceDb: string; slug: string; rosterIds: unknown; createdBy: string },
+    precheck: boolean,
+  ) {
     const pepper = requirePepper(this.getPepper);
-    const rosterId = idOf(input.rosterId) ?? input.rosterId;
-    if (!rosterId.startsWith("creditor_roster:")) {
-      throw new HttpError(400, "claims-roster-id-invalid", "rosterId must be creditor_roster:…");
+    if (!Array.isArray(input.rosterIds) || input.rosterIds.length === 0 || input.rosterIds.length > MAX_CLAIMS_TOKEN_BATCH) {
+      throw new HttpError(400, "claims-token-batch-invalid", `请选择 1–${MAX_CLAIMS_TOKEN_BATCH} 位债权人`);
     }
-
+    const rosterIds = input.rosterIds.map((value: unknown) => {
+      if (typeof value !== "string" || !/^creditor_roster:.{1,256}$/u.test(value)) {
+        throw new HttpError(400, "claims-roster-id-invalid", "债权人名册记录无效");
+      }
+      return new StringRecordId(value);
+    });
+    if (new Set(rosterIds.map(String)).size !== rosterIds.length) {
+      throw new HttpError(400, "claims-token-batch-invalid", "请勿重复选择债权人");
+    }
     const db = await this.getSession(input.workspaceDb);
-    const roster = firstRow<RosterRow>(
-      await db.query("SELECT id, name, identity_code FROM $id;", {
-        id: new StringRecordId(rosterId),
-      }),
-    );
-    if (!roster?.id) {
-      throw new HttpError(404, "claims-roster-not-found", "Creditor roster row not found");
+    const roster = rowsOf<RosterRow>(await db.query(
+      "SELECT id, name, identity_code FROM creditor_roster WHERE id INSIDE $rosterIds;",
+      { rosterIds },
+    ));
+    if (roster.length !== rosterIds.length) {
+      throw new HttpError(404, "claims-roster-not-found", "名册中找不到所选债权人");
     }
-
-    // 同一名册仅保留一条 active：旧 active 置为 revoked。
-    await db.query(
-      `UPDATE claim_access_token SET status = "revoked", updated_at = time::now()
-       WHERE roster_id = $roster AND status = "active";`,
-      { roster: new StringRecordId(rosterId) },
-    );
-
-    const tokenPlaintext = generateToken();
-    const tokenHash = hashToken(tokenPlaintext, pepper);
-    const created = firstRow<TokenRow>(
+    if (precheck) {
+      const quota = await new SurrealNativeQuotaClient(db).info(input.workspaceDb);
+      const remaining = quota.usage?.tables.find((row) => row.table === "claim_access_token")?.record.remaining;
+      if (quota.ledger.usage_trusted && remaining != null && BigInt(remaining) < BigInt(roster.length)) {
+        throw new HttpError(409, "claims-token-quota", "案件记录配额不足，未更改任何链接");
+      }
+    }
+    const issued = roster.map((row) => {
+      const tokenPlaintext = generateToken();
+      return {
+        roster: new StringRecordId(idOf(row.id)!),
+        tokenId: new RecordId("claim_access_token", crypto.randomUUID().replaceAll("-", "")),
+        tokenPlaintext,
+        name: String(row.name ?? ""),
+        identityCode: String(row.identity_code ?? ""),
+      };
+    });
+    try {
       await db.query(
-        `CREATE claim_access_token CONTENT {
-          roster_id: $roster,
-          token_hash: $tokenHash,
-          status: "active",
-          opened_at: NONE,
-          last_attempt_at: NONE,
-          failure_count: 0,
-          locked_until: NONE,
-          created_by: $createdBy,
-          created_at: time::now(),
-          updated_at: time::now()
-        };`,
+        `BEGIN TRANSACTION;
+        FOR $entry IN $entries {
+          IF !(SELECT VALUE id FROM $entry.roster LIMIT 1)[0] {
+            THROW "claims-roster-not-found";
+          };
+          LET $revoked = UPDATE claim_access_token SET status = "revoked"
+            WHERE roster_id = $entry.roster AND status = "active" RETURN id;
+          FOR $old IN $revoked {
+            CREATE claim_portal_audit SET action = "token_revoked", target = $old.id, actor = $createdBy;
+          };
+          CREATE $entry.token SET roster_id = $entry.roster, token_hash = $entry.hash,
+            status = "active", created_by = $createdBy;
+          CREATE claim_portal_audit SET action = "token_issued", target = $entry.token, actor = $createdBy;
+        };
+        COMMIT TRANSACTION;`,
         {
-          roster: new StringRecordId(rosterId),
-          tokenHash,
+          entries: issued.map((item) => ({ roster: item.roster, token: item.tokenId, hash: hashToken(item.tokenPlaintext, pepper) })),
           createdBy: input.createdBy,
         },
-      ),
-    );
-    const tokenId = idOf(created?.id);
-    if (!tokenId) {
-      throw new HttpError(500, "claims-token-create-failed", "Failed to create access token");
+      );
+    } catch (cause) {
+      issueError(cause);
     }
+    return issued.map(({ tokenId, tokenPlaintext, name, identityCode }) => ({
+      tokenPlaintext, name, identityCode, tokenId: String(tokenId), portalPath: portalPath(input.slug, tokenPlaintext),
+    }));
+  }
 
-    return {
-      tokenPlaintext,
-      tokenId,
-      portalPath: portalPath(input.slug, tokenPlaintext),
-      status: "active",
-    };
+  async revokeToken(input: { workspaceDb: string; tokenId: string; actor: string }): Promise<void> {
+    if (!hasPortalRecordId(input.tokenId, "claim_access_token")) {
+      throw new HttpError(400, "claims-token-id-invalid", "链接记录无效");
+    }
+    const db = await this.getSession(input.workspaceDb);
+    try {
+      await db.query(
+        `BEGIN TRANSACTION;
+        LET $revoked = UPDATE $tokenId SET status = "revoked" WHERE status = "active" RETURN id;
+        FOR $row IN $revoked {
+          CREATE claim_portal_audit SET action = "token_revoked", target = $row.id, actor = $actor;
+        };
+        COMMIT TRANSACTION;`,
+        { tokenId: new StringRecordId(input.tokenId), actor: input.actor },
+      );
+    } catch (cause) {
+      issueError(cause);
+    }
   }
 
   async listTokens(input: { workspaceDb: string }): Promise<Array<{
@@ -437,15 +519,9 @@ export class ClaimsPortalService {
     tokenPlaintext: string;
   }): { tokenId: string; rosterId: string } {
     const pepper = requirePepper(this.getPepper);
-    if (!input.cookieRaw) {
-      throw new HttpError(401, "claims-session-required", "Portal session cookie is required");
-    }
-    const session = decodeSessionCookie(input.cookieRaw, pepper);
-    if (!session || session.exp <= this.now()) {
-      throw new HttpError(401, "claims-session-invalid", "Portal session is invalid or expired");
-    }
-    if (session.slug !== input.slug) {
-      throw new HttpError(401, "claims-session-mismatch", "Portal session does not match this link");
+    const session = input.cookieRaw ? decodeSessionCookie(input.cookieRaw, pepper) : null;
+    if (!session || session.exp <= this.now() || session.slug !== input.slug) {
+      throw invalidPortalSession();
     }
     // cookie 存 tokenId；与 URL token 的一致性在 assertTokenMatchesSession 中校验。
     return { tokenId: session.tokenId, rosterId: session.rosterId };
@@ -473,7 +549,7 @@ export class ClaimsPortalService {
       || idOf(token.roster_id) !== input.rosterId
       || token.token_hash !== tokenHash
     ) {
-      throw new HttpError(401, "claims-session-mismatch", "Portal session does not match this link");
+      throw invalidPortalSession();
     }
   }
 
@@ -484,6 +560,8 @@ export class ClaimsPortalService {
     submission: Record<string, unknown> | null;
     attachments: Array<Record<string, unknown>>;
     supplements: Array<Record<string, unknown>>;
+    progress: { stage: ClaimProgressStage | null; events: ClaimProgressEvent[] };
+    decisions: PublishedClaimDecision[];
   }> {
     const db = await this.getSession(input.workspaceDb);
     const submission = firstRow<SubmissionRow>(
@@ -493,12 +571,12 @@ export class ClaimsPortalService {
       ),
     );
     if (!submission?.id) {
-      return { submission: null, attachments: [], supplements: [] };
+      return { submission: null, attachments: [], supplements: [], progress: { stage: null, events: [] }, decisions: [] };
     }
     const submissionId = idOf(submission.id)!;
     const attachments = rowsOf<AttachmentRow>(
       await db.query(
-        `SELECT id, submission_id, attachment_type, file_name, content_type, byte_size, storage_key, uploaded_at, created_at
+        `SELECT id, submission_id, attachment_type, file_name, content_type, byte_size, uploaded_at, created_at
          FROM claim_attachment WHERE submission_id = $submission;`,
         { submission: new StringRecordId(submissionId) },
       ),
@@ -507,16 +585,58 @@ export class ClaimsPortalService {
     // 管理人笔记 / 账面 / 重算快照不在本响应出现。
     const supplements = rowsOf<SupplementRow>(
       await db.query(
-        `SELECT id, submission_id, direction, body, actor, created_at
+        `SELECT id, submission_id, direction, body, actor, created_at, due_at, request_id, attachment_ids
          FROM claim_supplement WHERE submission_id = $submission
          ORDER BY created_at ASC;`,
         { submission: new StringRecordId(submissionId) },
       ),
     );
+    const events = rowsOf<{ stage: unknown; created_at: unknown }>(await db.query(
+      `SELECT stage, created_at, id FROM claim_progress_event WHERE submission_id = $submission
+       ORDER BY created_at ASC, id ASC;`,
+      { submission: new StringRecordId(submissionId) },
+    )).flatMap((row): ClaimProgressEvent[] => {
+      const stage = claimProgressStage(row.stage);
+      const time = asDateMs(row.created_at);
+      return stage && time !== null
+        ? [{ stage, createdAt: toIso(time), actor: stage === "submitted" ? "本人" : "管理人" }]
+        : [];
+    });
+    const submittedAt = asDateMs(submission.submitted_at);
+    if (submittedAt !== null && !events.some((event) => event.stage === "submitted")) {
+      events.unshift({ stage: "submitted", actor: "本人", createdAt: toIso(submittedAt) });
+    }
+    const decisions = rowsOf<{
+      version: number;
+      confirmed_principal: number;
+      confirmed_interest: number;
+      confirmed_penalty: number;
+      unconfirmed_amount: number;
+      reason: string;
+      published_at: unknown;
+    }>(await db.query(
+      `SELECT version, confirmed_principal, confirmed_interest, confirmed_penalty, unconfirmed_amount, reason, published_at
+       FROM claim_decision WHERE submission_id = $submission ORDER BY version DESC;`,
+      { submission: new StringRecordId(submissionId) },
+    )).flatMap((row): PublishedClaimDecision[] => {
+      const publishedAt = asDateMs(row.published_at);
+      if (publishedAt === null) return [];
+      return [{
+        version: row.version,
+        confirmedPrincipal: row.confirmed_principal,
+        confirmedInterest: row.confirmed_interest,
+        confirmedPenalty: row.confirmed_penalty,
+        unconfirmedAmount: row.unconfirmed_amount,
+        reason: row.reason,
+        publishedAt: toIso(publishedAt),
+      }];
+    });
     return {
       submission: this.serializeSubmissionForCreditor(submission),
       attachments: attachments.map((row) => this.serializeAttachment(row)),
       supplements: supplements.map((row) => this.serializeSupplement(row)),
+      progress: { stage: publicClaimStage(submission.portal_stage, submission.status), events },
+      decisions,
     };
   }
 
@@ -528,6 +648,8 @@ export class ClaimsPortalService {
     workspaceDb: string;
     rosterId: string;
     body: string;
+    requestId?: unknown;
+    attachmentIds?: unknown;
   }): Promise<Record<string, unknown>> {
     const body = typeof input.body === "string" ? input.body.trim() : "";
     if (body.length === 0 || body.length > 4000) {
@@ -536,7 +658,7 @@ export class ClaimsPortalService {
     const db = await this.getSession(input.workspaceDb);
     const [submissionRows, rosterRows] = await Promise.all([
       db.query(
-        `SELECT id, status FROM claim_submission WHERE roster_id = $roster LIMIT 1;`,
+        `SELECT id, status, portal_stage FROM claim_submission WHERE roster_id = $roster LIMIT 1;`,
         { roster: new StringRecordId(input.rosterId) },
       ),
       db.query(
@@ -549,8 +671,32 @@ export class ClaimsPortalService {
     if (!submission?.id) {
       throw new HttpError(404, "claims-submission-not-found", "Submission not found");
     }
-    if (submission.status === "closed") {
+    if (publicClaimStage(submission.portal_stage, submission.status) === "final") {
       throw new HttpError(409, "claims-submission-locked", "Closed submissions cannot accept supplement replies");
+    }
+    const submissionId = new StringRecordId(idOf(submission.id)!);
+    const requestId = input.requestId === undefined ? undefined : supplementRecord(input.requestId, "claim_supplement");
+    const attachments = input.attachmentIds ?? [];
+    if (!Array.isArray(attachments) || attachments.length > 20 || new Set(attachments).size !== attachments.length
+        || (attachments.length > 0 && !requestId)) {
+      throw new HttpError(400, "claims-supplement-reference-invalid", "补正请求或附件无效");
+    }
+    const attachmentIds = attachments.map((id: unknown) => supplementRecord(id, "claim_attachment"));
+    if (requestId) {
+      const request = firstRow(await db.query(
+        `SELECT id FROM $request WHERE submission_id = $submission AND direction = "manager_request";`,
+        { request: requestId, submission: submissionId },
+      ));
+      if (!request) throw new HttpError(400, "claims-supplement-reference-invalid", "补正请求或附件无效");
+    }
+    if (attachmentIds.length > 0) {
+      const owned = rowsOf(await db.query(
+        `SELECT id FROM claim_attachment WHERE submission_id = $submission AND id INSIDE $attachments;`,
+        { attachments: attachmentIds, submission: submissionId },
+      ));
+      if (owned.length !== attachmentIds.length) {
+        throw new HttpError(400, "claims-supplement-reference-invalid", "补正请求或附件无效");
+      }
     }
     const actor = typeof roster?.name === "string" && roster.name.length > 0
       ? roster.name
@@ -562,12 +708,16 @@ export class ClaimsPortalService {
           direction: "creditor_reply",
           body: $body,
           actor: $actor,
+          request_id: $request,
+          attachment_ids: $attachments,
           created_at: time::now()
         } RETURN AFTER;`,
         {
-          submission: new StringRecordId(idOf(submission.id)!),
+          submission: submissionId,
           body,
           actor,
+          request: requestId,
+          attachments: attachmentIds.length > 0 ? attachmentIds : undefined,
         },
       ),
     );
@@ -586,14 +736,14 @@ export class ClaimsPortalService {
     const db = await this.getSession(input.workspaceDb);
     const existing = firstRow<SubmissionRow>(
       await db.query(
-        `SELECT id, status FROM claim_submission WHERE roster_id = $roster LIMIT 1;`,
+        `SELECT id, status, portal_stage FROM claim_submission WHERE roster_id = $roster LIMIT 1;`,
         { roster: new StringRecordId(input.rosterId) },
       ),
     );
     if (!existing?.id) {
       throw new HttpError(404, "claims-submission-not-found", "Submission draft not found");
     }
-    if (existing.status === "submitted" || existing.status === "closed") {
+    if (existing.status !== "draft") {
       throw new HttpError(409, "claims-submission-locked", "Submitted claims cannot be edited as draft");
     }
 
@@ -610,7 +760,7 @@ export class ClaimsPortalService {
           statement = $statement,
           status = "draft",
           updated_at = time::now()
-        RETURN AFTER;`,
+        WHERE status = "draft" RETURN AFTER;`,
         {
           id: new StringRecordId(idOf(existing.id)!),
           principal: toSurrealNone(normalized.principal),
@@ -628,7 +778,7 @@ export class ClaimsPortalService {
       ),
     );
     if (!updated) {
-      throw new HttpError(500, "claims-draft-save-failed", "Failed to save draft");
+      throw new HttpError(409, "claims-submission-locked", "Submitted claims cannot be edited as draft");
     }
     return this.serializeSubmissionForCreditor(updated);
   }
@@ -647,6 +797,7 @@ export class ClaimsPortalService {
     if (!existing?.id) {
       throw new HttpError(404, "claims-submission-not-found", "Submission not found");
     }
+    if (existing.status !== "draft") return this.serializeSubmissionForCreditor(existing);
     if (typeof existing.principal !== "number") {
       throw new HttpError(400, "claims-submit-incomplete", "principal is required before submit");
     }
@@ -665,14 +816,16 @@ export class ClaimsPortalService {
       await db.query(
         `UPDATE $id SET
           status = "submitted",
+          portal_stage = "submitted",
+          portal_stage_by = "creditor",
           submitted_at = IF submitted_at = NONE THEN time::now() ELSE submitted_at END,
           updated_at = time::now()
-        RETURN AFTER;`,
+        WHERE status = "draft" RETURN AFTER;`,
         { id: new StringRecordId(submissionId) },
       ),
     );
     if (!updated) {
-      throw new HttpError(500, "claims-submit-failed", "Failed to submit claim");
+      throw new HttpError(409, "claims-submission-locked", "申报状态已变化，请重新加载");
     }
     return this.serializeSubmissionForCreditor(updated);
   }
@@ -711,7 +864,7 @@ export class ClaimsPortalService {
     if (!submission?.id) {
       throw new HttpError(404, "claims-submission-not-found", "Submission not found");
     }
-    if (submission.status === "closed") {
+    if (submission.status === "closed" || submission.portal_stage === "final") {
       throw new HttpError(409, "claims-submission-locked", "Closed submissions cannot accept attachments");
     }
     const submissionId = idOf(submission.id)!;
@@ -783,14 +936,14 @@ export class ClaimsPortalService {
     const db = await this.getSession(input.workspaceDb);
     const submission = firstRow<SubmissionRow>(
       await db.query(
-        `SELECT id, status FROM claim_submission WHERE roster_id = $roster LIMIT 1;`,
+        `SELECT id, status, portal_stage FROM claim_submission WHERE roster_id = $roster LIMIT 1;`,
         { roster: new StringRecordId(input.rosterId) },
       ),
     );
     if (!submission?.id) {
       throw new HttpError(404, "claims-submission-not-found", "Submission not found");
     }
-    if (submission.status === "closed") {
+    if (submission.status === "closed" || submission.portal_stage === "final") {
       throw new HttpError(409, "claims-submission-locked", "Closed submissions cannot accept attachments");
     }
     const submissionId = idOf(submission.id)!;
@@ -942,8 +1095,11 @@ export class ClaimsPortalService {
       submissionId: idOf(row.submission_id),
       direction: typeof row.direction === "string" ? row.direction : null,
       body: typeof row.body === "string" ? row.body : null,
-      actor: typeof row.actor === "string" ? row.actor : null,
+      actor: row.direction === "manager_request" ? "管理人" : typeof row.actor === "string" ? row.actor : null,
       createdAt: asDateMs(row.created_at) !== null ? toIso(asDateMs(row.created_at)!) : null,
+      dueAt: asDateMs(row.due_at) !== null ? toIso(asDateMs(row.due_at)!) : null,
+      requestId: idOf(row.request_id),
+      attachmentIds: Array.isArray(row.attachment_ids) ? row.attachment_ids.flatMap((value: unknown) => idOf(value) ?? []) : [],
     };
   }
 
@@ -955,7 +1111,6 @@ export class ClaimsPortalService {
       fileName: typeof row.file_name === "string" ? row.file_name : null,
       contentType: typeof row.content_type === "string" ? row.content_type : null,
       byteSize: typeof row.byte_size === "number" ? row.byte_size : null,
-      storageKey: typeof row.storage_key === "string" ? row.storage_key : null,
       uploadedAt: asDateMs(row.uploaded_at) !== null ? toIso(asDateMs(row.uploaded_at)!) : null,
       createdAt: asDateMs(row.created_at) !== null ? toIso(asDateMs(row.created_at)!) : null,
     };
