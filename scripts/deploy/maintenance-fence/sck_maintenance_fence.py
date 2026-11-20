@@ -121,7 +121,7 @@ def atomic_write(path, data):
     fd, name = tempfile.mkstemp(prefix=".sck-fence-", dir=path.parent)
     try:
         with os.fdopen(fd, "wb") as destination:
-            os.fchmod(destination.fileno(), 0o600)
+            os.fchmod(destination.fileno(), stat.S_IMODE(path.stat().st_mode) & 0o644 if path.exists() else 0o600)
             os.fchown(destination.fileno(), 0, path.stat().st_gid if path.exists() else 0)
             destination.write(data)
             destination.flush()
@@ -276,8 +276,8 @@ def operate(mode):
     secure(Path(__file__))
     secure_parents(CONFIG)
     secure(CONFIG)
-    if stat.S_IMODE(CONFIG.stat().st_mode) != 0o600:
-        raise RuntimeError("Caddyfile must remain root-only (0600)")
+    if stat.S_IMODE(CONFIG.stat().st_mode) & 0o133:
+        raise RuntimeError("Caddyfile must be root-owned and not writable or executable by others")
     for binary in (CADDY, SYSTEMCTL, SS, *FIREWALLS):
         executable(binary)
     secure_parents(STATE)
