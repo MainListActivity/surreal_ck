@@ -104,8 +104,23 @@ marker 32772 本身不绑定某个引擎；`storage.backend` 与 backend certifi
    `SURREAL_UPGRADE_FENCE` / `SURREAL_UPGRADE_UNFENCE` 指向同样受保护的绝对可执行路径。
    fence 必须幂等地阻断公网 HTTP/WSS、新建连接及已有长连接，停止其他写入者，
    只允许主机 loopback 维护连接；执行成功代表围栏已实际生效。仅停 Hono 不够。
-   unfence 只在全部验证和 origin 健康检查后开放。围栏的站点具体实现由运营审计，
-   未配置或未验证则不得执行 upgrade。
+   unfence 只在全部验证和 origin 健康检查后开放。使用仓库
+   [`maintenance-fence` hooks](../../scripts/deploy/maintenance-fence/README.md)，按其安装
+   说明将 `fence`、`unfence` 和 helper 安装到 `/usr/local/sbin`；不要让 root 执行
+   可被部署用户改写的仓库副本。env 的示例内容为：
+
+   ```dotenv
+   SURREAL_UPGRADE_FENCE=/usr/local/sbin/sck-surrealdb-fence
+   SURREAL_UPGRADE_UNFENCE=/usr/local/sbin/sck-surrealdb-unfence
+   ```
+
+   fence 停 origin 与 `sck-company-mcp`，备份 root 0600 Caddyfile，仅改
+   `data.maplayer.top` 的最后兜底 handle 为 503，validate 后 reload；其他服务路由不改。
+   IPv4/IPv6 iptables 丢弃非 lo 的 8000 新连接，最终核对远端 established 与 Caddy
+   代理连接均消失，否则拒绝继续。unfence 恢复原配置、validate/reload、删除带专用
+   comment 的规则并启动 MCP，**不启动 origin**，要求兼容 origin 已健康。
+   备份/state 仅由 root 读取，不上传 artifact；真实 Caddy/网络规则/断连效果必须在批准
+   的维护窗核对。未安装或未验证则不得执行 upgrade。
 3. 以相同变更单运行 `mode=upgrade`，输入确认文本 `UPGRADE 3.3 TO 4.0`。
    runner 核验 `.txt`、固定 ARM64 tgz hash（或镜像的已签名 receipt）、所选引擎支持与
    native-quota 生产认证，再上传并核验二进制 hash。
