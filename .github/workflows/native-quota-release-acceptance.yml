@@ -242,7 +242,7 @@ jobs:
             --arg sha "$EXPECTED_SHA" \
             '.build.git_sha == $sha
              and .fork.id == "mainlistactivity/surrealdb-native-quota"
-             and .fork.release == "3.3.0-native-quota.1"
+             and .fork.release == "4.0.1-native-quota.1"
              and .quota.name == "native-quota-v1"
              and .storage.backend == "rocksdb"
              and .storage.ready == true
@@ -440,7 +440,7 @@ jobs:
           gh api --method POST repos/MainListActivity/surrealdb/dispatches \
             -f event_type=native-quota-stable-accepted \
             -f "client_payload[candidate_tag]=$CANDIDATE_TAG" \
-            -f "client_payload[release]=3.3.0-native-quota.1" \
+            -f "client_payload[release]=4.0.1-native-quota.1" \
             -f "client_payload[git_sha]=$EXPECTED_SHA" \
             -f "client_payload[digest]=$EXPECTED_DIGEST" \
             -f "client_payload[acceptance_statement_b64]=$statement" \
