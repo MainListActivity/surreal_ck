@@ -752,6 +752,28 @@ describe("卡死激活自愈回收（stuck worker watchdog）", () => {
     expect(parseKv(readText(join(h.stateDir, `${other}.state`))).state).toBe("running");
   });
 
+  t("f. 锁 pid 复用 + 卡死未改动主机 → 不杀无关进程，仍标记 failed 并回收取锁", async () => {
+    const h = makeHarness();
+    const other = "rel-ci-reused-stuck";
+    const squatter = Bun.spawn(["sleep", "30"]);
+    h.procs.push(squatter);
+    writeStateFile(h, other, { phase: "install", updated_at: "2026-01-01T00:00:00Z" });
+    writeLock(h, squatter.pid, other);
+
+    const id = "rel-ci-after-reused-stuck";
+    stageRelease(h, id);
+    const r = launch(h, id, { extraEnv: { ORIGIN_STUCK_AFTER_SEC: "1" } });
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toContain(`reclaimed stuck activation ${other}`);
+    // 复用 pid 的无关进程不被杀。
+    expect(alive(squatter.pid)).toBe(true);
+    const st = parseKv(readText(join(h.stateDir, `${other}.state`)));
+    expect(st.state).toBe("failed");
+    expect(st.note).toContain("reused");
+    const s = await waitTerminal(h, id);
+    expect(s.state).toBe("healthy");
+  });
+
   t("e. install 超时 → 激活 failed 终态（note 含 timed out），env/current 不变，锁释放", async () => {
     const h = makeHarness();
     const id = "rel-ci-timeout";

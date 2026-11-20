@@ -241,7 +241,7 @@ GitHub `production` Environment 额外配置：
 | --- | --- | --- |
 | 持有者进程存活 | `busy`（退出码 75） | 等待，不删除锁 |
 | 持有者存活但激活超时未推进（`updated_at` 距今超过 `ORIGIN_STUCK_AFTER_SEC`，默认 1800s）且未改动 env/服务/current（`env_dirty`、`svc_touched`、`switched` 全 0） | 杀掉 worker 进程树、激活标记 `failed`、按陈旧锁回收 | 自愈，CI 日志输出 `reclaimed stuck activation` |
-| 持有者存活，锁的 pid 实为复用进程（cmdline 不含 `--worker <id>`） | 不杀进程，按持有者已死处理（`interrupted=<id>`，退出码 76） | 对该激活执行 `--recover <id>` |
+| 持有者存活，锁的 pid 实为复用进程（cmdline 不含 `--worker <id>`） | 不杀进程，按持有者已死处理（`interrupted=<id>`，退出码 76）；但激活超时未推进且未改动主机时同样标记 `failed` 并回收锁（与卡死 worker 同行规则） | 对该激活执行 `--recover <id>`（被回收的情形无需处置） |
 | 持有者已死，激活未到终态 | `interrupted=<id>`（退出码 76） | 对该激活执行 `--recover <id>`（CI 会自动请求） |
 | 持有者已死，且激活已终态、无状态文件，或即为 `--recover` 指定的激活 | 陈旧锁，回收并重建 | 无需处置 |
 | 回收互斥 `lock.reclaim` 已存在，且持有者已死（或无 pid 超过 1 分钟） | `busy`（退出码 75），不自动删除 | 运维核查，见下 |

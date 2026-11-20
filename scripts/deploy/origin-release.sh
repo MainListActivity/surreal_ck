@@ -420,7 +420,9 @@ read_field() {
 is_worker_pid() {
   local args
   args=$(ps -o args= -p "$1" 2>/dev/null || true)
-  printf '%s' "$args" | grep -q -- "--worker" && printf '%s' "$args" | grep -qw -- "$2"
+  # 纯 bash 匹配：set -euo pipefail 下 printf|grep -q 会因 SIGPIPE 偶发误判。
+  # 整词匹配 release id，命中主机 nohup bash /tmp/origin-release-<id>.sh --worker <id> launch <pid> 形态。
+  [[ "$args" == *" --worker "* ]] && [[ " $args " == *" $2 "* ]]
 }
 
 # 活跃性以锁为准：锁属于本激活，且持有者进程存活且确为该激活的 worker。
@@ -605,33 +607,38 @@ mark_failed_state() {
 }
 
 # reclaim_stuck_activation <other-id> <lock-owner-pid> <new-release-id>：
-# 锁持有者存活但其激活卡死且对主机零改动（env_dirty/svc_touched/switched 全 0）、
-# updated_at 超过 ${ORIGIN_STUCK_AFTER_SEC:-1800} 秒未推进时，杀掉 worker 进程树并把激活
-# 标记 failed，返回 0 让调用方按陈旧锁继续回收；任一条件不满足返回 1，调用方照常 busy 75。
-# fail-closed：改动过主机的激活、未到超时、时间解析失败都不回收。
+# 先按状态文件判断「卡死且未改动主机」：非终态、env_dirty/svc_touched/switched 全 0、
+# updated_at 可解析且距今超过 ${ORIGIN_STUCK_AFTER_SEC:-1800} 秒。
+# 条件全满足 → owner 确为该激活 worker 才杀进程树（pid 复用则不杀任何进程），两种情况都
+# 标记 failed 并返回 0 让调用方按陈旧锁继续回收——真实事故里无法分辨锁 pid 是卡死的
+# worker 还是复用 pid，两种情况都必须自愈，不能只靠 interrupted/76 让人工 recover 重跑旧 SHA。
+# 条件不满足 → owner 不是 worker 返回 0（复用 pid，按持有者已死走 interrupted/陈旧锁），
+# owner 是 worker 返回 1（照常 busy 75）。fail-closed：改动过主机的激活绝不自动回收。
 reclaim_stuck_activation() {
-  local other=$1 owner=$2 want=$3 st ed sv sw up ph up_s now idle
+  local other=$1 owner=$2 want=$3 st ed sv sw up ph up_s now idle isw=0
   [ -n "$other" ] && [ "$other" != "$want" ] || return 1
-  # pid 复用：owner 的 cmdline 不是该激活的 worker 时，这个存活 pid 只是恰好复用了旧 pid，
-  # 不杀任何进程，直接当作持有者已死、按陈旧锁继续。
-  if ! is_worker_pid "$owner" "$other"; then return 0; fi
+  if is_worker_pid "$owner" "$other"; then isw=1; fi
   st=$(read_field "$other" state)
-  if [ -z "$st" ] || is_terminal "$st"; then return 1; fi
+  if [ -z "$st" ] || is_terminal "$st"; then [ "$isw" = 1 ] && return 1 || return 0; fi
   ed=$(read_field "$other" env_dirty)
   sv=$(read_field "$other" svc_touched)
   sw=$(read_field "$other" switched)
-  if [ "${ed:-0}" != 0 ] || [ "${sv:-0}" != 0 ] || [ "${sw:-0}" != 0 ]; then return 1; fi
+  if [ "${ed:-0}" != 0 ] || [ "${sv:-0}" != 0 ] || [ "${sw:-0}" != 0 ]; then
+    [ "$isw" = 1 ] && return 1 || return 0
+  fi
   up=$(read_field "$other" updated_at)
   ph=$(read_field "$other" phase)
   # GNU date -d 优先；BSD date（本机测试）用 -j -f 解析同一时间戳格式。解析失败视为不满足，不回收。
-  up_s=$(date -u -d "$up" +%s 2>/dev/null || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$up" +%s 2>/dev/null) || return 1
+  up_s=$(date -u -d "$up" +%s 2>/dev/null || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$up" +%s 2>/dev/null) || { [ "$isw" = 1 ] && return 1 || return 0; }
   now=$(date -u +%s)
   idle=$((now - up_s))
-  [ "$idle" -gt "${ORIGIN_STUCK_AFTER_SEC:-1800}" ] || return 1
-  kill_tree "$owner"
+  [ "$idle" -gt "${ORIGIN_STUCK_AFTER_SEC:-1800}" ] || { [ "$isw" = 1 ] && return 1 || return 0; }
+  if [ "$isw" = 1 ]; then kill_tree "$owner"; fi
   if ! is_terminal "$(read_field "$other" state)"; then
+    local why="worker stuck"
+    [ "$isw" = 1 ] || why="lock pid reused (worker gone)"
     mark_failed_state "$other" \
-      "watchdog: stuck in phase ${ph:-?} since ${up:-?}; no env/service change; superseded by $want"
+      "watchdog: ${why} in phase ${ph:-?} since ${up:-?}; no env/service change; superseded by $want"
   fi
   echo "reclaimed stuck activation $other (phase ${ph:-?}, idle ${idle}s, no host changes)" >&2
   return 0
