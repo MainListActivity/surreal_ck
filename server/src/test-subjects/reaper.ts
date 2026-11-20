@@ -44,10 +44,10 @@ const WORKSPACE_REFERENCES: ReadonlyArray<readonly [table: string, field: string
 /** 以字符串字段（非 record）引用 db_name 的表。
  * funnel_event_count.workspace_key 是 HMAC(db_name) 不是 db_name，等值删除永远
  * 命不中且聚合计数无需随库删除，不在此列。
+ * ops_invitation 开通行不在此列：它是清理的审计凭证（test_kit_purged_at
+ * 标记、重复 purge 的 alreadyPurged 判定、list/status 的 purged 展示都依赖它）。
  */
-const DB_NAME_REFERENCES: ReadonlyArray<readonly [table: string, field: string]> = [
-  ["ops_invitation", "workspace_db"],
-];
+const DB_NAME_REFERENCES: ReadonlyArray<readonly [table: string, field: string]> = [];
 
 export interface TestSubjectReaperDeps {
   /** _system 库会话（root）。 */
@@ -138,6 +138,15 @@ export async function purgeTestWorkspace(
     });
     return "skipped";
   }
+
+  // 未标记的领养库（如开通后才自建的 workspace）补打测试标记，
+  // 让 050 迁移放宽的不可变控制面行可以随本次拆除一起 DELETE。
+  await deps.systemDb.query(
+    `UPDATE $wid SET
+      test_origin = IF test_origin = NONE THEN "test-teardown" ELSE test_origin END,
+      test_expires_at = IF test_expires_at = NONE THEN time::now() ELSE test_expires_at END;`,
+    { wid },
+  );
 
   await deps.dropDatabase(workspace.db_name);
 

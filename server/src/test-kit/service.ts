@@ -301,7 +301,21 @@ export class TestKitService {
     }
     const db = await this.deps.getSystemDb();
     const row = await findTestSubject(db, subject);
-    if (!row || row.origin !== TestKitService.originFor(actor.subject)) {
+    if (!row) {
+      // 已清理过的账号：test_subject 行已删，开通行留着 test_kit_purged_at
+      // 标记。重复 purge 返回幂等结果而不是报错，调用方据此判定清理已完成。
+      const purged = rows(await db.query(
+        `SELECT id FROM ops_invitation
+         WHERE idp_user_id = $subject AND operator_subject = $agent AND test_kit_purged_at != NONE
+         LIMIT 1;`,
+        { subject, agent: actor.subject },
+      ))[0];
+      if (purged) {
+        return { subject, alreadyPurged: true, workspacesPurged: 0, workspacesSkipped: 0 };
+      }
+      throw new TestKitError("not_owned", "只能清理本 agent 经 test_kit_provision 开通的测试账号");
+    }
+    if (row.origin !== TestKitService.originFor(actor.subject)) {
       throw new TestKitError("not_owned", "只能清理本 agent 经 test_kit_provision 开通的测试账号");
     }
     // 先打清理标记（purgeTestSubject 末尾也会打）：中途失败也不会被对账登记回来。
