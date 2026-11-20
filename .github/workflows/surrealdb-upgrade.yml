@@ -1,0 +1,237 @@
+name: SurrealDB maintenance
+run-name: "SurrealDB ${{ inputs.mode }} ${{ inputs.target_release }} (approval ${{ inputs.approval_ref }})"
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [check, upgrade]
+        default: check
+        required: true
+      target_release:
+        type: string
+        default: sck-4.0.1-native-quota.1-artifacts.1
+        required: true
+      target_image:
+        description: "可选：已晋升 receipt 对应的 ghcr.io/...@sha256:digest；留空使用 ARM64 binary 挂载"
+        type: string
+        default: ""
+      storage_engine:
+        description: "目标新目录的存储引擎；支持打开不等于 native-quota 生产认证"
+        type: choice
+        options: [surrealkv, rocksdb]
+        default: surrealkv
+        required: true
+      approval_ref:
+        type: string
+        required: true
+      confirmation:
+        description: "升级须输入 UPGRADE 3.3 TO 4.0"
+        type: string
+        default: ""
+
+permissions: {}
+concurrency:
+  group: production-release
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  maintenance:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    environment: production
+    permissions:
+      contents: read
+    env:
+      MODE: ${{ inputs.mode }}
+      TARGET_RELEASE: ${{ inputs.target_release }}
+      TARGET_IMAGE: ${{ inputs.target_image }}
+      STORAGE_ENGINE: ${{ inputs.storage_engine }}
+      APPROVAL_REF: ${{ inputs.approval_ref }}
+      CONFIRMATION: ${{ inputs.confirmation }}
+      ORIGIN_HOST: ${{ vars.ORIGIN_HOST }}
+      ORIGIN_USER: ${{ vars.ORIGIN_USER }}
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        with:
+          egress-policy: audit
+      - name: Checkout maintenance tooling
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Validate dispatch
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          [[ "$APPROVAL_REF" =~ ^[A-Za-z0-9._:/-]{1,120}$ ]]
+          [[ "$STORAGE_ENGINE" = surrealkv || "$STORAGE_ENGINE" = rocksdb ]]
+          if [ -n "$TARGET_IMAGE" ]; then
+            [[ "$TARGET_IMAGE" =~ ^ghcr.io/mainlistactivity/surrealdb-native-quota@sha256:[0-9a-f]{64}$ ]]
+            test "$TARGET_RELEASE" = sck-4.0.1-native-quota.1
+          else
+            test "$TARGET_RELEASE" = sck-4.0.1-native-quota.1-artifacts.1
+          fi
+          if [ "$MODE" = upgrade ]; then
+            test "$CONFIRMATION" = 'UPGRADE 3.3 TO 4.0'
+          else
+            test "$MODE" = check
+          fi
+      - name: Verify ARM64 release archive
+        if: inputs.target_image == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/surreal-release"
+          gh release download "$TARGET_RELEASE" --repo MainListActivity/surrealdb \
+            --pattern surreal-native-quota.linux-arm64.tgz \
+            --pattern surreal-native-quota.linux-arm64.txt --dir "$RUNNER_TEMP/surreal-release"
+          cd "$RUNNER_TEMP/surreal-release"
+          expected=504b7291084dae1d8bd71750f12965cf64517039423c42c1cfb899bf56bc7325
+          test "$(awk 'NR == 1 {print $1}' surreal-native-quota.linux-arm64.txt)" = "$expected"
+          printf '%s  %s\n' "$expected" surreal-native-quota.linux-arm64.tgz | sha256sum --check
+          tar -xzf surreal-native-quota.linux-arm64.tgz
+          binary="$(find "$PWD" -type f -name surreal -print -quit)"
+          test -n "$binary"
+          chmod +x "$binary"
+          "$binary" version
+          echo "TARGET_BINARY=$binary" >> "$GITHUB_ENV"
+          echo "TARGET_SHA256=$(sha256sum "$binary" | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
+      - name: Install receipt verifier
+        if: inputs.target_image != ''
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Verify promoted target image
+        if: inputs.target_image != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release download "$TARGET_RELEASE" --repo MainListActivity/surrealdb \
+            --pattern promotion-production.json --pattern promotion-production.sigstore.json --dir "$RUNNER_TEMP"
+          cosign verify-blob --bundle "$RUNNER_TEMP/promotion-production.sigstore.json" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity-regexp '^https://github\.com/MainListActivity/surrealdb/\.github/workflows/native-quota-promote\.yml@refs/heads/(main|releases/sck-4\.0)$' \
+            "$RUNNER_TEMP/promotion-production.json"
+          jq -e --arg image "$TARGET_IMAGE" --arg digest "${TARGET_IMAGE##*@}" \
+            '.format_version == 1 and .stage == "production" and .previous_stage == "staging"
+             and .candidate.release == "4.0.1-native-quota.1" and .candidate.manifest_revision == "native-quota-v2.0"
+             and .candidate.reference == $image and .candidate.digest == $digest
+             and .promotion.deployment_reference == $image and .promotion.rebuild == false
+             and (.promotion.downstream_acceptance_run_url | test("^https://github.com/MainListActivity/surreal_ck/actions/runs/[0-9]+$"))' \
+            "$RUNNER_TEMP/promotion-production.json" >/dev/null
+      - name: Fail-closed target engine and production contract preflight
+        run: |
+          set -euo pipefail
+          container="surreal-target-${GITHUB_RUN_ID}"
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+          args=(--rm --detach --name "$container" --user 0 -p 127.0.0.1:18080:8000 --tmpfs /data)
+          if [ -n "$TARGET_IMAGE" ]; then
+            image="$TARGET_IMAGE"
+          else
+            image=ghcr.io/mainlistactivity/surrealdb-native-quota@sha256:4873ac9db79f91196f2b5e6129263d660700fcbfad0c5e1d90595bd3d384dcf8
+            args+=(--mount "type=bind,source=$TARGET_BINARY,target=/surreal-upgrade,readonly" --entrypoint /surreal-upgrade)
+          fi
+          docker run "${args[@]}" "$image" start --bind 0.0.0.0:8000 --allow-all "$STORAGE_ENGINE:/data"
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:18080/health >/dev/null; then break; fi
+            test "$attempt" -lt 60 || { echo '::error::目标 binary/container 无法打开所选引擎；生产未接触。'; exit 1; }
+            sleep 1
+          done
+          curl --fail --silent --show-error http://127.0.0.1:18080/capabilities > surrealdb-target-capabilities.json
+          jq -e --arg engine "$STORAGE_ENGINE" \
+            '.fork.release == "4.0.1-native-quota.1" and .manifest_revision == "native-quota-v2.0"
+             and .storage.backend == $engine and .storage.ready == true and .storage.storage_version == 32772
+             and .storage.marker.upstream_storage_major == 4 and .storage.marker.migration_state == "clean"' \
+            surrealdb-target-capabilities.json >/dev/null
+          if ! jq -e '.backend.production == true and .backend.hard_quota_certified == true
+               and .backend.persistent_restart_certified == true
+               and .backend.certification_revision == "native-quota-contract-v1"' surrealdb-target-capabilities.json >/dev/null; then
+            if [ "$MODE" = upgrade ]; then
+              echo '::error::目标引擎未通过 native-quota 生产认证；禁止导入、切换或放宽应用门禁，生产未接触。'
+              exit 1
+            fi
+            echo '::warning::目标引擎可打开但未通过生产认证；本次仅检查，不授权升级。'
+          fi
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.ORIGIN_SSH_KEY || secrets.SSH_KEY }}
+          ORIGIN_KNOWN_HOSTS: ${{ vars.ORIGIN_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          for name in SSH_KEY ORIGIN_KNOWN_HOSTS ORIGIN_HOST ORIGIN_USER; do
+            test -n "${!name:-}" || { echo "::error::$name is not configured"; exit 1; }
+          done
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" | tr -d '\r' > ~/.ssh/origin
+          chmod 600 ~/.ssh/origin
+          ssh-keygen -y -P '' -f ~/.ssh/origin >/dev/null
+          printf '%s\n' "$ORIGIN_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf '%s\n' 'Host origin' "  HostName $ORIGIN_HOST" "  User $ORIGIN_USER" \
+            '  IdentityFile ~/.ssh/origin' '  IdentitiesOnly yes' '  StrictHostKeyChecking yes' \
+            '  ServerAliveInterval 15' '  BatchMode yes' > ~/.ssh/config
+      - name: Read-only inspection
+        if: inputs.mode == 'check'
+        run: |
+          set -euo pipefail
+          # stdin 执行，不上传文件、不写检查报告到生产主机。
+          ssh origin "sudo -n python3 -B - check --approval-ref '$APPROVAL_REF'" \
+            < scripts/deploy/surrealdb-upgrade.py > surrealdb-report.json
+      - name: Stage and run offline upgrade
+        if: inputs.mode == 'upgrade'
+        run: |
+          set -euo pipefail
+          stage="sck-surrealdb-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          ssh origin "umask 077; mkdir '/var/tmp/$stage'"
+          scp scripts/deploy/surrealdb-upgrade.py origin:"/var/tmp/$stage/upgrade.py"
+          ssh origin "sudo -n install -d -m 700 '/var/lib/surreal-ck/db-upgrades/$stage'; \
+            sudo -n install -m 700 '/var/tmp/$stage/upgrade.py' '/var/lib/surreal-ck/db-upgrades/$stage/upgrade.py'"
+          if [ -n "$TARGET_IMAGE" ]; then
+            scp "$RUNNER_TEMP/promotion-production.json" origin:"/var/tmp/$stage/receipt.json"
+            ssh origin "sudo -n install -m 600 '/var/tmp/$stage/receipt.json' '/var/lib/surreal-ck/db-upgrades/$stage/receipt.json'"
+            target_args="--image '$TARGET_IMAGE' --receipt '/var/lib/surreal-ck/db-upgrades/$stage/receipt.json'"
+          else
+            scp "$TARGET_BINARY" origin:"/var/tmp/$stage/surreal"
+            ssh origin "sudo -n install -m 700 '/var/tmp/$stage/surreal' '/var/lib/surreal-ck/db-upgrades/$stage/surreal'"
+            target_args="--binary '/var/lib/surreal-ck/db-upgrades/$stage/surreal' --sha256 '$TARGET_SHA256'"
+          fi
+          # 独立 systemd 单元继续运行；SSH/runner 断开不能解释成成功或触发再次升级。
+          ssh origin "sudo -n systemd-run --unit='$stage' --wait --collect \
+            --property='StandardOutput=file:/var/lib/surreal-ck/db-upgrades/$stage/report.json' \
+            --property='StandardError=file:/var/lib/surreal-ck/db-upgrades/$stage/error.log' \
+            /usr/bin/python3 -B '/var/lib/surreal-ck/db-upgrades/$stage/upgrade.py' upgrade \
+            $target_args \
+            --storage-engine '$STORAGE_ENGINE' --approval-ref '$APPROVAL_REF' --confirmation 'UPGRADE 3.3 TO 4.0'" || {
+              ssh origin "sudo -n cat '/var/lib/surreal-ck/db-upgrades/$stage/error.log'" >&2 || true
+              exit 1
+            }
+          ssh origin "sudo -n cat '/var/lib/surreal-ck/db-upgrades/$stage/report.json'" > surrealdb-report.json
+      - name: Publish maintenance report
+        if: always()
+        run: |
+          if [ -s surrealdb-report.json ]; then
+            printf '### SurrealDB maintenance\n```json\n' >> "$GITHUB_STEP_SUMMARY"
+            cat surrealdb-report.json >> "$GITHUB_STEP_SUMMARY"
+            printf '\n```\n' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '未取得成功检查/升级报告；查看失败步骤，禁止据此判断生产版本或重试升级。' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -s surrealdb-target-capabilities.json ]; then
+            printf '\n### Target engine preflight\n```json\n' >> "$GITHUB_STEP_SUMMARY"
+            cat surrealdb-target-capabilities.json >> "$GITHUB_STEP_SUMMARY"
+            printf '\n```\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload sanitized report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: surrealdb-maintenance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            surrealdb-report.json
+            surrealdb-target-capabilities.json
+          if-no-files-found: ignore
