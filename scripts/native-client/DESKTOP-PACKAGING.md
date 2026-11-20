@@ -14,6 +14,12 @@
 
 开发 CI 通过 `install-sparkle-sdk.py` 获取官方 Sparkle 2.10.1 SDK，固定 SHA256 为 `1a856d2a9edb8e628de88121d7be04cf0e2167f8641650b78fca00b14244cf27`（官方 GitHub Release asset digest），校验后才解包并核对 framework 版本。此步骤只准备编译依赖，不创建或填充签名身份、公钥、feed 或生产更新策略；必须等待当前提交的原生 CI 实际通过，不能把脚本存在视作链接成功。
 
+## 企业桌面测试包（带身份配置）
+
+`native-client/config/enterprise-public.env` 是受版本控制的公开身份配置：OIDC public client（token_endpoint_auth_method=none）、issuer/audience/API/Surreal 端点，2026-11-20 经生产 IdP 注册表核实已登记。只含公开值，不承载任何 secret。
+
+`package-macos-arm-enterprise.sh` 在构建前自动加载该 env（`option_env!` 编译期固化），产出与预览相同结构的测试 `.app` + DMG，干净环境无需人工填写 client_id。`package-macos-arm-preview.sh` 仍禁止 `SURREAL_CK_*` 输入，预览隔离与更新信任门禁不变（无 `SURREAL_UPDATE_CONFIG_JSON` 即保持锁定）。
+
 `collect.py` 将各平台 `package-evidence.json` 与最终安装器一起收集并加入 checksum。桌面证据保留实际 Cargo features、入口和签名后 binary hash；Android 证据绑定最终 APK、两 ABI 库 hash、实际新 DEX 类、manifest 组件、签名与对齐校验。所有静态证据都明确 `runtime_validation=not-run`，不代替安装/业务验收。
 
 ## 尚未完成的实机验收
