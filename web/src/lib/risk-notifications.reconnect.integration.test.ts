@@ -234,9 +234,11 @@ describe("VO03 收件箱断线重连（真实 fork + 真实 WS 中断）", () =>
     let refreshCount = 0;
     const unwatch = watchNotificationInbox(member, () => {
       refreshCount += 1;
+      // fire-and-forget：断线/关闭窗口内被 terminate 的刷新是预期内的失败，
+      // connected 补快照会再次收敛；缺 catch 会被 bun 计为 unhandled error。
       void loadRiskNotifications(member).then((rows) => {
         latest = rows;
-      });
+      }).catch(() => undefined);
     });
     // 独立观测原始 LIVE 流：区分"断线窗口是否被重放"与"重连后是否恢复"。
     const liveIds: string[] = [];
