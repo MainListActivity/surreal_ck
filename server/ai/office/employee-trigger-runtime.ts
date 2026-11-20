@@ -688,8 +688,18 @@ export function createEmployeeTriggerRuntime(deps: {
           onSessionClosed = fire;
           abortSignal.addEventListener("abort", fire, { once: true });
         });
+        // fork 的配额准入在同库并发写下会抛事务冲突（"conflicted with another transaction"）；
+        // 冲突即语句未提交可安全重试；其余错误一律不重试，保持断线/拒绝快速失败语义。
         return Promise.race([
-          Promise.resolve(session.query<R>(sql, params)),
+          withBoundedRetry(() => Promise.resolve(session.query<R>(sql, params)), {
+            policy: retryPolicy,
+            classify: (error) =>
+              error instanceof Error && /conflict/i.test(error.message) ? "transient" : "permanent",
+            sleep,
+            onRetry: () => {
+              metricsState.retries += 1;
+            },
+          }),
           deadline,
           sessionDied,
         ]).finally(() => {

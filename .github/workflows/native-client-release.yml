@@ -175,6 +175,24 @@ jobs:
       - name: Prepare checksum-pinned official Sparkle SDK (no signing credentials)
         if: matrix.target == 'macos'
         run: python scripts/native-client/install-sparkle-sdk.py
+      - name: Detect macOS signing configuration
+        id: macos-signing
+        if: matrix.target == 'macos'
+        env:
+          SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
+          SPARKLE_FEED_URL: ${{ vars.SPARKLE_FEED_URL }}
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        shell: bash
+        run: |
+          if [[ -n "$SPARKLE_PUBLIC_ED_KEY" && -n "$SPARKLE_FEED_URL" && -n "$MACOS_SIGN_IDENTITY" ]]; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event_name }}" == 'release' ]]; then
+            echo '::error::Signed macOS packaging requires the SPARKLE_PUBLIC_ED_KEY secret, SPARKLE_FEED_URL var and MACOS_SIGN_IDENTITY secret'
+            exit 1
+          else
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            echo '::notice::Signing configuration absent; skipping official macOS packaging (unsigned Apple Silicon coverage lives in native-client-macos-arm64-preview.yml)'
+          fi
       - name: Verify complete native renderer (macOS or Windows MSVC)
         if: matrix.target == 'macos' || matrix.target == 'windows'
         shell: bash
@@ -186,7 +204,12 @@ jobs:
         if: matrix.target == 'linux' || matrix.target == 'android'
         run: python scripts/native-client/install-nsh.py
       - name: Build Linux, macOS or Android package
-        if: matrix.target != 'windows'
+        if: matrix.target != 'windows' && (matrix.target != 'macos' || steps.macos-signing.outputs.ready == 'true')
+        env:
+          SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
+          SPARKLE_FEED_URL: ${{ vars.SPARKLE_FEED_URL }}
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          APPLE_NOTARY_PROFILE: ${{ secrets.APPLE_NOTARY_PROFILE }}
         shell: bash
         run: bash scripts/native-client/package.sh '${{ matrix.target }}'
       - name: Prepare independently pinned Windows development media (never Release)
@@ -234,9 +257,11 @@ jobs:
           path: dist/experimental-android/*
           if-no-files-found: error
       - name: Collect release assets and checksum manifest
+        if: matrix.target != 'macos' || steps.macos-signing.outputs.ready == 'true'
         shell: bash
         run: python scripts/native-client/collect.py '${{ matrix.target }}' '${{ matrix.os }}'
       - uses: actions/upload-artifact@v4
+        if: matrix.target != 'macos' || steps.macos-signing.outputs.ready == 'true'
         with:
           name: native-client-${{ matrix.target }}-${{ matrix.os }}
           path: dist/release/*
