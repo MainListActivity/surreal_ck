@@ -214,8 +214,10 @@ impl EdgeNegotiator {
     }
     pub fn mark_connected(&mut self, route: ObservedRoute) -> Result<(), Error> {
         let attempt = self.active.as_ref().ok_or(Error::InvalidAttempt)?;
-        attempt.validate()?;
         if !self.answered || route == ObservedRoute::Unknown {
+            return Err(Error::InvalidAttempt);
+        }
+        if attempt.route == RouteKind::Direct && route == ObservedRoute::Relay {
             return Err(Error::InvalidAttempt);
         }
         self.active = None;
@@ -450,6 +452,8 @@ mod tests {
         n.accept_answer(&a, offer_hash(&offer)).unwrap();
         assert!(n.accept_answer(&a, offer_hash(&offer)).is_err());
         assert!(n.mark_connected(ObservedRoute::Unknown).is_err());
+        n.active.as_mut().unwrap().expires_at = Instant::now();
+        assert!(n.mark_connected(ObservedRoute::Relay).is_err());
         n.mark_connected(ObservedRoute::Direct).unwrap();
         let mut other = EdgeNegotiator::new(edge(), &Route::Direct).unwrap();
         other.begin(1, RouteKind::Direct, [0; 16], expiry).unwrap();
