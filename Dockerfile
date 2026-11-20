@@ -9,6 +9,8 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY server/package.json server/package.json
 COPY shared/package.json shared/package.json
 COPY web/package.json web/package.json
+# file: 依赖 tarball 必须在 install 前进入构建上下文（web xlsx vendored）
+COPY web/vendor web/vendor
 RUN pnpm install --frozen-lockfile
 
 COPY tsconfig.json ./
