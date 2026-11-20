@@ -2328,7 +2328,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-app-native-client"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-channel",
  "env_logger",
