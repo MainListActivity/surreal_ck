@@ -384,6 +384,7 @@ impl MeetingMedia {
             CaptureContext {
                 outputs: self.outputs.clone(),
                 requests: self.keyframes[index(source)].subscribe(),
+                request_counter: self.keyframes[index(source)].clone(),
                 cancel: cancel_rx,
                 states: self.states.clone(),
                 events: self.events.clone(),
@@ -691,10 +692,35 @@ async fn stop_process(
 struct CaptureContext {
     outputs: Outputs,
     requests: watch::Receiver<u64>,
+    request_counter: watch::Sender<u64>,
     cancel: watch::Receiver<bool>,
     states: watch::Sender<CaptureState>,
     events: mpsc::Sender<MeetingEvent>,
     operation: CaptureOperation,
+}
+impl CaptureContext {
+    fn fanout(
+        &self,
+        source: Source,
+        frame: Frame,
+        last_request: &mut Option<tokio::time::Instant>,
+        now: tokio::time::Instant,
+    ) {
+        let mut overflow = false;
+        for edge in self.outputs.lock().unwrap().iter() {
+            if edge.alive.load(Ordering::SeqCst) {
+                overflow |=
+                    edge.queues[index(source)].push(frame.clone(), source != Source::Microphone);
+            }
+        }
+        if overflow
+            && last_request
+                .is_none_or(|last| now.duration_since(last) >= Duration::from_millis(500))
+        {
+            self.request_counter.send_modify(|n| *n = n.wrapping_add(1));
+            *last_request = Some(now);
+        }
+    }
 }
 async fn run_capture(
     mut capture: Box<dyn EncodedCapture>,
@@ -704,6 +730,7 @@ async fn run_capture(
 ) -> Result<(), Error> {
     let mut next = Some(first);
     let mut deadline = None;
+    let mut last_overflow_request = None;
     let result: Result<(), Error> = async {
         loop {
             let frame = if let Some(frame) = next.take() { frame } else {
@@ -733,11 +760,7 @@ async fn run_capture(
                 if keyframe { deadline = None; }
             }
             let frame = Frame { data, duration, keyframe };
-            for edge in ctx.outputs.lock().unwrap().iter() {
-                if edge.alive.load(Ordering::SeqCst) {
-                    edge.queues[index(source)].push(frame.clone(), source != Source::Microphone);
-                }
-            }
+            ctx.fanout(source, frame, &mut last_overflow_request, tokio::time::Instant::now());
         }
     }.await;
     disable_source(&ctx.outputs, source);
@@ -848,6 +871,96 @@ mod tests {
             audio.push(frame(false), false);
         }
         assert!(audio.backlog.lock().unwrap().frames.len() <= 10);
+    }
+    #[tokio::test]
+    async fn overflow_requests_merge_rate_limit_and_recover_slow_edges() {
+        use surreal_ck_peer_transport::{Peer, Route};
+        let peer = Peer::new(Route::Direct, vec![]).await.unwrap();
+        let (media, _events) = Media::attach(&peer).await.unwrap();
+        let media = Arc::new(media);
+        let (meeting, _events) = MeetingMedia::new(Arc::new(|_, _, _, _| Ok(())));
+        let mut edges = Vec::new();
+        for member in ["slow-b", "slow-c", "fast"] {
+            edges.push(Arc::new(EdgeSend {
+                slot: MemberSlot {
+                    member_id: member.into(),
+                    join_id: JoinId::new(member).unwrap(),
+                },
+                media: media.clone(),
+                queues: std::array::from_fn(|i| SendQueue::new(ALL_SOURCES[i])),
+                alive: AtomicBool::new(true),
+                enabled: std::array::from_fn(|_| watch::channel(false).0),
+            }));
+        }
+        *meeting.outputs.lock().unwrap() = edges.clone();
+        let counter = meeting.keyframes[index(Source::Camera)].clone();
+        let mut ctx = CaptureContext {
+            outputs: meeting.outputs.clone(),
+            requests: counter.subscribe(),
+            request_counter: counter.clone(),
+            cancel: watch::channel(false).1,
+            states: meeting.states.clone(),
+            events: meeting.events.clone(),
+            operation: CaptureOperation::new(&meeting.states, Source::Camera, "测试采集关闭未确认"),
+        };
+        let now = tokio::time::Instant::now();
+        let mut last_request = None;
+        ctx.fanout(Source::Camera, frame(true), &mut last_request, now);
+        edges[2].queues[index(Source::Camera)].next().await;
+        for _ in 0..3 {
+            ctx.fanout(Source::Camera, frame(false), &mut last_request, now);
+            edges[2].queues[index(Source::Camera)].next().await;
+        }
+        assert_eq!(*counter.borrow(), 1);
+        assert!(ctx.requests.has_changed().unwrap());
+        for edge in &edges[..2] {
+            assert!(edge.queues[index(Source::Camera)]
+                .backlog
+                .lock()
+                .unwrap()
+                .frames
+                .is_empty());
+        }
+        for _ in 0..20 {
+            ctx.fanout(Source::Camera, frame(false), &mut last_request, now);
+            edges[2].queues[index(Source::Camera)].next().await;
+        }
+        assert_eq!(*counter.borrow(), 1);
+        ctx.fanout(Source::Camera, frame(true), &mut last_request, now);
+        for edge in &edges {
+            assert!(edge.queues[index(Source::Camera)].next().await.keyframe);
+        }
+        for elapsed in [499, 500] {
+            for _ in 0..4 {
+                ctx.fanout(
+                    Source::Camera,
+                    frame(true),
+                    &mut last_request,
+                    now + Duration::from_millis(elapsed),
+                );
+                edges[2].queues[index(Source::Camera)].next().await;
+            }
+            assert_eq!(*counter.borrow(), if elapsed == 499 { 1 } else { 2 });
+        }
+        for _ in 0..20 {
+            ctx.fanout(
+                Source::Microphone,
+                frame(false),
+                &mut last_request,
+                now + Duration::from_secs(1),
+            );
+        }
+        assert_eq!(*counter.borrow(), 2);
+        meeting.outputs.lock().unwrap().clear();
+        ctx.fanout(
+            Source::Camera,
+            frame(true),
+            &mut last_request,
+            now + Duration::from_secs(1),
+        );
+        assert_eq!(*counter.borrow(), 2);
+        ctx.operation.complete();
+        peer.close().await.unwrap();
     }
     #[tokio::test]
     async fn cancelled_detach_cannot_turn_next_empty_detach_into_confirmation() {
