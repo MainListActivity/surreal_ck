@@ -214,7 +214,7 @@ impl Default for MeetingView {
     fn default() -> Self {
         Self {
             capability: Capability::Unavailable {
-                reason: UnavailableReason::VersionDisabled,
+                reason: UnavailableReason::SignedOut,
             },
             invitations: vec![],
             contacts: vec![],

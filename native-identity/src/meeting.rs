@@ -414,6 +414,9 @@ fn failure(s: &Value) -> E {
         .get("message")
         .and_then(Value::as_str)
         .or_else(|| s.get("result").and_then(Value::as_str));
+    // 真实 SurrealDB 的 THROW 会带包装前缀 `An error occurred: meeting:<code>`；
+    // 剥掉这个固定前缀再做完全相等匹配，避免把用户内容里内嵌的 meeting: 串误判。
+    let msg = msg.map(|m| m.strip_prefix("An error occurred: ").unwrap_or(m));
     match msg {
         Some("meeting:not_found") => E::MeetingNotFound,
         Some("meeting:full") => E::MeetingFull,
@@ -630,7 +633,15 @@ impl MeetingRpc for MeetingConnection {
         {
             return Err(E::MeetingInput);
         }
-        for r in recipients {
+        // Contact/member_id 已带 `user:` 前缀；两种形式都接受并归一化。
+        let recipients: Vec<String> = recipients
+            .iter()
+            .map(|r| r.strip_prefix("user:").unwrap_or(r.as_str()).to_string())
+            .collect();
+        if recipients.iter().collect::<HashSet<_>>().len() != recipients.len() {
+            return Err(E::MeetingInput);
+        }
+        for r in &recipients {
             member_key(&format!("user:{r}"))?;
         }
         let v = self
