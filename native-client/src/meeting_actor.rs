@@ -382,6 +382,14 @@ async fn run(
         }
     };
     let (mut media, mut media_events) = MeetingMedia::new(hub.sink());
+    // 远端音画回放默认是关的（与 1:1 通话一致，需显式打开）。
+    // 会议即进入收听/观看态：建边前打开，后挂的边按此旗标配置。
+    if let Err(error) = media.set_remote_audio_enabled(true).await {
+        eprintln!("[meeting] 远端音频回放启用失败: {error}");
+    }
+    if let Err(error) = media.set_remote_video_enabled(true).await {
+        eprintln!("[meeting] 远端视频回放启用失败: {error}");
+    }
     let gate = DeviceGate::default();
     let mut lease = None;
     let mut last_invitations = Instant::now();
