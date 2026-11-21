@@ -304,10 +304,12 @@ impl MeetingView {
                 {
                     return;
                 }
+                // 只丢严格更旧的快照：同版本 room.version 内边状态/设备状态会变化，
+                // 用 >= 会把这些更新全部吞掉（复验时 UI 卡「连接中」的根因）。
                 if self
                     .versions
                     .get(&r.room_id)
-                    .is_some_and(|v| *v >= r.version)
+                    .is_some_and(|v| *v > r.version)
                 {
                     return;
                 }

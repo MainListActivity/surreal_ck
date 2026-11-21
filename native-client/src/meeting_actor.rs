@@ -23,7 +23,7 @@ use std::{
     time::{Duration, Instant},
 };
 use surreal_ck_native_call::{
-    CaptureInput, CaptureStatus, Source as CallSource, VideoConfig,
+    ALL_SOURCES, CaptureInput, CaptureStatus, Source as CallSource, VideoConfig,
     meeting::{DeviceGate, GateOwner, MeetingEvent, MeetingMedia, MemberSlot, RenderSlot},
 };
 use surreal_ck_native_identity::{
@@ -520,6 +520,7 @@ async fn run(
                             // 房间消失/绑定失效都不可自愈：按会议已结束收尾。
                             if matches!(error, SignalingError::Expired | SignalingError::NotFound | SignalingError::Binding) {
                                 teardown(&mut media, &mut edges).await;
+                                meeting.clear();
                                 emit!(MeetingUpdate::Ended { by_host: false });
                                 continue;
                             }
@@ -532,6 +533,7 @@ async fn run(
                     Err(error) => {
                         if matches!(error, SignalingError::Expired | SignalingError::NotFound | SignalingError::Binding) {
                             teardown(&mut media, &mut edges).await;
+                            meeting.clear();
                             emit!(MeetingUpdate::Ended { by_host: false });
                             continue;
                         }
@@ -540,6 +542,7 @@ async fn run(
                 }
                 if matches!(meeting.current_snapshot().map(|s| s.room.status), Some(RoomStatus::Ended)) {
                     teardown(&mut media, &mut edges).await;
+                    meeting.clear();
                     emit!(MeetingUpdate::Ended { by_host: false });
                     continue;
                 }
@@ -642,6 +645,7 @@ async fn set_device(
                     state: DeviceState::On
                 }),
                 Err(error) => {
+                    eprintln!("[meeting] device {source:?} start failed: {error}");
                     emit!(MeetingUpdate::Device {
                         source,
                         state: DeviceState::Off
@@ -734,7 +738,30 @@ async fn emit_snapshot(
                         matches!(capture.status(CallSource::Screen), CaptureStatus::Running),
                     )
                 } else {
-                    (DeviceState::Off, DeviceState::Off, false)
+                    // 远端成员的设备态不在房间快照里（服务端不落字段），
+                    // 从该边媒体的回放状态推导。
+                    let remote = JoinId::new(member.join_id.as_str())
+                        .ok()
+                        .map(|join_id| MemberSlot {
+                            member_id: member.member.clone(),
+                            join_id,
+                        })
+                        .and_then(|slot| media.playback_state(&slot))
+                        .map(|p| p.borrow().clone());
+                    (
+                        remote
+                            .as_ref()
+                            .map(|s| device_from_capture(s.status(CallSource::Microphone)))
+                            .unwrap_or(DeviceState::Off),
+                        remote
+                            .as_ref()
+                            .map(|s| device_from_capture(s.status(CallSource::Camera)))
+                            .unwrap_or(DeviceState::Off),
+                        remote
+                            .as_ref()
+                            .map(|s| matches!(s.status(CallSource::Screen), CaptureStatus::Running))
+                            .unwrap_or(false),
+                    )
                 };
                 MemberView {
                     member_id: member.member.clone(),
@@ -1117,9 +1144,15 @@ async fn drop_edges(
         }
     }
 }
+/// 会议结束/离开时的资源释放：停采集、逐边 detach、关闭 transport。
+/// 不能用 media.shutdown()——它把 MeetingMedia 永久置 stopped，
+/// 之后同一 actor 再入会/开会会全报「通话已停止」。
 async fn teardown(media: &mut MeetingMedia, edges: &mut BTreeMap<String, EdgeWork>) {
-    let _ = media.shutdown().await;
+    for source in ALL_SOURCES {
+        let _ = media.stop_capture(call_source(source)).await;
+    }
     for (_, work) in std::mem::take(edges) {
+        let _ = media.detach_edge(&work.slot).await;
         let _ = work.edge.close().await;
     }
 }

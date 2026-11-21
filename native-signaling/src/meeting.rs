@@ -506,6 +506,14 @@ impl<R: MeetingRpc> Meeting<R> {
         let s = self.rpc.renew(&r, &j).await?;
         self.apply(s, Some(&j))
     }
+    /// 本机会话状态清零（不发 RPC）。用于观察到房间已结束/绑定失效等
+    /// 不可自愈错误后：snapshot 可能仍停留在 ended 快照或陈旧快照，
+    /// 不清掉会让下一次 create/join 命中 Busy。
+    pub fn clear(&mut self) {
+        self.local = None;
+        self.snapshot = None;
+        self.edges.clear();
+    }
     pub async fn leave(&mut self) -> Result<()> {
         if self.local.is_none() && self.snapshot.is_none() {
             return Ok(());
