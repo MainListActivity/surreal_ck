@@ -5,6 +5,7 @@ import argparse
 import base64
 import fcntl
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,7 @@ import sys
 import tarfile
 import time
 import urllib.request
+import urllib.parse
 
 
 SOURCE = "3.3.0-native-quota.1"
@@ -339,32 +341,79 @@ def service_command(image, data, binary=None, engine="rocksdb"):
     return [*command, image, "start", "--bind", "0.0.0.0:8000", "--allow-all", f"{engine}:/data"]
 
 
-def export_database(binary, endpoint, auth, namespace, database, output):
-    env = {**os.environ, "SURREAL_USER": auth[0], "SURREAL_PASS": auth[1]}
-    error_log = output.with_name(output.name + ".stderr.log")
-    with open(output, "xb") as destination, open(error_log, "xb") as errors:
-        for stream in (destination, errors):
-            os.fchmod(stream.fileno(), 0o600)
-            os.fchown(stream.fileno(), 0, 0)
-        result = subprocess.run([PODMAN, "exec", "--env", "SURREAL_USER", "--env", "SURREAL_PASS", CONTAINER,
-                                 binary, "export", "--endpoint", endpoint, "--namespace", namespace,
-                                 "--database", database, "-"], env=env, stdout=destination,
-                                stderr=errors, check=False)
-    if result.returncode or output.stat().st_size == 0:
-        raise RuntimeError("container database export failed")
+TRANSFER_CHUNK = 1024 * 1024
+TRANSFER_TIMEOUT = 1800
 
 
-def import_database(container, binary, endpoint, auth, namespace, database, source):
+def private_file(path):
+    stream = open(path, "xb")
+    try:
+        os.fchmod(stream.fileno(), 0o600)
+        os.fchown(stream.fileno(), 0, 0)
+    except BaseException:
+        stream.close()
+        raise
+    return stream
+
+
+def http_transfer(endpoint, auth, namespace, database, path, importing=False):
+    url = urllib.parse.urlsplit(endpoint)
+    if (url.scheme != "http" or url.hostname != "127.0.0.1" or url.username is not None
+            or url.path not in ("", "/") or url.query or url.fragment):
+        raise RuntimeError("database transfer requires a loopback HTTP endpoint")
+    operation = "import" if importing else "export"
+    suffix = ".import.stderr.log" if importing else ".stderr.log"
+    headers = {"Authorization": "Basic " + base64.b64encode(":".join(auth).encode()).decode(),
+               "surreal-ns": namespace, "surreal-db": database, "Accept": "application/octet-stream"}
+    connection = http.client.HTTPConnection(url.hostname, url.port or 80, timeout=TRANSFER_TIMEOUT,
+                                             blocksize=TRANSFER_CHUNK)
+    with private_file(path.with_name(path.name + suffix)) as errors:
+        try:
+            if importing:
+                headers.update({"Content-Type": "application/octet-stream", "Content-Length": str(path.stat().st_size)})
+                with open(path, "rb") as source:
+                    connection.request("POST", "/import", body=source, headers=headers)
+                destination = errors
+            else:
+                connection.request("GET", "/export", headers=headers)
+                destination = private_file(path)
+            response = None
+            try:
+                response = connection.getresponse()
+                errors.write(f"HTTP {response.status}\n".encode())
+                length = response.getheader("Content-Length")
+                count = 0
+                valid_dump = True
+                while chunk := response.read(TRANSFER_CHUNK):
+                    if not importing and count == 0:
+                        valid_dump = chunk.lstrip().startswith(b"--")
+                    (destination if response.status == 200 and valid_dump else errors).write(chunk)
+                    count += len(chunk)
+                if length is not None and count != int(length):
+                    raise RuntimeError("incomplete HTTP response")
+                if response.status != 200 or (count != 0 if importing else not count or not valid_dump):
+                    raise RuntimeError("HTTP status or response body rejected")
+            finally:
+                if response is not None:
+                    response.close()
+                if not importing:
+                    destination.close()
+        except Exception as error:
+            errors.write(("\n" + type(error).__name__ + ": " + str(error)).encode())
+            raise RuntimeError(f"database HTTP {operation} failed; inspect protected backup log") from None
+        finally:
+            connection.close()
+
+
+def export_database(endpoint, auth, namespace, database, output):
+    http_transfer(endpoint, auth, namespace, database, output)
+
+
+def import_database(endpoint, auth, namespace, database, source):
     sql(endpoint, auth, f"DEFINE NAMESPACE IF NOT EXISTS {identifier(namespace)};")
     sql(endpoint, auth, f"DEFINE DATABASE IF NOT EXISTS {identifier(database)};", namespace)
     sql(endpoint, auth, "ALTER DATABASE COMPATIBILITY 3;", namespace, database)
-    env = {**os.environ, "SURREAL_USER": auth[0], "SURREAL_PASS": auth[1]}
-    result = subprocess.run([PODMAN, "exec", "--env", "SURREAL_USER", "--env", "SURREAL_PASS", container,
-                             binary, "import", "--endpoint", endpoint, "--namespace", namespace,
-                             "--database", database, "/upgrade-exports/" + source.name], env=env,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-    if result.returncode:
-        raise RuntimeError("target container database import failed")
+    http_transfer(endpoint, auth, namespace, database, source, importing=True)
 
 
 def restore_unit(backup):
@@ -472,7 +521,7 @@ def upgrade_locked(args, candidate):
         checksums = []
         for namespace, database in before:
             output = backup / f"{namespace}--{database}.surql"
-            export_database(report["binary"], endpoint, auth, namespace, database, output)
+            export_database(endpoint, auth, namespace, database, output)
             output.chmod(0o600)
             checksums.append(digest(output) + "  " + output.name)
         (backup / "SHA256SUMS").write_text("\n".join(checksums) + "\n")
@@ -488,17 +537,16 @@ def upgrade_locked(args, candidate):
             port = listener.getsockname()[1]
         trial_endpoint = f"http://127.0.0.1:{port}"
         command = [PODMAN, "run", "--detach", "--rm", "--name", trial, "--user", "0", "--network", "host",
-                   "--env-file", str(ENV_FILE), "-v", f"{target_data}:/data", "-v", f"{backup}:/upgrade-exports:ro"]
+                   "--env-file", str(ENV_FILE), "-v", f"{target_data}:/data"]
         if mounted_binary is not None:
             command += ["-v", f"{mounted_binary}:/surreal-upgrade:ro", "--entrypoint", "/surreal-upgrade"]
         run(*command, image, "start", "--bind", f"127.0.0.1:{port}", "--allow-all", f"{args.storage_engine}:/data")
         trial_started = True
         wait_health(trial_endpoint)
-        trial_binary = container_entrypoint(json.loads(run(PODMAN, "inspect", trial))[0])
         # backend 认证在导入和切换前再核验，不能把支持打开误认为生产认证通过。
         validate_capability(request(trial_endpoint + "/capabilities"), args.storage_engine)
         for namespace, database in before:
-            import_database(trial, trial_binary, trial_endpoint, auth, namespace, database,
+            import_database(trial_endpoint, auth, namespace, database,
                             backup / f"{namespace}--{database}.surql")
         if inventory(trial_endpoint, auth) != before:
             raise RuntimeError("imported row counts differ")
