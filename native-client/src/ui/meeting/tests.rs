@@ -213,6 +213,9 @@ fn Preview() -> impl IntoElement {
 #[component]
 fn UnavailablePreview() -> impl IntoElement {
     let state = MeetingState::new();
+    state.apply(MeetingUpdate::Capability(Capability::Unavailable {
+        reason: UnavailableReason::VersionDisabled,
+    }));
     meeting_page(state, |_| {}, Rc::new(placeholder_video))
 }
 
