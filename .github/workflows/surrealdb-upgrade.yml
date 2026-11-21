@@ -131,17 +131,50 @@ jobs:
              and (.promotion.downstream_acceptance_run_url | test("^https://github.com/MainListActivity/surreal_ck/actions/runs/[0-9]+$"))' \
             "$RUNNER_TEMP/promotion-production.json" >/dev/null
       - name: Fail-closed target engine and production contract preflight
+        env:
+          SURREAL_UPGRADE_MEMORY_MAX_MIB: ${{ vars.SURREAL_UPGRADE_MEMORY_MAX_MIB || '6144' }}
         run: |
           set -euo pipefail
           container="surreal-target-${GITHUB_RUN_ID}"
-          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
-          args=(--rm --detach --name "$container" --user 0 -p 127.0.0.1:18080:8000 --tmpfs /data)
+          created=false
+          cleanup() {
+            status=$?
+            trap - EXIT
+            if [ "$created" = true ]; then
+              if ! docker stop --time 30 "$container" >/dev/null; then
+                echo '::error::目标预检容器无法停止，拒绝继续。' >&2
+                exit 1
+              fi
+              state="$(docker inspect --format '{{json .State}}' "$container")" || exit 1
+              if ! CONTAINER_STATE="$state" python3 - <<'PY'
+          import json, os
+          state = json.loads(os.environ["CONTAINER_STATE"])
+          if state.get("Running") is not False or state.get("Pid") != 0:
+              raise SystemExit("::error::目标预检容器尚未确认退出，拒绝继续。")
+          if state.get("OOMKilled") is not False:
+              raise SystemExit("::error::目标预检容器 OOMKilled 或 OOM 状态不可读，拒绝继续。")
+          PY
+              then status=1; fi
+              docker rm "$container" >/dev/null || status=1
+            fi
+            exit "$status"
+          }
+          trap cleanup EXIT
+          memory_limit="$(python3 - <<'PY'
+          import os, runpy
+          helpers = runpy.run_path(os.path.join(os.environ["GITHUB_WORKSPACE"], "scripts/deploy/surrealdb-upgrade.py"))
+          print(helpers["memory_flags"](os.environ.get("SURREAL_UPGRADE_MEMORY_MAX_MIB", "6144"))[1])
+          PY
+          )"
+          args=(--detach --name "$container" --user 0 -p 127.0.0.1:18080:8000 --tmpfs /data
+            --memory "$memory_limit" --memory-swap "$memory_limit")
           if [ -n "$TARGET_IMAGE" ]; then
             image="$TARGET_IMAGE"
           else
             image=ghcr.io/mainlistactivity/surrealdb-native-quota@sha256:4873ac9db79f91196f2b5e6129263d660700fcbfad0c5e1d90595bd3d384dcf8
             args+=(--mount "type=bind,source=$TARGET_BINARY,target=/surreal-upgrade,readonly" --entrypoint /surreal-upgrade)
           fi
+          created=true
           docker run "${args[@]}" "$image" start --bind 0.0.0.0:8000 --allow-all "$STORAGE_ENGINE:/data"
           for attempt in $(seq 1 60); do
             if curl --fail --silent http://127.0.0.1:18080/health >/dev/null; then break; fi

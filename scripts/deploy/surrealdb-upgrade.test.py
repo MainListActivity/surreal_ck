@@ -64,7 +64,6 @@ class SafetyTests(unittest.TestCase):
                   b"DEFINE ACCESS x ON DATABASE TYPE RECORD COMMENT '[REDACTED]';\n",
                   b"DEFINE ACCESS x ON DATABASE TYPE RECORD SIGNIN { RETURN 'WITH ISSUER KEY \\\'[REDACTED]\\\''; };\n",
                   b"DEFINE ACCESS x ON DATABASE TYPE RECORD SIGNIN { LET $x = WITH ISSUER KEY '[REDACTED]'; };\n",
-                  b"DEFINE ACCESS x ON DATABASE TYPE RECORD\nWITH JWT ALGORITHM HS512 KEY '[REDACTED]';\n",
                   b"DEFINE ACCESS x ON DATABASE TYPE RECORD; INSERT INTO data { v: '[REDACTED]' };\n",
                   b"x" * (upgrade.TRANSFER_CHUNK - 4) + b"[REDACTED]\n")
         for content in values:
@@ -84,6 +83,71 @@ class SafetyTests(unittest.TestCase):
             original.write_bytes(content)
             self.assertEqual(upgrade.transform_export(original, result)["replacements"], 0)
             self.assertEqual(result.read_bytes(), content)
+
+    def test_unredacted_multiline_accesses_pass_unchanged_without_rewriting(self):
+        content = (b'DEFINE ACCESS participant ON DATABASE TYPE RECORD WITH JWT URL "https://issuer.test/jwks"\n'
+                   b'AUTHENTICATE {\n LET $x = {message: "braces }; and ; in strings"};\n'
+                   b' /* nested /* ; } */ comment */\n RETURN $x;\n}\nDURATION FOR SESSION NONE;\n'
+                   b'DEFINE ACCESS madocs ON DATABASE TYPE JWT URL "https://issuer.test/jwks"\n'
+                   b'AUTHENTICATE {\n RETURN true;\n};\n')
+        with tempfile.TemporaryDirectory() as directory, patch.object(upgrade.os, "fchown"), \
+                patch.object(upgrade, "transform_access_line", side_effect=AssertionError("unredacted access parsed")):
+            original, result = Path(directory) / "original", Path(directory) / "result"
+            original.write_bytes(content)
+            self.assertEqual(upgrade.transform_export(original, result), {"replacements": 0, "record_accesses": ["participant"]})
+            self.assertEqual(result.read_bytes(), content)
+            self.assertEqual(original.read_bytes(), content)
+            self.assertEqual(sorted(p.name for p in Path(directory).iterdir()), ["original", "result"])
+
+    def test_multiline_redacted_definition_preserves_real_issuer_and_authenticate(self):
+        content = (b"DEFINE ACCESS employee ON DATABASE TYPE RECORD\n"
+                   b"SIGNIN { RETURN user:bot; }\nWITH JWT ALGORITHM HS512\nKEY '[REDACTED]'\n"
+                   b"WITH ISSUER KEY 'synthetic-real-issuer' ALGORITHM HS512\n"
+                   b"AUTHENTICATE {\n LET $x = ['quoted \\\' ; }', {v: true}];\n RETURN $auth;\n}\n"
+                   b"DURATION FOR TOKEN 1h, FOR SESSION 1h;\n")
+        with tempfile.TemporaryDirectory() as directory, patch.object(upgrade.os, "fchown"):
+            original, result = Path(directory) / "original", Path(directory) / "result"
+            original.write_bytes(content)
+            self.assertEqual(upgrade.transform_export(original, result), {"replacements": 1, "record_accesses": ["employee"]})
+            self.assertEqual(result.read_bytes(), content.replace(b"WITH JWT ALGORITHM HS512\nKEY '[REDACTED]'", b""))
+
+    def test_large_unredacted_access_is_disk_spooled_and_byte_preserved(self):
+        content = b"DEFINE ACCESS x ON DATABASE TYPE RECORD AUTHENTICATE { RETURN '" + b"x" * (upgrade.TRANSFER_CHUNK * 3) + b"'; };\n"
+        with tempfile.TemporaryDirectory() as directory, patch.object(upgrade.os, "fchown"):
+            original, result = Path(directory) / "original", Path(directory) / "result"
+            original.write_bytes(content)
+            self.assertEqual(upgrade.transform_export(original, result), {"replacements": 0, "record_accesses": ["x"]})
+            self.assertEqual(upgrade.digest(original), upgrade.digest(result))
+
+    def test_unterminated_mismatched_oversized_or_ambiguous_redacted_access_fails_closed(self):
+        cases = [
+            b"DEFINE ACCESS x ON DATABASE TYPE RECORD AUTHENTICATE { RETURN true;\n",
+            b"DEFINE ACCESS x ON DATABASE TYPE RECORD AUTHENTICATE { RETURN [true); };\n",
+            b"DEFINE ACCESS x ON DATABASE TYPE RECORD WITH JWT ALGORITHM HS512 KEY '[REDACTED]'; RETURN true;\n",
+            b"DEFINE ACCESS x ON DATABASE TYPE RECORD\n-- WITH ISSUER KEY '[REDACTED]'\n;\n",
+            b"DEFINE ACCESS x ON DATABASE TYPE RECORD WITH JWT ALGORITHM HS512 KEY '[REDACTED]'\nAUTHENTICATE { RETURN 4 / 2; };\n",
+            b"DEFINE ACCESS x ON DATABASE TYPE RECORD WITH JWT ALGORITHM HS512 KEY '[REDACTED]' COMMENT '" + b"x" * upgrade.TRANSFER_CHUNK + b"';\n",
+        ]
+        for content in cases:
+            with self.subTest(prefix=content[:50]), tempfile.TemporaryDirectory() as directory, patch.object(upgrade.os, "fchown"):
+                original, result = Path(directory) / "original", Path(directory) / "result"
+                original.write_bytes(content)
+                with self.assertRaises(RuntimeError):
+                    upgrade.transform_export(original, result)
+                self.assertEqual(sorted(p.name for p in Path(directory).iterdir()), ["original", "result"])
+
+    def test_boundary_and_placeholder_detection_survive_chunk_splits(self):
+        content = (b"DEFINE ACCESS x ON DATABASE TYPE RECORD\nWITH JWT ALGORITHM HS512 KEY '[REDACTED]'\n"
+                   b"WITH ISSUER KEY '[REDACTED]' AUTHENTICATE { RETURN 'escaped \\\' ; }'; };\n")
+        with tempfile.TemporaryDirectory() as directory, patch.object(upgrade.os, "fchown"), \
+                patch.object(upgrade, "TRANSFER_CHUNK", 64):
+            original, result = Path(directory) / "original", Path(directory) / "result"
+            original.write_bytes(content)
+            self.assertEqual(upgrade.transform_export(original, result)["replacements"], 2)
+        boundary = upgrade.AccessBoundary()
+        statement = b"DEFINE ACCESS x ON DATABASE TYPE RECORD AUTHENTICATE { /* ; } */ RETURN 'escaped \\\' ; }'; };"
+        endings = [boundary.feed(bytes([byte])) for byte in statement]
+        self.assertEqual([end for end in endings if end is not None], [1])
 
     def test_transform_preserves_jwks_while_removing_issuer_key_and_algorithm(self):
         original = b'DEFINE ACCESS reader ON DATABASE TYPE JWT URL "https://issuer.test/jwks" WITH ISSUER KEY "[REDACTED]" ALGORITHM HS512 DURATION FOR SESSION 1h;\n'
@@ -218,6 +282,11 @@ class SafetyTests(unittest.TestCase):
         for matches in (True, False):
             with self.subTest(matches=matches), patch.object(upgrade, "copy_data"), \
                     patch.object(upgrade, "run") as command, patch.object(upgrade, "wait_health"), \
+                    patch.object(upgrade, "assert_database_idle"), patch.object(upgrade, "require_new_container"), \
+                    patch.object(upgrade, "memory_flags", return_value=["--memory", "100", "--memory-swap", "100"]), \
+                    patch.object(upgrade, "container_state", side_effect=[
+                        {"Running": True, "Pid": 123, "OOMKilled": False},
+                        {"Running": False, "Pid": 0, "OOMKilled": False}]), \
                     patch.object(upgrade, "inventory", return_value={"fixture": 1} if matches else {}):
                 args = (upgrade.SOURCE_IMAGE, "/opt/source-db", Path("/snapshot"), Path("/restore"),
                         ("fixture", "fixture-password"), {"fixture": 1})
@@ -230,7 +299,10 @@ class SafetyTests(unittest.TestCase):
                 self.assertEqual(launch[launch.index("--entrypoint") + 1], "/opt/source-db")
                 self.assertIn(upgrade.SOURCE_IMAGE, launch)
                 self.assertEqual(launch[-1], "rocksdb:/data")
-                self.assertEqual(command.call_args.args[:4], (upgrade.PODMAN, "stop", "--time", "30"))
+                self.assertEqual(command.call_args_list[-2].args[:4], (upgrade.PODMAN, "stop", "--time", "30"))
+                self.assertEqual(command.call_args.args[:2], (upgrade.PODMAN, "rm"))
+                self.assertNotIn("--rm", launch)
+                self.assertEqual(launch[launch.index("--memory") + 1], launch[launch.index("--memory-swap") + 1])
 
     def test_private_env_allows_root_group_read_but_no_group_write_or_other_access(self):
         path = unittest.mock.Mock()
@@ -303,6 +375,124 @@ class SafetyTests(unittest.TestCase):
             self.assertEqual(json.loads(output.call_args.args[0]), {"version": upgrade.SOURCE})
 
 
+class ContainerSafetyTests(unittest.TestCase):
+    def test_memory_budget_is_current_available_fraction_capped_in_bytes(self):
+        for available_kib, maximum, expected in [
+            (8 * 1024 ** 2, "6144", 8 * 1024 ** 3 * 70 // 100),
+            (16 * 1024 ** 2, "6144", 6 * 1024 ** 3),
+            (8 * 1024 ** 2, "3072", 3 * 1024 ** 3),
+            (2 * 1024 ** 2, "6144", 2 * 1024 ** 3 * 70 // 100),
+        ]:
+            with self.subTest(available=available_kib, maximum=maximum), \
+                    patch.object(Path, "read_text", return_value=f"MemTotal: 999999999 kB\nMemAvailable: {available_kib} kB\n"):
+                self.assertEqual(upgrade.memory_flags(maximum),
+                                 ["--memory", str(expected), "--memory-swap", str(expected)])
+        with patch.object(Path, "read_text", side_effect=["MemAvailable: 4194304 kB\n", "MemAvailable: 8388608 kB\n"]):
+            self.assertNotEqual(upgrade.memory_flags(6144), upgrade.memory_flags(6144))
+
+    def test_low_missing_or_malformed_available_memory_refuses_start(self):
+        for text in ("MemAvailable: 2097151 kB\n", "MemTotal: 999999999 kB\n", "MemAvailable: unknown kB\n",
+                     "MemAvailable: -1 kB\n", "MemAvailable: 999999999 B\n", ""):
+            with self.subTest(text=text), patch.object(Path, "read_text", return_value=text):
+                with self.assertRaises(upgrade.MaintenanceSafetyError):
+                    upgrade.memory_flags(6144)
+        for maximum in (0, -1, "", "invalid", None):
+            with self.subTest(maximum=maximum):
+                with self.assertRaises(upgrade.MaintenanceSafetyError):
+                    upgrade.memory_flags(maximum)
+
+    def test_state_missing_inspect_errors_and_unknown_fields_fail_closed(self):
+        for code in (1, 125):
+            with self.subTest(code=code), patch.object(upgrade.subprocess, "run", return_value=SimpleNamespace(returncode=code)):
+                if code == 1:
+                    self.assertIsNone(upgrade.container_state("fixture"))
+                else:
+                    with self.assertRaisesRegex(upgrade.MaintenanceSafetyError, "existence"):
+                        upgrade.container_state("fixture")
+        for state in ({}, None, {"Running": False, "Pid": 0}, {"Running": "false", "Pid": 0, "OOMKilled": False},
+                      {"Running": False, "Pid": -1, "OOMKilled": False}, {"Running": False, "Pid": 0, "OOMKilled": "false"}):
+            with self.subTest(state=state), \
+                    patch.object(upgrade.subprocess, "run", return_value=SimpleNamespace(returncode=0)), \
+                    patch.object(upgrade, "run", return_value=json.dumps([{"State": state}])):
+                with self.assertRaisesRegex(upgrade.MaintenanceSafetyError, "exit state"):
+                    upgrade.container_state("fixture")
+        state = {"Running": False, "Pid": 0, "OOMKilled": True}
+        with patch.object(upgrade.subprocess, "run", return_value=SimpleNamespace(returncode=0)), \
+                patch.object(upgrade, "run", return_value=json.dumps([{"State": state}])):
+            self.assertEqual(upgrade.container_state("fixture"), state)
+
+    def test_retirement_confirms_exit_and_records_oom_before_removal(self):
+        for initial_oom, final_oom in ((False, False), (False, True), (True, True)):
+            with self.subTest(initial_oom=initial_oom, final_oom=final_oom), \
+                    patch.object(upgrade, "container_state", side_effect=[
+                        {"Running": True, "Pid": 123, "OOMKilled": initial_oom},
+                        {"Running": False, "Pid": 0, "OOMKilled": final_oom}]) as state, \
+                    patch.object(upgrade, "run") as run:
+                self.assertEqual(upgrade.retire_container("fixture"), initial_oom or final_oom)
+                self.assertEqual(state.call_count, 2)
+                self.assertEqual([call.args for call in run.call_args_list], [
+                    (upgrade.PODMAN, "stop", "--time", "30", "fixture"), (upgrade.PODMAN, "rm", "fixture")])
+        with patch.object(upgrade, "container_state", return_value={"Running": False, "Pid": 0, "OOMKilled": True}), \
+                patch.object(upgrade, "run") as run:
+            self.assertTrue(upgrade.retire_container("fixture"))
+            run.assert_called_once_with(upgrade.PODMAN, "rm", "fixture")
+        with patch.object(upgrade, "container_state", return_value=None), patch.object(upgrade, "run") as run:
+            self.assertFalse(upgrade.retire_container("fixture"))
+            run.assert_not_called()
+
+    def test_unconfirmed_exit_or_failed_stop_never_removes_container(self):
+        for final in (None, {"Running": True, "Pid": 123}, {"Running": False, "Pid": 123}):
+            with self.subTest(final=final), patch.object(upgrade, "container_state", side_effect=[
+                    {"Running": True, "Pid": 123, "OOMKilled": False}, final]), patch.object(upgrade, "run") as run:
+                with self.assertRaises(upgrade.MaintenanceSafetyError):
+                    upgrade.retire_container("fixture")
+                run.assert_called_once_with(upgrade.PODMAN, "stop", "--time", "30", "fixture")
+        with patch.object(upgrade, "container_state", return_value={"Running": True, "Pid": 123, "OOMKilled": False}), \
+                patch.object(upgrade, "run", side_effect=RuntimeError("stop failed")) as run:
+            with self.assertRaisesRegex(RuntimeError, "stop failed"):
+                upgrade.retire_container("fixture")
+            self.assertEqual(run.call_count, 1)
+
+    def test_idle_guard_checks_source_temporaries_and_host_processes(self):
+        with patch.object(upgrade, "container_state", return_value=None) as state, \
+                patch.object(upgrade, "running_surreal_pids", return_value=[]):
+            upgrade.assert_database_idle()
+            self.assertEqual([call.args[0] for call in state.call_args_list], [upgrade.CONTAINER, *upgrade.temporary_names()])
+        for state in ({"Running": True, "Pid": 1}, {"Running": False, "Pid": 1}):
+            with self.subTest(state=state), patch.object(upgrade, "container_state", return_value=state):
+                with self.assertRaisesRegex(upgrade.MaintenanceSafetyError, "overlap"):
+                    upgrade.assert_database_idle()
+        with patch.object(upgrade, "container_state", return_value=None), \
+                patch.object(upgrade, "running_surreal_pids", return_value=["123"]):
+            with self.assertRaisesRegex(upgrade.MaintenanceSafetyError, "another SurrealDB"):
+                upgrade.assert_database_idle()
+
+    def test_host_process_guard_includes_unmanaged_and_deleted_binaries(self):
+        with patch.object(Path, "iterdir", return_value=[Path("/proc/100"), Path("/proc/101"), Path("/proc/102"), Path("/proc/version")]), \
+                patch.object(Path, "readlink", side_effect=[Path("/surreal"), Path("/surreal-upgrade (deleted)"), Path("/usr/bin/python3")]):
+            self.assertEqual(upgrade.running_surreal_pids(), ["100", "101"])
+        with patch.object(Path, "iterdir", return_value=[Path("/proc/100")]), \
+                patch.object(Path, "readlink", side_effect=FileNotFoundError):
+            self.assertEqual(upgrade.running_surreal_pids(), [])
+
+    def test_health_reports_oom_immediately_without_polling_endpoint(self):
+        with patch.object(upgrade, "container_state", return_value={"Running": False, "Pid": 0, "OOMKilled": True}), \
+                patch.object(upgrade.urllib.request, "urlopen") as urlopen:
+            with self.assertRaisesRegex(upgrade.MaintenanceSafetyError, "OOMKilled"):
+                upgrade.wait_health("http://127.0.0.1:8000", container="fixture")
+            urlopen.assert_not_called()
+
+    def test_preflight_failure_always_retires_and_preserves_oom_reason(self):
+        for oom in (False, True):
+            with self.subTest(oom=oom), patch.object(upgrade, "assert_database_idle"), \
+                    patch.object(upgrade, "require_new_container"), patch.object(upgrade, "memory_flags", return_value=[]), \
+                    patch.object(upgrade, "run", side_effect=RuntimeError("CLI failed")), \
+                    patch.object(upgrade, "retire_container", return_value=oom) as retire:
+                with self.assertRaisesRegex(RuntimeError, "OOMKilled" if oom else "CLI failed"):
+                    upgrade.run_target_cli("image", "fixture", ["version"])
+                retire.assert_called_once_with("fixture")
+
+
 class SandboxTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="sck-db-upgrade-test-")
@@ -333,6 +523,8 @@ class SandboxTests(unittest.TestCase):
         self.counts = {("main", "_system"): {"workspace": 1}, ("main", "ws_one"): {},
                        ("main", "platform_content"): {"article": 2}}
         self.calls = []
+        self.containers = {}
+        self.source_running = True
         stack = ExitStack()
         self.addCleanup(stack.close)
         for key, value in {"LOCK": self.root / "lock", "DROPIN": self.root / "systemd" / "override.conf",
@@ -345,9 +537,15 @@ class SandboxTests(unittest.TestCase):
         stack.enter_context(patch.object(upgrade, "credentials", return_value=("fixture", "fixture-password")))
         stack.enter_context(patch.object(upgrade, "trusted_file"))
         stack.enter_context(patch.object(upgrade, "host_env", return_value={"SURREAL_UPGRADE_FENCE": str(self.fence),
-                                                                          "SURREAL_UPGRADE_UNFENCE": str(self.unfence)}))
+                                                                          "SURREAL_UPGRADE_UNFENCE": str(self.unfence),
+                                                                          "SURREAL_UPGRADE_MEMORY_MAX_MIB": "4096"}))
         self.inventory = stack.enter_context(patch.object(upgrade, "inventory", return_value=self.counts))
+        self.real_restore_drill = upgrade.restore_drill
         self.restore_drill = stack.enter_context(patch.object(upgrade, "restore_drill"))
+        self.memory = stack.enter_context(patch.object(upgrade, "memory_flags",
+            return_value=["--memory", "4294967296", "--memory-swap", "4294967296"]))
+        stack.enter_context(patch.object(upgrade, "container_state", side_effect=self.fake_state))
+        stack.enter_context(patch.object(upgrade, "running_surreal_pids", return_value=[]))
         self.validate_accesses = stack.enter_context(patch.object(upgrade, "validate_record_accesses"))
         stack.enter_context(patch.object(upgrade.os, "fchown"))
         stack.enter_context(patch.object(upgrade, "export_database", side_effect=self.export_database))
@@ -358,11 +556,35 @@ class SandboxTests(unittest.TestCase):
 
     def fake_run(self, *args, env=None):
         self.calls.append(args)
+        if args == ("systemctl", "stop", upgrade.SERVICE):
+            self.source_running = False
+        if args == ("systemctl", "start", upgrade.SERVICE):
+            self.assertFalse(any(state["Running"] or state["Pid"] for state in self.containers.values()))
+            self.source_running = True
+        if args[:2] == (upgrade.PODMAN, "run"):
+            self.assertFalse(self.source_running)
+            self.assertFalse(any(state["Running"] or state["Pid"] for state in self.containers.values()))
+            name = args[args.index("--name") + 1]
+            self.containers[name] = {"Running": "--detach" in args, "Pid": 123 if "--detach" in args else 0, "OOMKilled": False}
+            self.assertNotIn("--rm", args)
+            self.assertEqual(args[args.index("--memory") + 1], args[args.index("--memory-swap") + 1])
+        if args[:2] == (upgrade.PODMAN, "stop"):
+            self.containers[args[-1]].update(Running=False, Pid=0)
+        if args[:2] == (upgrade.PODMAN, "rm"):
+            state = self.containers.pop(args[-1])
+            self.assertFalse(state["Running"])
+            self.assertEqual(state["Pid"], 0)
         if args[0] == "cp":
             shutil.copytree(args[-2], args[-1])
         if "inspect" in args:
             return json.dumps([{"Path": "/surreal-upgrade"}])
         return upgrade.TARGET + "+sha.fixture" if "version" in args else ""
+
+    def fake_state(self, name):
+        state = ({"Running": True, "Pid": 12, "OOMKilled": False} if self.source_running else None) \
+            if name == upgrade.CONTAINER else self.containers.get(name)
+        self.calls.append(("state", name, state.copy() if state else None))
+        return state
 
     def export_database(self, endpoint, auth, namespace, database, output):
         self.calls.append(("export_database", namespace, database))
@@ -389,6 +611,84 @@ class SandboxTests(unittest.TestCase):
         self.assertEqual(self.calls[-1], (str(self.unfence),))
         self.assertEqual((self.data / "old-records").read_text(), "unchanged")
         self.assertEqual(self.restore_drill.call_args.args[:2], (upgrade.SOURCE_IMAGE, self.report["binary"]))
+
+    def test_real_restore_drill_and_all_preflights_are_serial_and_limited(self):
+        self.restore_drill.side_effect = self.real_restore_drill
+        upgrade.upgrade(self.args)
+        launches = [(i, args) for i, args in enumerate(self.calls) if args[:2] == (upgrade.PODMAN, "run")]
+        self.assertEqual(len(launches), 4)
+        self.assertLess(self.calls.index(("systemctl", "stop", upgrade.SERVICE)), launches[0][0])
+        for (index, args), (next_index, _) in zip(launches, launches[1:]):
+            name = args[args.index("--name") + 1]
+            removal = self.calls.index((upgrade.PODMAN, "rm", name))
+            self.assertLess(index, removal)
+            self.assertLess(removal, next_index)
+            self.assertIn(("state", name, {"Running": False, "Pid": 0, "OOMKilled": False}), self.calls[index:removal])
+        self.assertFalse(self.containers)
+        self.assertEqual([call.args for call in self.memory.call_args_list], [("4096",)] * 4)
+
+    def test_source_stop_without_actual_exit_never_launches_another_process(self):
+        run = self.fake_run
+        def ignore_stop(*args, **kwargs):
+            if args == ("systemctl", "stop", upgrade.SERVICE):
+                self.calls.append(args)
+                return ""
+            return run(*args, **kwargs)
+        with patch.object(upgrade, "run", side_effect=ignore_stop):
+            with self.assertRaisesRegex(RuntimeError, "has not exited"):
+                upgrade.upgrade(self.args)
+        self.assertFalse(any(call[:2] == (upgrade.PODMAN, "run") for call in self.calls))
+        self.assertNotIn(("systemctl", "start", upgrade.SERVICE), self.calls)
+        self.assertNotIn((str(self.unfence),), self.calls)
+
+    def test_restore_drill_oom_never_launches_trial_and_recovers_only_after_exit(self):
+        self.restore_drill.side_effect = self.real_restore_drill
+        def fail_health(endpoint, origin=False, container=None):
+            if container == upgrade.temporary_names()[2]:
+                self.containers[container].update(Running=False, Pid=0, OOMKilled=True)
+                raise RuntimeError("health failed")
+        with patch.object(upgrade, "wait_health", side_effect=fail_health):
+            with self.assertRaisesRegex(RuntimeError, "OOMKilled"):
+                upgrade.upgrade(self.args)
+        launches = [call for call in self.calls if call[:2] == (upgrade.PODMAN, "run")]
+        self.assertEqual(len(launches), 3)
+        self.assertNotIn(upgrade.temporary_names()[-1], [call[call.index("--name") + 1] for call in launches])
+        removal = self.calls.index((upgrade.PODMAN, "rm", upgrade.temporary_names()[2]))
+        self.assertLess(removal, self.calls.index(("systemctl", "start", upgrade.SERVICE)))
+        self.assertNotIn((str(self.unfence),), self.calls)
+
+    def test_trial_oom_reports_reason_and_retires_before_source_restart(self):
+        def fail_import(*args):
+            self.containers[upgrade.temporary_names()[-1]].update(Running=False, Pid=0, OOMKilled=True)
+            raise RuntimeError("private transfer error")
+        with patch.object(upgrade, "import_database", side_effect=fail_import):
+            with self.assertRaisesRegex(RuntimeError, "OOMKilled") as error:
+                upgrade.upgrade(self.args)
+        self.assertNotIn("private transfer error", str(error.exception))
+        removal = self.calls.index((upgrade.PODMAN, "rm", upgrade.temporary_names()[-1]))
+        self.assertLess(removal, self.calls.index(("systemctl", "start", upgrade.SERVICE)))
+        self.assertNotIn((str(self.unfence),), self.calls)
+
+    def test_low_memory_refuses_first_temporary_launch_and_recovers_source(self):
+        self.memory.side_effect = upgrade.MaintenanceSafetyError("host MemAvailable below 2 GiB")
+        with self.assertRaisesRegex(RuntimeError, "MemAvailable below 2 GiB"):
+            upgrade.upgrade(self.args)
+        self.assertFalse(any(call[:2] == (upgrade.PODMAN, "run") for call in self.calls))
+        self.assertIn(("systemctl", "start", upgrade.SERVICE), self.calls)
+        self.assertNotIn((str(self.unfence),), self.calls)
+
+    def test_unconfirmed_trial_stop_never_restarts_source_or_switches(self):
+        run = self.fake_run
+        def refuse_stop(*args, **kwargs):
+            if args[:2] == (upgrade.PODMAN, "stop"):
+                raise RuntimeError("stop failed")
+            return run(*args, **kwargs)
+        with patch.object(upgrade, "run", side_effect=refuse_stop):
+            with self.assertRaisesRegex(RuntimeError, "stop failed"):
+                upgrade.upgrade(self.args)
+        self.assertNotIn(("systemctl", "start", upgrade.SERVICE), self.calls)
+        self.assertFalse(upgrade.DROPIN.exists())
+        self.assertNotIn((str(self.unfence),), self.calls)
 
     def test_nondefault_inspected_source_path_reaches_exports_and_restore(self):
         self.report["binary"] = "/opt/source-db"
