@@ -112,6 +112,7 @@ marker 32772 本身不绑定某个引擎；`storage.backend` 与 backend certifi
    ```dotenv
    SURREAL_UPGRADE_FENCE=/usr/local/sbin/sck-surrealdb-fence
    SURREAL_UPGRADE_UNFENCE=/usr/local/sbin/sck-surrealdb-unfence
+   SURREAL_UPGRADE_MEMORY_MAX_MIB=6144
    ```
 
    fence 停 origin 与 `sck-company-mcp`，备份 root 0600 Caddyfile，仅改
@@ -135,6 +136,18 @@ marker 32772 本身不绑定某个引擎；`storage.backend` 与 backend certifi
    包括 `_system`、每个 workspace 和 `platform_content`；导出各库及 SHA256，
    记录各基础表行数（物化视图不作为独立计数基线）。停数据库后保留 ownership
    复制完整 RocksDB snapshot，在另一个路径用旧 digest 的容器做 restore drill 并比对行数。
+   主机 target version/backend smoke 也在源服务停止并确认退出后才运行；顺序为
+   version → backend smoke → restore drill → trial → 正式服务，每个临时容器必须
+   确认 `State.Running=false` 且 `State.Pid=0` 后才能删除并启动下一个。
+   启动前另查 `/proc`，存在 `surreal` / `surreal-upgrade` 进程（包括手动演练遗留）则拒绝重叠。
+   不要在同一主机并行手动启动其他数据库进程；脚本锁不约束外部操作。
+   每次临时容器启动前重新读取主机 `MemAvailable`：低于 2 GiB 直接失败；
+   `--memory` 与 `--memory-swap` 同为 `min(MemAvailable × 70%, 最大值)`，禁用额外 swap。
+   最大值默认 6144 MiB，由上述 root env 的 `SURREAL_UPGRADE_MEMORY_MAX_MIB` 配置。
+   临时容器不使用自动删除，先读 `State.OOMKilled`；OOM 会明确报错，确认退出并清理后
+   才允许恢复旧服务。停止/inspect/退出确认失败则保持围栏，不启动下一个容器或恢复旧服务。
+   workflow 的 preflight 在独立 GitHub runner（不是生产主机）运行，使用相同内存算法；
+   上限可用同名 repository/environment variable 配置，退出/OOM 检查必须先于 SSH。
    备份目录为 `/home/ubuntu/surreal_ck/backups/surrealdb-<UTC>`，权限 0700；另保存原
    `surrealdb.service` 与已有 drop-in。每库导出及 `<namespace>--<database>.surql.stderr.log`
    均为 root-owned 0600；导入日志为 `<namespace>--<database>.import.surql.import.stderr.log`。
