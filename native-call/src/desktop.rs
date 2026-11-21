@@ -517,9 +517,9 @@ pub(crate) fn validate_input(source: Source, input: &CaptureInput) -> Result<(),
         CaptureInput::Camera { .. } | CaptureInput::WindowsCamera { .. } => {
             source == Source::Camera
         }
-        CaptureInput::X11Screen { .. } | CaptureInput::WindowsScreen { .. } => {
-            source == Source::Screen
-        }
+        CaptureInput::X11Screen { .. }
+        | CaptureInput::WindowsScreen { .. }
+        | CaptureInput::MacScreen { .. } => source == Source::Screen,
         // AVFoundation 的索引可表示摄像头或屏幕，调用者必须通过枚举确认来源。
         CaptureInput::MacVideo { .. } => source == Source::Camera || source == Source::Screen,
     };

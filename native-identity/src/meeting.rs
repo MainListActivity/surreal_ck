@@ -397,7 +397,10 @@ fn failure(s: &Value) -> E {
         .filter_map(|key| s.get(key).and_then(Value::as_str))
         .map(str::to_ascii_lowercase)
         .any(|s| {
-            (s.contains("transaction") && s.contains("conflict")) || s.contains("can be retried")
+            (s.contains("transaction") && s.contains("conflict"))
+                || s.contains("can be retried")
+                // fork 的原生配额准入冲突也是可重试冲突（error_code=quota_conflict）。
+                || (s.contains("quota") && s.contains("conflict"))
         });
     if retry {
         return E::MeetingRetry;
@@ -422,7 +425,9 @@ fn failure(s: &Value) -> E {
         if lower.starts_with("meeting:") {
             Some(lower)
         } else if lower.contains("error occurred") {
-            lower.rsplit_once("meeting:").map(|(_, tail)| format!("meeting:{tail}"))
+            lower
+                .rsplit_once("meeting:")
+                .map(|(_, tail)| format!("meeting:{tail}"))
         } else {
             None
         }
@@ -544,29 +549,46 @@ impl MeetingConnection {
             .request_id
             .checked_add(1)
             .ok_or(E::MeetingUnavailable)?;
-        let response = timeout(
-            Duration::from_secs(15),
-            rpc_outcome(
-                &mut self.socket,
-                self.request_id,
-                "query",
-                json!([sql, vars]),
-            ),
-        )
-        .await;
-        self.session.ensure_current()?;
-        match response {
-            Ok(Ok(Ok(v))) => result(v),
-            Ok(Ok(Err(e))) => Err(failure(&e)),
-            _ => {
-                self.closed = true;
-                Err(if mutates {
-                    E::MeetingUncertain
-                } else {
-                    E::MeetingUnavailable
-                })
+        // 服务端可重试冲突（事务/配额准入）在 15s 预算内退避重试：
+        // 会议 command 外壳按 (actor,op) 槽 DELETE+CREATE，重放是幂等的。
+        for attempt in 0u8..4 {
+            let response = timeout(
+                Duration::from_secs(15),
+                rpc_outcome(
+                    &mut self.socket,
+                    self.request_id,
+                    "query",
+                    json!([sql, &vars]),
+                ),
+            )
+            .await;
+            self.session.ensure_current()?;
+            match response {
+                Ok(Ok(Ok(v))) => return result(v),
+                Ok(Ok(Err(e))) => {
+                    // 取证用：原始服务端错误只进 stderr，UI 仍走 failure() 的映射与脱敏。
+                    eprintln!("[meeting-rpc] raw error: {e}");
+                    let error = failure(&e);
+                    if !matches!(error, E::MeetingRetry) || attempt == 3 {
+                        return Err(error);
+                    }
+                    tokio::time::sleep(Duration::from_millis(150 * u64::from(attempt) + 150)).await;
+                    self.request_id = self
+                        .request_id
+                        .checked_add(1)
+                        .ok_or(E::MeetingUnavailable)?;
+                }
+                _ => {
+                    self.closed = true;
+                    return Err(if mutates {
+                        E::MeetingUncertain
+                    } else {
+                        E::MeetingUnavailable
+                    });
+                }
             }
         }
+        Err(E::MeetingUnavailable)
     }
     fn guard(&mut self, i: usize, secs: u64) -> Result<()> {
         self.ensure_current()?;

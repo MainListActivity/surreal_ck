@@ -54,6 +54,7 @@ const TICK: Duration = Duration::from_secs(3);
 const ATTEMPT_TTL: Duration = Duration::from_secs(35);
 const RENEW_AFTER: Duration = Duration::from_secs(8);
 const EDGE_RETRY: Duration = Duration::from_secs(15);
+const INVITATIONS_AFTER: Duration = Duration::from_secs(9);
 
 fn call_source(source: Source) -> CallSource {
     match source {
@@ -337,13 +338,20 @@ async fn run(
             }
         };
     }
-    // 连续相同的错误只上报一次，避免 tick 循环把同一错误刷成重复 toast。
-    let mut last_error = String::new();
+    // 连续相同的错误按调用点去重：同一点位的同文错误 10 秒内只报一次，
+    // 避免 tick 循环刷屏；不同点位（或文案变化）的错误各自可见。
+    let mut last_errors: BTreeMap<u32, (String, Instant)> = BTreeMap::new();
     macro_rules! fail {
         ($error:expr) => {{
             let rendered = ($error).to_string();
-            if rendered != last_error {
-                last_error = rendered;
+            // 取证用：包括被去重吞掉的在内，错误全量打到 stderr（实例日志）。
+            eprintln!("[meeting] error@{}: {rendered}", line!());
+            let emit_now = match last_errors.get(&line!()) {
+                Some((text, at)) => *text != rendered || at.elapsed() > Duration::from_secs(10),
+                None => true,
+            };
+            if emit_now {
+                last_errors.insert(line!(), (rendered, Instant::now()));
                 emit!(MeetingUpdate::Error(map_error($error)))
             }
         }};
@@ -371,6 +379,7 @@ async fn run(
     let (mut media, mut media_events) = MeetingMedia::new(hub.sink());
     let gate = DeviceGate::default();
     let mut lease = None;
+    let mut last_invitations = Instant::now();
     let mut edges: BTreeMap<String, EdgeWork> = BTreeMap::new();
     // 建边失败后的重试冷却，避免每个 tick 重复创建 PC/套接字。
     let mut retry_after: BTreeMap<String, Instant> = BTreeMap::new();
@@ -397,16 +406,23 @@ async fn run(
                 let Ok(command) = command else { break };
                 match command {
                     MeetingCommand::Create => match meeting.create().await {
-                        Ok(()) => emit_snapshot(&meeting, &edges, &contacts, &out, epoch, generation, &media).await,
+                        Ok(()) => {
+                            eprintln!("[meeting] create ok");
+                            emit_snapshot(&meeting, &edges, &contacts, &out, epoch, generation, &media).await
+                        }
                         Err(error) => fail!(error),
                     },
                     MeetingCommand::Invite { member_ids, .. } => {
-                        if let Err(error) = meeting.invite(&member_ids).await {
-                            fail!(error);
+                        match meeting.invite(&member_ids).await {
+                            Ok(result) => eprintln!("[meeting] invite ok: {:?}", result.invited),
+                            Err(error) => fail!(error),
                         }
                     }
                     MeetingCommand::Join { room_code } => match meeting.join(&room_code).await {
-                        Ok(()) => emit_snapshot(&meeting, &edges, &contacts, &out, epoch, generation, &media).await,
+                        Ok(()) => {
+                            eprintln!("[meeting] join ok");
+                            emit_snapshot(&meeting, &edges, &contacts, &out, epoch, generation, &media).await
+                        }
                         Err(error) => fail!(error),
                     },
                     MeetingCommand::SetDevice { source, on } => {
@@ -429,12 +445,18 @@ async fn run(
                     }
                     MeetingCommand::Leave => {
                         teardown(&mut media, &mut edges).await;
-                        let _ = meeting.leave().await;
+                        match meeting.leave().await {
+                            Ok(()) => eprintln!("[meeting] leave ok"),
+                            Err(error) => fail!(error),
+                        }
                         emit!(MeetingUpdate::Left);
                     }
                     MeetingCommand::End => {
                         teardown(&mut media, &mut edges).await;
-                        let _ = meeting.end().await;
+                        match meeting.end().await {
+                            Ok(()) => eprintln!("[meeting] end ok"),
+                            Err(error) => fail!(error),
+                        }
                         emit!(MeetingUpdate::Ended { by_host: true });
                     }
                     MeetingCommand::DismissError => {}
@@ -472,6 +494,21 @@ async fn run(
                 }
             }
             _ = tick.tick() => {
+                // 邀请收件箱与是否在会无关：每 9 秒轮询一次，新邀请才会出现在 UI。
+                if last_invitations.elapsed() >= INVITATIONS_AFTER {
+                    last_invitations = Instant::now();
+                    match meeting.invitations().await {
+                        Ok(invitations) => {
+                            emit!(MeetingUpdate::Invitations(
+                                invitations
+                                    .iter()
+                                    .map(|invitation| map_invitation(invitation, &contacts))
+                                    .collect(),
+                            ));
+                        }
+                        Err(error) => fail!(error),
+                    }
+                }
                 if meeting.local_join().is_none() {
                     continue;
                 }
@@ -522,27 +559,35 @@ async fn run(
                     }
                     Err(error) => fail!(error),
                 }
-                for work in edges.values_mut() {
+                for (peer_join, work) in edges.iter_mut() {
                     if work.status == EdgeStatus::Connecting {
                         let stats = work.edge.stats().await;
-                        work.status = match stats.route {
+                        let pc_state = work.edge.connection_state();
+                        let next = match stats.route {
                             ObservedRoute::Direct => EdgeStatus::Direct,
                             ObservedRoute::Relay => EdgeStatus::Relay,
                             // 无 TURN 配置时选中候选对即直连；route 统计依赖媒体包，
                             // 未开设备时可能长期 Unknown，不能因此卡在“连接中”。
                             ObservedRoute::Unknown
-                                if work.edge.connection_state() == RTCPeerConnectionState::Connected =>
+                                if pc_state == RTCPeerConnectionState::Connected =>
                             {
                                 EdgeStatus::Direct
                             }
                             ObservedRoute::Unknown
                                 if work.deadline < Instant::now()
-                                    || matches!(work.edge.connection_state(), RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed) =>
+                                    || matches!(pc_state, RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed) =>
                             {
                                 EdgeStatus::Failed { retryable: true }
                             }
                             ObservedRoute::Unknown => EdgeStatus::Connecting,
                         };
+                        if next != work.status {
+                            eprintln!(
+                                "[meeting] edge {peer_join}: {:?} -> {next:?} (route={:?}, pc={pc_state:?})",
+                                work.status, stats.route
+                            );
+                            work.status = next;
+                        }
                     }
                 }
                 ensure_edges(&mut meeting, &mut media, &mut edges, &mut retry_after, &out, epoch, generation).await;
@@ -1095,8 +1140,10 @@ fn default_input(source: CallSource) -> Option<CaptureInput> {
                 device_index: 0,
                 video,
             },
-            CallSource::Screen => CaptureInput::MacVideo {
-                device_index: 1,
+            // 屏幕不是普通摄像头索引：AVFoundation 用伪设备名「Capture screen <n>」；
+            // 无摄像头机型（如 CI VM）上设备序号不可预测，按名引用并交 TCC 授权。
+            CallSource::Screen => CaptureInput::MacScreen {
+                screen_index: 0,
                 video,
             },
         })
