@@ -137,15 +137,23 @@ marker 32772 本身不绑定某个引擎；`storage.backend` 与 backend certifi
    复制完整 RocksDB snapshot，在另一个路径用旧 digest 的容器做 restore drill 并比对行数。
    备份目录为 `/home/ubuntu/surreal_ck/backups/surrealdb-<UTC>`，权限 0700；另保存原
    `surrealdb.service` 与已有 drop-in。每库导出及 `<namespace>--<database>.surql.stderr.log`
-   均为 root-owned 0600；导入日志为 `<namespace>--<database>.surql.import.stderr.log`。
+   均为 root-owned 0600；导入日志为 `<namespace>--<database>.import.surql.import.stderr.log`。
    HTTP 非 200、空/非 dump 导出、非空导入响应体及可检测的传输截断均拒绝继续；
    导入前仍设置 compatibility 3，导入后须比对基础表计数。
    失败时在主机受控查看日志，正文可能含敏感信息，
    不上传 artifact、不复制到 CI 日志或工单。至少留出
    数据大小四倍加 1 GiB 的空闲空间，按数据规模另审实际容量与维护时限。
+   原始导出保持不变；逐库流式生成 `<namespace>--<database>.import.surql`（root-owned
+   0600），只移除 `DEFINE ACCESS` 顶层 HS256/384/512 JWT 与 issuer 的 `[REDACTED]`
+   key 子句，保留 SIGNIN、DURATION 与 JWKS URL，让目标重新生成签名 key。
+   其他位置的占位符或非预期定义格式一律拒绝。`access-transforms.json` 记录每库
+   删除子句数及 RECORD access 名称，`SHA256SUMS` 同时覆盖原始与变换文件。
+   已签发的 RECORD token 将失效（最长有效期 1h），用户及服务须重新 SIGNIN；
+   不承诺保留旧 token。变换文件及其导入日志同样不得上传 artifact。
 5. 在全新的 `/home/ubuntu/surreal_ck/data-native-4.0-<UTC>` 路径创建所选引擎。
    目标先只绑定 loopback 隔离端口，核验 capability，再逐 namespace/database 导入
-   SQL export 并核对全部表行数。只在导入和验证成功后写入独立 systemd drop-in，
+   变换后的 SQL export 并核对全部表行数，用 INFO 确认每个源 RECORD access 定义
+   存在且仍为 RECORD。只在导入和验证成功后写入独立 systemd drop-in，
    保留 `surrealdb.service`、Podman 名称、host network、root 与 env-file 约定，
    不覆盖旧 unit 或原 `/home/ubuntu/surreal_ck/data-native`。
    binary fallback 存在版本化 `/opt/surrealdb/releases/<release>/surreal`，只读挂载

@@ -356,6 +356,89 @@ def private_file(path):
     return stream
 
 
+REDACTED_KEY = b"[REDACTED]"
+ACCESS_TOKEN = re.compile(rb"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|`(?:\\.|[^`\\])*`|[A-Za-z0-9_]+|[^\s]")
+
+
+def transform_access_line(line):
+    tokens = list(ACCESS_TOKEN.finditer(line))
+    values = [token[0] for token in tokens]
+    if values[:2] != [b"DEFINE", b"ACCESS"] or values[-1:] != [b";"]:
+        raise RuntimeError("unsupported exported access definition")
+    depth = 0
+    spans = []
+    record = None
+    for index, value in enumerate(values):
+        if depth == 0:
+            if value == b";" and index != len(values) - 1:
+                raise RuntimeError("multiple statements in exported access definition")
+            if values[index:index + 2] == [b"TYPE", b"RECORD"]:
+                name_index = 2
+                if values[name_index:name_index + 1] == [b"OVERWRITE"]:
+                    name_index += 1
+                elif values[name_index:name_index + 3] == [b"IF", b"NOT", b"EXISTS"]:
+                    name_index += 3
+                record = values[name_index].strip(b"`").decode("utf-8")
+                identifier(record)
+            end = index
+            if values[index:index + 3] == [b"WITH", b"JWT", b"ALGORITHM"]:
+                if (values[index + 3:index + 4] in ([b"HS256"], [b"HS384"], [b"HS512"])
+                        and values[index + 4:index + 5] == [b"KEY"]):
+                    end = index + 5
+            elif values[index:index + 3] == [b"WITH", b"ISSUER", b"KEY"]:
+                end = index + 3
+            if end != index and values[end:end + 1] in ([b"'[REDACTED]'"], [b'"[REDACTED]"']):
+                last = end
+                if values[end + 1:end + 2] == [b"ALGORITHM"]:
+                    if values[end + 2:end + 3] not in ([b"HS256"], [b"HS384"], [b"HS512"]):
+                        raise RuntimeError("unsupported redacted issuer algorithm")
+                    last = end + 2
+                spans.append((tokens[index].start(), tokens[last].end()))
+        if value in (b"{", b"(", b"["):
+            depth += 1
+        elif value in (b"}", b")", b"]"):
+            depth -= 1
+        if depth < 0:
+            raise RuntimeError("unsupported exported access nesting")
+    if depth:
+        raise RuntimeError("multiline exported access definition refused")
+    for start, end in reversed(spans):
+        line = line[:start] + line[end:]
+    return line, len(spans), record
+
+
+def transform_export(source, destination):
+    replacements = 0
+    records = []
+    start_of_line = True
+    tail = b""
+    with open(source, "rb") as original, private_file(destination) as output:
+        while chunk := original.readline(TRANSFER_CHUNK):
+            if start_of_line and chunk.lstrip().startswith(b"DEFINE ACCESS "):
+                if len(chunk) == TRANSFER_CHUNK and not chunk.endswith(b"\n"):
+                    raise RuntimeError("exported access definition exceeds streaming limit")
+                chunk, count, record = transform_access_line(chunk)
+                replacements += count
+                if record is not None:
+                    records.append(record)
+            if REDACTED_KEY in tail + chunk:
+                raise RuntimeError("redaction placeholder outside permitted access key clauses")
+            output.write(chunk)
+            tail = chunk[-(len(REDACTED_KEY) - 1):]
+            start_of_line = chunk.endswith(b"\n")
+    return {"replacements": replacements, "record_accesses": records}
+
+
+def validate_record_accesses(endpoint, auth, namespace, database, expected):
+    accesses = sql(endpoint, auth, "INFO FOR DB;", namespace, database).get("accesses")
+    if not isinstance(accesses, dict):
+        raise RuntimeError("trial access catalog missing")
+    for name in expected:
+        definition = accesses.get(name)
+        if not isinstance(definition, str) or transform_access_line((definition.rstrip(";") + ";").encode())[2] != name:
+            raise RuntimeError("trial RECORD access definition missing or changed")
+
+
 def http_transfer(endpoint, auth, namespace, database, path, importing=False):
     url = urllib.parse.urlsplit(endpoint)
     if (url.scheme != "http" or url.hostname != "127.0.0.1" or url.username is not None
@@ -519,11 +602,18 @@ def upgrade_locked(args, candidate):
             for (ns, db), tables in before.items()
         ], indent=2))
         checksums = []
+        access_transforms = {}
         for namespace, database in before:
             output = backup / f"{namespace}--{database}.surql"
             export_database(endpoint, auth, namespace, database, output)
             output.chmod(0o600)
             checksums.append(digest(output) + "  " + output.name)
+            transformed = backup / f"{namespace}--{database}.import.surql"
+            access_transforms[(namespace, database)] = transform_export(output, transformed)
+            checksums.append(digest(transformed) + "  " + transformed.name)
+        with private_file(backup / "access-transforms.json") as summary:
+            summary.write(json.dumps([{"namespace": ns, "database": db, **details}
+                                      for (ns, db), details in access_transforms.items()], indent=2).encode())
         (backup / "SHA256SUMS").write_text("\n".join(checksums) + "\n")
         if inventory(endpoint, auth) != before:
             raise RuntimeError("row counts changed under maintenance fence")
@@ -547,7 +637,9 @@ def upgrade_locked(args, candidate):
         validate_capability(request(trial_endpoint + "/capabilities"), args.storage_engine)
         for namespace, database in before:
             import_database(trial_endpoint, auth, namespace, database,
-                            backup / f"{namespace}--{database}.surql")
+                            backup / f"{namespace}--{database}.import.surql")
+            validate_record_accesses(trial_endpoint, auth, namespace, database,
+                                     access_transforms[(namespace, database)]["record_accesses"])
         if inventory(trial_endpoint, auth) != before:
             raise RuntimeError("imported row counts differ")
         run(PODMAN, "stop", "--time", "30", trial)
