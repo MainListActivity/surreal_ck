@@ -1,11 +1,11 @@
 import argparse
 from contextlib import ExitStack
 import importlib.util
+import io
 import json
 from pathlib import Path
 import shutil
 import stat
-import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -37,36 +37,98 @@ class SafetyTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, "absolute"):
                 upgrade.container_entrypoint(value)
 
-    def test_export_uses_inspected_binary_and_private_stderr_without_disclosure(self):
-        for code, content in ((0, b"fixture export"), (1, b"partial export"), (0, b"")):
-            with self.subTest(code=code, content=content), tempfile.TemporaryDirectory() as directory:
-                output = Path(directory) / "company--main.surql"
-                error_log = output.with_name(output.name + ".stderr.log")
+    def test_http_transfer_streams_with_private_logs_and_rejects_errors(self):
+        dump = b"-- OPTION\n" + b"x" * (upgrade.TRANSFER_CHUNK * 3 + 17)
+        cases = ((False, 200, dump, False, True), (False, 200, b"", False, False),
+                 (False, 200, b'{"error":"private fixture-password"}', False, False),
+                 (False, 503, b"private fixture-password", False, False),
+                 (False, 302, b"private fixture-password", False, False),
+                 (False, 200, dump, True, False),
+                 (True, 200, b"", False, True),
+                 (True, 200, b'[{"status":"ERR","result":"private fixture-password"}]', False, False),
+                 (True, 422, b"private fixture-password", False, False))
+        for importing, status, content, truncated, succeeds in cases:
+            with self.subTest(importing=importing, status=status, truncated=truncated, succeeds=succeeds), \
+                    tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "company--main.surql"
+                if importing:
+                    path.write_bytes(dump)
+                body = io.BytesIO(content)
+                sizes = []
 
-                def execute(argv, **kwargs):
-                    self.assertEqual(argv[argv.index(upgrade.CONTAINER) + 1], "/opt/source-db")
-                    self.assertNotIn("fixture-password", argv)
-                    self.assertEqual(kwargs["env"]["SURREAL_PASS"], "fixture-password")
-                    kwargs["stdout"].write(content)
-                    kwargs["stderr"].write(b"private diagnostic fixture-password")
-                    return subprocess.CompletedProcess(argv, code)
+                def read(size):
+                    self.assertGreater(size, 0)
+                    self.assertLessEqual(size, upgrade.TRANSFER_CHUNK)
+                    sizes.append(size)
+                    return body.read(size)
 
-                with patch.object(upgrade.subprocess, "run", side_effect=execute), \
-                        patch.object(upgrade.os, "fchown") as chown:
-                    args = ("/opt/source-db", "http://fixture", ("fixture", "fixture-password"), "company", "main", output)
-                    if code or not content:
-                        with self.assertRaisesRegex(RuntimeError, "^container database export failed$"):
-                            upgrade.export_database(*args)
+                def send(method, url, headers, body=None):
+                    self.assertEqual(method, "POST" if importing else "GET")
+                    self.assertEqual(url, "/import" if importing else "/export")
+                    self.assertEqual(headers["surreal-ns"], "company")
+                    self.assertEqual(headers["surreal-db"], "main")
+                    self.assertTrue(headers["Authorization"].startswith("Basic "))
+                    self.assertEqual(headers["Accept"], "application/octet-stream")
+                    if importing:
+                        self.assertFalse(isinstance(body, bytes))
+                        total = 0
+                        while chunk := body.read(upgrade.TRANSFER_CHUNK):
+                            total += len(chunk)
+                        self.assertEqual(total, len(dump))
+                        self.assertEqual(int(headers["Content-Length"]), total)
+
+                with patch.object(upgrade.http.client, "HTTPConnection") as connection, \
+                        patch.object(upgrade.os, "fchown") as chown, \
+                        patch.object(upgrade.subprocess, "run", side_effect=AssertionError("exec forbidden")):
+                    client = connection.return_value
+                    client.request.side_effect = send
+                    response = client.getresponse.return_value
+                    response.status = status
+                    response.getheader.return_value = str(len(content) + int(truncated))
+                    response.read.side_effect = read
+                    args = ("http://127.0.0.1:8000", ("fixture", "fixture-password"), "company", "main", path)
+                    if succeeds:
+                        upgrade.http_transfer(*args, importing=importing)
                     else:
-                        upgrade.export_database(*args)
-                    self.assertEqual(chown.call_count, 2)
+                        with self.assertRaisesRegex(RuntimeError, "^database HTTP (import|export) failed; inspect protected backup log$"):
+                            upgrade.http_transfer(*args, importing=importing)
+                    connection.assert_called_once_with("127.0.0.1", 8000, timeout=1800, blocksize=upgrade.TRANSFER_CHUNK)
+                    client.close.assert_called_once()
                     self.assertTrue(all(call.args[1:] == (0, 0) for call in chown.call_args_list))
-                self.assertEqual(output.stat().st_mode & 0o777, 0o600)
-                self.assertEqual(error_log.stat().st_mode & 0o777, 0o600)
-                self.assertEqual(output.read_bytes(), content)
-                self.assertEqual(error_log.read_bytes(), b"private diagnostic fixture-password")
-                with self.assertRaises(FileExistsError):
-                    upgrade.export_database(*args)
+                self.assertTrue(sizes)
+                log = path.with_name(path.name + (".import.stderr.log" if importing else ".stderr.log"))
+                self.assertEqual(log.stat().st_mode & 0o777, 0o600)
+                if b"private fixture-password" in content:
+                    self.assertIn(b"private fixture-password", log.read_bytes())
+                if not importing:
+                    self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                    if succeeds:
+                        self.assertEqual(path.read_bytes(), dump)
+
+    def test_http_transfer_rejects_remote_endpoints(self):
+        for endpoint in ("https://127.0.0.1:8000", "http://example.org", "http://127.0.0.1/path", "http://user@127.0.0.1"):
+            with self.subTest(endpoint=endpoint), self.assertRaisesRegex(RuntimeError, "loopback"):
+                upgrade.export_database(endpoint, ("fixture", "secret"), "main", "main", Path("/unused"))
+
+    def test_http_transfer_disconnect_is_private_and_logs_are_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(upgrade.os, "fchown"), \
+                patch.object(upgrade.http.client, "HTTPConnection") as connection:
+            output = Path(directory) / "fixture.surql"
+            response = connection.return_value.getresponse.return_value
+            response.status = 200
+            response.getheader.return_value = None
+            response.read.side_effect = [b"-- OPTION\n", ConnectionError("private diagnostic")]
+            args = ("http://127.0.0.1:8000", ("fixture", "secret"), "main", "main", output)
+            with self.assertRaisesRegex(RuntimeError, "^database HTTP export failed; inspect protected backup log$"):
+                upgrade.export_database(*args)
+            log = output.with_name(output.name + ".stderr.log")
+            self.assertIn(b"private diagnostic", log.read_bytes())
+            self.assertEqual(output.read_bytes(), b"-- OPTION\n")
+            previous = log.read_bytes()
+            with self.assertRaises(FileExistsError):
+                upgrade.export_database(*args)
+            self.assertEqual(log.read_bytes(), previous)
+            response.close.assert_called_once()
 
     def test_restore_drill_uses_source_entrypoint_and_always_stops(self):
         for matches in (True, False):
@@ -136,20 +198,17 @@ class SafetyTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "digest-pinned"):
             upgrade.validate_image("ghcr.io/mainlistactivity/surrealdb-native-quota:latest")
 
-    def test_import_uses_container_binary_and_readonly_mounted_file(self):
-        with patch.object(upgrade, "sql"), patch.object(upgrade.subprocess, "run") as command:
-            command.return_value.returncode = 0
-            upgrade.import_database("trial", "/surreal-upgrade", "http://fixture", ("test", "secret"),
-                                    "main", "_system", Path("/backup/main--_system.surql"))
-            argv = command.call_args.args[0]
-            self.assertEqual(argv[0:2], [upgrade.PODMAN, "exec"])
-            self.assertIn("/surreal-upgrade", argv)
-            self.assertEqual(argv[-1], "/upgrade-exports/main--_system.surql")
-            self.assertNotIn("secret", argv)
-            command.return_value.returncode = 1
-            with self.assertRaisesRegex(RuntimeError, "import failed"):
-                upgrade.import_database("trial", "/surreal-upgrade", "http://fixture", ("test", "secret"),
-                                        "main", "_system", Path("/backup/main--_system.surql"))
+    def test_import_sets_compatibility_three_before_http_upload(self):
+        with patch.object(upgrade, "sql") as sql, patch.object(upgrade, "http_transfer") as transfer:
+            args = ("http://127.0.0.1:19000", ("test", "secret"), "main", "_system", Path("/backup/main--_system.surql"))
+
+            def upload(*values, **kwargs):
+                self.assertEqual(sql.call_count, 3)
+                self.assertEqual(sql.call_args.args[2:], ("ALTER DATABASE COMPATIBILITY 3;", "main", "_system"))
+
+            transfer.side_effect = upload
+            upgrade.import_database(*args)
+            transfer.assert_called_once_with(*args, importing=True)
 
     def test_check_has_no_host_writes(self):
         with patch.object(upgrade, "inspect", return_value=({"version": upgrade.SOURCE}, [], None, "local")), \
@@ -219,12 +278,11 @@ class SandboxTests(unittest.TestCase):
             return json.dumps([{"Path": "/surreal-upgrade"}])
         return upgrade.TARGET + "+sha.fixture" if "version" in args else ""
 
-    def export_database(self, binary, endpoint, auth, namespace, database, output):
-        self.assertEqual(binary, self.report["binary"])
+    def export_database(self, endpoint, auth, namespace, database, output):
         self.calls.append(("export_database", namespace, database))
         output.write_text("fixture export")
 
-    def import_database(self, container, binary, endpoint, auth, namespace, database, source):
+    def import_database(self, endpoint, auth, namespace, database, source):
         self.assertEqual(source.read_text(), "fixture export")
         self.calls.append(("import_database", namespace, database))
 

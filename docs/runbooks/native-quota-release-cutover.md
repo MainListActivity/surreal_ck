@@ -126,16 +126,21 @@ marker 32772 本身不绑定某个引擎；`storage.backend` 与 backend certifi
    native-quota 生产认证，再上传并核验二进制 hash。
    host 只允许 `3.3.0-native-quota.1`；已是目标且 capability 合格时无操作返回。
    root 凭证只从主机 `/etc/surrealdb/surrealdb.env` 读取，不进入参数或 CI 日志。
-   主机自带的 3.2.3 CLI 不用于任何导出、导入或核验；源端从
-   `podman inspect surrealdb` 的 `[0].Path` 取得绝对入口路径供 `podman exec` 导出及
-   旧镜像 restore drill 使用，目标端也使用实际 inspect entrypoint binary。
+   导出直接 GET 源 loopback `/export`，导入直接 POST trial loopback `/import`；
+   Basic auth 及 `surreal-ns`/`surreal-db` 仅发往本机，不走代理或重定向。
+   两端超时 1800 秒，按 1 MiB 分块落盘/上传，不把完整 dump 读入内存。
+   主机 CLI 和 `podman exec` 不参与数据传输；旧镜像 restore drill 仅从 snapshot
+   启动并经 HTTP 清点，启动入口来自源容器 inspect 的 `[0].Path`。
 4. host 开启围栏、停 `surreal-ck-hono`，以 `INFO FOR ROOT/NS/DB` 枚举所有库，
    包括 `_system`、每个 workspace 和 `platform_content`；导出各库及 SHA256，
    记录各基础表行数（物化视图不作为独立计数基线）。停数据库后保留 ownership
    复制完整 RocksDB snapshot，在另一个路径用旧 digest 的容器做 restore drill 并比对行数。
    备份目录为 `/home/ubuntu/surreal_ck/backups/surrealdb-<UTC>`，权限 0700；另保存原
    `surrealdb.service` 与已有 drop-in。每库导出及 `<namespace>--<database>.surql.stderr.log`
-   均为 root-owned 0600；导出失败时在主机受控查看该日志，正文可能含敏感信息，
+   均为 root-owned 0600；导入日志为 `<namespace>--<database>.surql.import.stderr.log`。
+   HTTP 非 200、空/非 dump 导出、非空导入响应体及可检测的传输截断均拒绝继续；
+   导入前仍设置 compatibility 3，导入后须比对基础表计数。
+   失败时在主机受控查看日志，正文可能含敏感信息，
    不上传 artifact、不复制到 CI 日志或工单。至少留出
    数据大小四倍加 1 GiB 的空闲空间，按数据规模另审实际容量与维护时限。
 5. 在全新的 `/home/ubuntu/surreal_ck/data-native-4.0-<UTC>` 路径创建所选引擎。
