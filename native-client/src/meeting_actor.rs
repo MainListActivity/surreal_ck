@@ -23,7 +23,7 @@ use std::{
     time::{Duration, Instant},
 };
 use surreal_ck_native_call::{
-    ALL_SOURCES, CaptureInput, CaptureStatus, Source as CallSource, VideoConfig,
+    CaptureInput, CaptureStatus, Source as CallSource, VideoConfig,
     meeting::{DeviceGate, GateOwner, MeetingEvent, MeetingMedia, MemberSlot, RenderSlot},
 };
 use surreal_ck_native_identity::{
@@ -55,6 +55,11 @@ const ATTEMPT_TTL: Duration = Duration::from_secs(35);
 const RENEW_AFTER: Duration = Duration::from_secs(8);
 const EDGE_RETRY: Duration = Duration::from_secs(15);
 const INVITATIONS_AFTER: Duration = Duration::from_secs(9);
+const ALL_CALL_SOURCES: [CallSource; 3] = [
+    CallSource::Microphone,
+    CallSource::Camera,
+    CallSource::Screen,
+];
 
 fn call_source(source: Source) -> CallSource {
     match source {
@@ -1148,8 +1153,8 @@ async fn drop_edges(
 /// 不能用 media.shutdown()——它把 MeetingMedia 永久置 stopped，
 /// 之后同一 actor 再入会/开会会全报「通话已停止」。
 async fn teardown(media: &mut MeetingMedia, edges: &mut BTreeMap<String, EdgeWork>) {
-    for source in ALL_SOURCES {
-        let _ = media.stop_capture(call_source(source)).await;
+    for source in ALL_CALL_SOURCES {
+        let _ = media.stop_capture(source).await;
     }
     for (_, work) in std::mem::take(edges) {
         let _ = media.detach_edge(&work.slot).await;
