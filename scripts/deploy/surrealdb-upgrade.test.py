@@ -3,12 +3,16 @@ from contextlib import ExitStack
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import stat
+import socket
+import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 
@@ -31,6 +35,84 @@ def capability():
 
 
 class SafetyTests(unittest.TestCase):
+    def test_transform_only_removes_top_level_redacted_access_keys(self):
+        for algorithm in ("HS256", "HS384", "HS512"):
+            with self.subTest(algorithm=algorithm), tempfile.TemporaryDirectory() as directory, patch.object(upgrade.os, "fchown"):
+                original = Path(directory) / "original.surql"
+                transformed = Path(directory) / "import.surql"
+                record = (f"DEFINE ACCESS employee ON DATABASE TYPE RECORD SIGNIN {{ RETURN user:bot; }} "
+                          f"WITH JWT ALGORITHM {algorithm} KEY '[REDACTED]' WITH ISSUER KEY '[REDACTED]' "
+                          "DURATION FOR TOKEN 1h, FOR SESSION 1h;\n").encode()
+                jwks = b"DEFINE ACCESS admin ON DATABASE TYPE JWT URL 'https://issuer.test/jwks' DURATION FOR SESSION 1h;\n"
+                content = b"-- OPTION\n" + record + jwks + b"INSERT INTO data { text: 'real key' };\n"
+                original.write_bytes(content)
+                details = upgrade.transform_export(original, transformed)
+                self.assertEqual(details, {"replacements": 2, "record_accesses": ["employee"]})
+                self.assertEqual(original.read_bytes(), content)
+                result = transformed.read_bytes()
+                self.assertNotIn(b"[REDACTED]", result)
+                self.assertIn(b"DURATION FOR TOKEN 1h, FOR SESSION 1h;", result)
+                self.assertIn(jwks, result)
+                self.assertEqual(transformed.stat().st_mode & 0o777, 0o600)
+                with self.assertRaises(FileExistsError):
+                    upgrade.transform_export(original, transformed)
+
+    def test_transform_rejects_placeholders_outside_permitted_positions(self):
+        values = (b"INSERT INTO data { text: '[REDACTED]' };\n",
+                  b"-- [REDACTED]\n",
+                  b"DEFINE ACCESS x ON DATABASE TYPE JWT ALGORITHM HS512 KEY '[REDACTED]';\n",
+                  b"DEFINE ACCESS x ON DATABASE TYPE RECORD COMMENT '[REDACTED]';\n",
+                  b"DEFINE ACCESS x ON DATABASE TYPE RECORD SIGNIN { RETURN 'WITH ISSUER KEY \\\'[REDACTED]\\\''; };\n",
+                  b"DEFINE ACCESS x ON DATABASE TYPE RECORD SIGNIN { LET $x = WITH ISSUER KEY '[REDACTED]'; };\n",
+                  b"DEFINE ACCESS x ON DATABASE TYPE RECORD\nWITH JWT ALGORITHM HS512 KEY '[REDACTED]';\n",
+                  b"DEFINE ACCESS x ON DATABASE TYPE RECORD; INSERT INTO data { v: '[REDACTED]' };\n",
+                  b"x" * (upgrade.TRANSFER_CHUNK - 4) + b"[REDACTED]\n")
+        for content in values:
+            with self.subTest(prefix=content[:60]), tempfile.TemporaryDirectory() as directory, patch.object(upgrade.os, "fchown"):
+                original = Path(directory) / "source"
+                original.write_bytes(content)
+                with self.assertRaises(RuntimeError):
+                    upgrade.transform_export(original, Path(directory) / "result")
+                self.assertEqual(original.read_bytes(), content)
+
+    def test_transform_streams_large_non_access_lines_and_keeps_explicit_keys(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(upgrade.os, "fchown"):
+            original, result = Path(directory) / "source", Path(directory) / "result"
+            content = (b"x" * (upgrade.TRANSFER_CHUNK * 3 + 2) + b"\n"
+                       b"DEFINE ACCESS x ON DATABASE TYPE RECORD WITH JWT ALGORITHM HS512 KEY 'real-secret' "
+                       b"WITH ISSUER KEY 'real-secret' DURATION FOR SESSION 1h;\n")
+            original.write_bytes(content)
+            self.assertEqual(upgrade.transform_export(original, result)["replacements"], 0)
+            self.assertEqual(result.read_bytes(), content)
+
+    def test_transform_preserves_jwks_while_removing_issuer_key_and_algorithm(self):
+        original = b'DEFINE ACCESS reader ON DATABASE TYPE JWT URL "https://issuer.test/jwks" WITH ISSUER KEY "[REDACTED]" ALGORITHM HS512 DURATION FOR SESSION 1h;\n'
+        transformed, count, record = upgrade.transform_access_line(original)
+        self.assertEqual(count, 1)
+        self.assertIsNone(record)
+        self.assertIn(b'URL "https://issuer.test/jwks"', transformed)
+        self.assertNotIn(b"WITH ISSUER", transformed)
+        self.assertNotIn(b"ALGORITHM", transformed)
+
+    def test_transform_empty_input_has_no_keys_or_record_accesses(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(upgrade.os, "fchown"):
+            original, transformed = Path(directory) / "source", Path(directory) / "result"
+            original.write_bytes(b"")
+            self.assertEqual(upgrade.transform_export(original, transformed), {"replacements": 0, "record_accesses": []})
+            self.assertEqual(transformed.read_bytes(), b"")
+
+    def test_trial_checks_every_expected_record_access(self):
+        definition = "DEFINE ACCESS employee ON DATABASE TYPE RECORD WITH JWT ALGORITHM HS512 KEY '[REDACTED]' DURATION FOR SESSION 1h"
+        with patch.object(upgrade, "sql", return_value={"accesses": {"employee": definition}}) as sql:
+            upgrade.validate_record_accesses("fixture", ("test", "secret"), "main", "main", ["employee"])
+            self.assertEqual(sql.call_args.args[2], "INFO FOR DB;")
+            sql.return_value = {"accesses": {}}
+            upgrade.validate_record_accesses("fixture", ("test", "secret"), "main", "main", [])
+            for catalog in ({}, {"accesses": {}}, {"accesses": {"employee": "DEFINE ACCESS employee ON DATABASE TYPE JWT URL 'https://issuer.test';"}}):
+                sql.return_value = catalog
+                with self.assertRaises(RuntimeError):
+                    upgrade.validate_record_accesses("fixture", ("test", "secret"), "main", "main", ["employee"])
+
     def test_container_entrypoint_requires_an_inspected_absolute_path(self):
         self.assertEqual(upgrade.container_entrypoint({"Path": "/opt/source-db"}), "/opt/source-db")
         for value in ({}, {"Path": None}, {"Path": ""}, {"Path": "surreal"}, {"Path": 42}):
@@ -98,6 +180,8 @@ class SafetyTests(unittest.TestCase):
                 self.assertTrue(sizes)
                 log = path.with_name(path.name + (".import.stderr.log" if importing else ".stderr.log"))
                 self.assertEqual(log.stat().st_mode & 0o777, 0o600)
+                if importing and succeeds:
+                    self.assertEqual(log.read_bytes(), b"HTTP 200\n")
                 if b"private fixture-password" in content:
                     self.assertIn(b"private fixture-password", log.read_bytes())
                 if not importing:
@@ -264,6 +348,8 @@ class SandboxTests(unittest.TestCase):
                                                                           "SURREAL_UPGRADE_UNFENCE": str(self.unfence)}))
         self.inventory = stack.enter_context(patch.object(upgrade, "inventory", return_value=self.counts))
         self.restore_drill = stack.enter_context(patch.object(upgrade, "restore_drill"))
+        self.validate_accesses = stack.enter_context(patch.object(upgrade, "validate_record_accesses"))
+        stack.enter_context(patch.object(upgrade.os, "fchown"))
         stack.enter_context(patch.object(upgrade, "export_database", side_effect=self.export_database))
         stack.enter_context(patch.object(upgrade, "import_database", side_effect=self.import_database))
         self.request = stack.enter_context(patch.object(upgrade, "request", return_value=capability()))
@@ -289,7 +375,11 @@ class SandboxTests(unittest.TestCase):
     def test_success_exports_all_databases_then_imports_into_new_directory(self):
         result = upgrade.upgrade(self.args)
         self.assertEqual(result["state"], "healthy")
-        self.assertEqual(len(list(Path(result["backup"]).glob("*.surql"))), 3)
+        self.assertEqual(len(list(Path(result["backup"]).glob("*.surql"))), 6)
+        self.assertEqual(self.validate_accesses.call_count, 3)
+        summary = json.loads((Path(result["backup"]) / "access-transforms.json").read_text())
+        self.assertEqual(len(summary), 3)
+        self.assertTrue(all(row["replacements"] == 0 for row in summary))
         imports = [i for i, args in enumerate(self.calls) if args[0] == "import_database"]
         self.assertEqual(len(imports), 3)
         self.assertLess(self.calls.index(("systemctl", "stop", upgrade.SERVICE)), imports[0])
@@ -315,6 +405,13 @@ class SandboxTests(unittest.TestCase):
         self.assertNotIn((str(self.unfence),), self.calls)
         self.restore_drill.assert_not_called()
         self.assertEqual((self.data / "old-records").read_text(), "unchanged")
+
+    def test_unsafe_redaction_stops_before_source_database_stop_or_trial_import(self):
+        with patch.object(upgrade, "transform_export", side_effect=RuntimeError("unsupported redaction")):
+            with self.assertRaisesRegex(RuntimeError, "maintenance fence retained=True"):
+                upgrade.upgrade(self.args)
+        self.assertNotIn(("systemctl", "stop", upgrade.SERVICE), self.calls)
+        self.assertFalse(any(call[0] == "import_database" for call in self.calls))
 
     def test_count_mismatch_restores_original_unit_on_untouched_old_directory(self):
         self.inventory.side_effect = [self.counts, self.counts, {}]
@@ -385,6 +482,71 @@ class SandboxTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "exact 3.3"):
             upgrade.upgrade(self.args)
         self.assertEqual(self.calls, [])
+
+
+@unittest.skipUnless(os.environ.get("SURREAL_UPGRADE_SOURCE_BINARY") and os.environ.get("SURREAL_UPGRADE_TARGET_BINARY"),
+                     "requires local 3.3 and candidate.233 binaries")
+class AccessRotationBinaryTests(unittest.TestCase):
+    def test_http_export_transform_import_and_employee_signin(self):
+        processes = []
+        with tempfile.TemporaryDirectory(prefix="sck-access-rotation-") as directory:
+            try:
+                endpoints = []
+                for variable in ("SURREAL_UPGRADE_SOURCE_BINARY", "SURREAL_UPGRADE_TARGET_BINARY"):
+                    with socket.socket() as listener:
+                        listener.bind(("127.0.0.1", 0))
+                        port = listener.getsockname()[1]
+                    process = subprocess.Popen([os.environ[variable], "start", "--bind", f"127.0.0.1:{port}",
+                                                "--allow-all", "--user", "root", "--pass", "fixture-password", "memory"],
+                                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                               env={**os.environ, "SURREAL_LOG": "info"})
+                    processes.append(process)
+                    endpoint = f"http://127.0.0.1:{port}"
+                    upgrade.wait_health(endpoint)
+                    endpoints.append(endpoint)
+                source, target = endpoints
+                auth = ("root", "fixture-password")
+                ns = db = "access_rotation_fixture"
+                upgrade.sql(source, auth, f"DEFINE NAMESPACE IF NOT EXISTS {ns};")
+                upgrade.sql(source, auth, f"DEFINE DATABASE IF NOT EXISTS {db};", ns)
+                upgrade.sql(source, auth, "DEFINE TABLE user SCHEMALESS PERMISSIONS FULL;", ns, db)
+                upgrade.sql(source, auth, 'CREATE user:bot CONTENT {subject: "fixture-employee", kind: "virtual", virtual_profile: {status: "active"}};', ns, db)
+                upgrade.sql(source, auth, 'CREATE employee_credential:bot CONTENT {employee: user:bot, secret: "fixture-secret"};', ns, db)
+                schema = (Path(__file__).parents[2] / "shared/sql/workspace-template/001-access.surql").read_text()
+                employee = "DEFINE ACCESS OVERWRITE employee" + schema.split("DEFINE ACCESS OVERWRITE employee", 1)[1]
+                upgrade.sql(source, auth, employee, ns, db)
+                signin = json.dumps({"NS": ns, "DB": db, "AC": "employee", "subject": "fixture-employee", "pass": "fixture-secret"}).encode()
+                headers = {"Accept": "application/json", "Content-Type": "application/json"}
+                old_token = upgrade.request(source + "/signin", signin, headers)["token"]
+                original, transformed = Path(directory) / "original.surql", Path(directory) / "import.surql"
+                with patch.object(upgrade.os, "fchown"):
+                    upgrade.export_database(source, auth, ns, db, original)
+                    access_lines = [line for line in original.read_bytes().splitlines() if line.startswith(b"DEFINE ACCESS ")]
+                    self.assertEqual(len(access_lines), 1)
+                    self.assertIn(b"SIGNIN", access_lines[0])
+                    self.assertIn(b"[REDACTED]", access_lines[0])
+                    original_hash = upgrade.digest(original)
+                    details = upgrade.transform_export(original, transformed)
+                    self.assertEqual(details, {"replacements": 2, "record_accesses": ["employee"]})
+                    self.assertEqual(upgrade.digest(original), original_hash)
+                    upgrade.import_database(target, auth, ns, db, transformed)
+                upgrade.validate_record_accesses(target, auth, ns, db, details["record_accesses"])
+                token = upgrade.request(target + "/signin", signin, headers)["token"]
+                self.assertTrue(token)
+                self.assertNotEqual(token, old_token)
+                result = upgrade.request(target + "/sql", b"RETURN $auth.id;", {"Accept": "application/json", "Content-Type": "text/plain", "Authorization": "Bearer " + token})
+                self.assertEqual(result[0]["status"], "OK")
+                self.assertEqual(result[0]["result"], "user:bot")
+                with self.assertRaises(urllib.error.HTTPError) as rejected:
+                    upgrade.request(target + "/sql", b"RETURN $auth.id;", {"Accept": "application/json", "Content-Type": "text/plain", "Authorization": "Bearer " + old_token})
+                self.assertIn(rejected.exception.code, (401, 403))
+                self.assertEqual(upgrade.inventory(source, auth)[(ns, db)], upgrade.inventory(target, auth)[(ns, db)])
+                self.assertEqual(transformed.with_name(transformed.name + ".import.stderr.log").read_bytes(), b"HTTP 200\n")
+            finally:
+                for process in processes:
+                    process.terminate()
+                for process in processes:
+                    process.wait(timeout=20)
 
 
 if __name__ == "__main__":
