@@ -575,3 +575,9 @@ ON DUPLICATE KEY UPDATE
   quick_tasks = $input.quick_tasks,
   row_analysis = $input.row_analysis,
   default_dashboard = $input.default_dashboard;
+
+INSERT INTO claim_supplement_template [
+  { key: "contract", label: "缺少合同", body: "请补充合同、协议及相关附件的完整清晰副本。" },
+  { key: "account-statement", label: "缺少对账单", body: "请补充对账单，并注明余额截止日期和相关款项明细。" },
+  { key: "interest-start", label: "利息起算日不明", body: "请说明利息起算日，并提供合同约定或其他依据。" },
+] ON DUPLICATE KEY UPDATE key = $input.key;

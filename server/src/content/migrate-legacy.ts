@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { DateTime, RecordId, StringRecordId } from "surrealdb";
 
 export const CONTENT_MIGRATION_TABLES = [
@@ -77,14 +78,13 @@ function comparable(value: unknown): unknown {
     if (name === "RecordId" || name === "StringRecordId" || name === "DateTime") return String(value);
     return Object.fromEntries(Object.entries(value as Row)
       .filter(([key]) => key !== "updated_at" && key !== "last_seen_at")
-      .sort(([a], [b]) => a.localeCompare(b))
       .map(([key, child]) => [key, comparable(child)]));
   }
   return value;
 }
 
 function assertSame(source: Row, target: Row, table: string): void {
-  if (JSON.stringify(comparable(source)) !== JSON.stringify(comparable(target))) {
+  if (!isDeepStrictEqual(comparable(source), comparable(target))) {
     throw new Error(`content migration mismatch in ${table}/${String(source.id)}`);
   }
 }

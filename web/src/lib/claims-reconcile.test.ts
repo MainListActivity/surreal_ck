@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { DateTime, StringRecordId } from "surrealdb";
 import {
   assembleReconciliation,
+  buildClaimFollowUp,
   buildReconciliationCsv,
   computeCategories,
   loadReconciliation,
@@ -13,6 +14,30 @@ import {
   type RosterInput,
   type SubmissionInput,
 } from "./claims-reconcile";
+
+test("催办只追未回复的补正；已撤销的链接不算未打开", () => {
+  const deadline = "2027-01-10T12:00:00Z";
+  const rows = buildClaimFollowUp({
+    submissions: [{ id: "claim_submission:a", roster_id: "creditor_roster:a", status: "submitted", portal_stage: "needs_info" }],
+    tokens: [
+      { roster_id: "creditor_roster:b", status: "active" },
+      { roster_id: "creditor_roster:c", status: "revoked" },
+      { roster_id: "creditor_roster:d", status: "active", opened_at: "2027-01-09T00:00:00Z" },
+    ],
+    supplements: [
+      { id: "claim_supplement:answered", submission_id: "claim_submission:a", direction: "manager_request", due_at: "2027-01-01T12:00:00Z" },
+      { id: "claim_supplement:waiting", submission_id: "claim_submission:a", direction: "manager_request", due_at: deadline },
+      { submission_id: "claim_submission:a", direction: "creditor_reply", request_id: "claim_supplement:answered" },
+    ],
+    now: Date.parse(deadline) + 1,
+  });
+  expect(rows.get("creditor_roster:a")).toEqual({
+    states: ["submitted", "needs_info", "overdue"], dueAt: "2027-01-10T12:00:00.000Z",
+  });
+  expect(rows.get("creditor_roster:b")?.states).toEqual(["not_opened"]);
+  expect(rows.get("creditor_roster:c")).toBeUndefined();
+  expect(rows.get("creditor_roster:d")?.states).toEqual(["opened_unsubmitted"]);
+});
 import type { InterestCalculationRow } from "./claims-interest";
 import type { SurrealConn } from "./surreal";
 
@@ -303,7 +328,7 @@ function fakeConn(handler?: (sql: string) => Record<string, unknown>[]): { conn:
 }
 
 describe("loadReconciliation", () => {
-  test("并行读 7 张表并装配", async () => {
+  test("并行直连读取对账与催办数据", async () => {
     const data = fixtureSet();
     const { conn, calls } = fakeConn((sql) => {
       if (sql.includes("FROM creditor_roster")) return data.roster;
@@ -315,7 +340,7 @@ describe("loadReconciliation", () => {
     });
     const result = await loadReconciliation(conn);
     expect(result.rows).toHaveLength(21);
-    expect(calls.filter((c) => c.kind === "query")).toHaveLength(7);
+    expect(calls.filter((c) => c.kind === "query")).toHaveLength(8);
   });
 });
 

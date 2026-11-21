@@ -534,7 +534,14 @@ function runFullRelease(opts: {
   const prelude = join(dir, "prelude.sh");
   writeFileSync(
     prelude,
-    `bunx() { echo "bunx:$*" >>"$GATE_LOG"; return 0; }
+    `timeout() {
+  # GNU timeout 替身（本机无 coreutils）：剥掉 --kill-after=K 与秒数后透传执行。
+  echo "timeout:$*" >>"$GATE_LOG"
+  while [ "\${1#--}" != "$1" ]; do shift; done
+  shift
+  "$@"
+}
+bunx() { echo "bunx:$*" >>"$GATE_LOG"; return 0; }
 bun() { echo "bun:$*" >>"$GATE_LOG"; printf '%s\\n' "\${T_CHECKER_OUT:-grant_revocations=0}"; }
 sudo() { echo "sudo:$*" >>"$GATE_LOG"; [ "\${1:-}" = "-n" ] && shift; "$@"; }
 systemctl() {

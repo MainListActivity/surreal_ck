@@ -7,8 +7,8 @@ import { basename, join, resolve } from "node:path";
 const EXPECTED = Object.freeze({
   repository: "ghcr.io/mainlistactivity/surrealdb-native-quota",
   forkId: "mainlistactivity/surrealdb-native-quota",
-  release: "3.3.0-native-quota.1",
-  manifestRevision: "native-quota-v1.0",
+  release: "4.0.1-native-quota.1",
+  manifestRevision: "native-quota-v2.0",
   sdk: "2.2.2",
   capability: "native-quota-v1",
   backend: "rocksdb",

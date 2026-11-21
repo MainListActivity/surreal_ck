@@ -142,14 +142,9 @@ function quotaFieldCount(
         `INFO FOR TABLE STRUCTURE returned an invalid field for ${tableName}`,
       );
     }
-    // SurrealDB synthesizes a trailing `.*` container when a typed array has
-    // explicit descendants. Native quota meters the user-defined descendants,
-    // not this generated catalog parent. Native quota also excludes the
-    // implicit `in`/`out` endpoint fields from RELATION tables.
-    if (
-      !name.endsWith(".*")
-      && !(isRelation && (name === "in" || name === "out"))
-    ) count += 1n;
+    // Native quota counts wildcard containers, including generated parents,
+    // but excludes implicit relation endpoints.
+    if (!(isRelation && (name === "in" || name === "out"))) count += 1n;
   }
   return count;
 }

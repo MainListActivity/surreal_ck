@@ -6,7 +6,7 @@ import {
 import { physicalScanChecksum } from "./model";
 
 describe("quota migration scanners", () => {
-  test("independently scans table definitions, field catalog and records", async () => {
+  test("independently scans table definitions, wildcard field catalog and records", async () => {
     const queries: string[] = [];
     const scanner = new SurrealQuotaPhysicalScanner({
       async query(sql) {
@@ -30,16 +30,44 @@ describe("quota migration scanners", () => {
     const result = await scanner.scan();
     expect(result).toEqual({
       tables: [
-        { table: "ent_case", field_count: "2", record_count: "4" },
+        { table: "ent_case", field_count: "3", record_count: "4" },
         { table: "sheet", field_count: "1", record_count: "1" },
       ],
-      totals: { table_count: "2", field_count: "3", record_count: "5" },
+      totals: { table_count: "2", field_count: "4", record_count: "5" },
       scan_checksum: physicalScanChecksum([
-        { table: "ent_case", field_count: "2", record_count: "4" },
+        { table: "ent_case", field_count: "3", record_count: "4" },
         { table: "sheet", field_count: "1", record_count: "1" },
       ]),
     });
     expect(queries).toHaveLength(3);
+  });
+
+  test("keeps an empty catalog at zero usage", async () => {
+    const scanner = new SurrealQuotaPhysicalScanner({
+      async query() {
+        return [{ tables: [] }];
+      },
+    });
+
+    await expect(scanner.scan()).resolves.toEqual({
+      tables: [],
+      totals: { table_count: "0", field_count: "0", record_count: "0" },
+      scan_checksum: physicalScanChecksum([]),
+    });
+  });
+
+  test("refuses an invalid field catalog instead of undercounting", async () => {
+    const scanner = new SurrealQuotaPhysicalScanner({
+      async query(sql) {
+        return sql === "INFO FOR DATABASE STRUCTURE;"
+          ? [{ tables: [{ name: "ent_case" }] }]
+          : [{ fields: [{ name: null }] }, []];
+      },
+    });
+
+    await expect(scanner.scan()).rejects.toThrow(
+      "INFO FOR TABLE STRUCTURE returned an invalid field for ent_case",
+    );
   });
 
   test("matches native field accounting for relation endpoint fields", async () => {

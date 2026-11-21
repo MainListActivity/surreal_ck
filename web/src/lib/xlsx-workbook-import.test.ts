@@ -69,8 +69,8 @@ describe("OIP-13 workbooksStore.importXlsxWorkbook", () => {
     // Excel 建表与空白/模板建表走同一 DDL 构造器，同样带成员 DML 权限。
     expect(queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql))!.sql.match(/PERMISSIONS FOR select, create, update, delete WHERE fn::current_user\(\) != NONE/gu)).toHaveLength(2);
     expect(queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql))!.sql).toMatch(/COMMIT TRANSACTION;$/u);
-    expect(Object.values(queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql))!.bindings ?? {}).filter((value) =>
-      typeof value === "object" && value !== null && "field_1" in value)).toEqual([
+    const samples = queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql))!.bindings?.sampleRecords as Array<{ content: Record<string, unknown> }>;
+    expect(samples.map((sample) => sample.content)).toEqual([
       { field_1: "甲公司", field_2: 1000 },
       { field_1: "事项" },
     ]);
@@ -104,21 +104,19 @@ describe("OIP-13 workbooksStore.importXlsxWorkbook", () => {
 
     expect(result?.sheets[0]).toMatchObject({ importedCount: 1, skippedCount: 1 });
     const transaction = queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql))!;
-    expect(transaction.sql.match(/INSERT INTO import_batch_row/gu)).toHaveLength(2);
+    expect(transaction.sql.match(/INSERT INTO import_batch_row/gu)).toHaveLength(1);
+    expect(transaction.sql).toContain("FOR $receipt IN $importReceipts");
     expect(transaction.sql).toContain("ON DUPLICATE KEY UPDATE");
     expect(transaction.sql).toContain("UPDATE import_batch SET workbook = workbook:");
     expect(transaction.sql).toContain("UPDATE import_batch_sheet SET target_sheet = sheet:");
     expect(transaction.bindings).toEqual(expect.objectContaining({
       importBatchWorkbook: expect.anything(),
       importBatchSheetName0: "事项",
-      importBatch0: expect.anything(),
-      importSheetName0: "事项",
-      importRowNumber0: 2,
-      importRowStatus0: "success",
-      importSheetName1: "事项",
-      importRowNumber1: 3,
-      importRowStatus1: "rejected",
-      importRowReason1: expect.stringContaining("金额"),
+      importReceipts: [expect.objectContaining({
+        batch: expect.anything(), sheet_name: "事项", source_row_number: 2, status: "success",
+      }), expect.objectContaining({
+        sheet_name: "事项", source_row_number: 3, status: "rejected", reason: expect.stringContaining("金额"),
+      })],
     }));
   });
 });

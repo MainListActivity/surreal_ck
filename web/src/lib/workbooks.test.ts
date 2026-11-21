@@ -245,11 +245,35 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
     expect(workbook).not.toBeNull();
     const [txn] = queries.filter((query) => /BEGIN TRANSACTION/i.test(query.sql));
     expect(queries.filter((query) => /BEGIN TRANSACTION/i.test(query.sql))).toHaveLength(1);
-    expect(txn!.sql).toContain("CREATE ent_1111111111111111_2222222222222222:4444444444444444 CONTENT $sampleRecord0");
-    expect(txn!.sql).toContain("CREATE ent_1111111111111111_3333333333333333:5555555555555555 CONTENT $sampleRecord1");
-    expect(txn!.bindings?.sampleRecord0).toEqual({ name: "甲公司" });
-    expect(String((txn!.bindings?.sampleRecord1 as Record<string, unknown>).owner))
+    expect(txn!.sql).toContain("FOR $sample IN $sampleRecords");
+    expect(txn!.sql).toContain("CREATE $target CONTENT $sample.content");
+    const samples = txn!.bindings?.sampleRecords as Array<{ target: unknown; content: Record<string, unknown> }>;
+    expect(String(samples[0]!.target)).toBe("ent_1111111111111111_2222222222222222:4444444444444444");
+    expect(samples[0]!.content).toEqual({ name: "甲公司" });
+    expect(String(samples[1]!.content.owner))
       .toBe("ent_1111111111111111_2222222222222222:4444444444444444");
+  });
+
+  test("样例与导入回执批大小和值不改变事务中的 DML 文本", () => {
+    const build = (count: number) => {
+      let key = 0;
+      return buildCreateWorkbookTransaction("导入", {
+        legacyRecordQuota: false,
+        sheets: [{ key: "items", label: "事项", columns: [{ key: "name", label: "名称", fieldType: "text" }],
+          sampleRecords: Array.from({ length: count }, (_, i) => ({ key: `r${i}`, values: { name: `值 ${i}` } })),
+        }],
+        importBatch: { id: "import_batch:one", receipts: Array.from({ length: count }, (_, i) => ({
+          sheetKey: "items", sheetName: "事项", rowNumber: i + 2,
+          status: i % 2 ? "rejected" : "success", sampleKey: `r${i}`,
+        })) },
+      }, () => (++key).toString(16).padStart(16, "0"));
+    };
+    const one = build(1), many = build(100);
+    expect(one.sql).toBe(many.sql);
+    expect(one.sql).not.toContain("$sampleRecord0");
+    expect(one.sql).not.toContain("$importBatch0");
+    expect(many.bindings.sampleRecords).toHaveLength(100);
+    expect(many.bindings.importReceipts).toHaveLength(100);
   });
 
   test("CV-06：样例值经 JSON 边界退化为 ISO 字符串时按列类型还原为 Date（datetime 修复回归）", async () => {
@@ -288,7 +312,7 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
 
     expect(workbook).not.toBeNull();
     const [txn] = queries.filter((query) => /BEGIN TRANSACTION/i.test(query.sql));
-    const bound = txn!.bindings?.sampleRecord0 as Record<string, unknown>;
+    const bound = (txn!.bindings?.sampleRecords as Array<{ content: Record<string, unknown> }>)[0]!.content;
     expect(bound.declared_date).toBeInstanceOf(Date);
     expect((bound.declared_date as Date).toISOString()).toBe("2026-06-02T00:00:00.000Z");
     expect(bound.declared_amount).toBe(2800000);

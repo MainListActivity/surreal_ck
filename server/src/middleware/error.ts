@@ -11,7 +11,7 @@ export const handleError: ErrorHandler<AppBindings> = (err, c) => {
 
   console.error("[http] unhandled error", {
     method: c.req.method,
-    path: c.req.path,
+    path: c.req.path.replace(/^\/api\/claims-portal\/([^/]+)\/[^/]+/u, "/api/claims-portal/$1/[redacted]"),
     status,
     code,
     stack: err instanceof Error ? err.stack : undefined,

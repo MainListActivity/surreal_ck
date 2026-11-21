@@ -57,14 +57,17 @@ jobs:
       - name: Install company SurrealDB fork for integration tests
         run: |
           set -euo pipefail
-          # 公司 fork 的已发布候选制品（MainListActivity/surrealdb）：固定到具体候选 tag，并校验 sha256。
-          # 候选清单 image.digest 与生产晋升回执一致（release 3.3.0-native-quota.1）。不使用上游官方发行版或 latest。
-          candidate="sck-3.3.0-native-quota.1-candidate.105"
+          # 仅用于测试的固定 CLI 制品；生产镜像仍须来自晋升回执。
+          candidate="sck-4.0.1-native-quota.1-candidate.233"
           archive="$RUNNER_TEMP/surreal-native-quota.linux-amd64.tgz"
           curl --fail --location --silent --show-error \
             "https://github.com/MainListActivity/surrealdb/releases/download/${candidate}/surreal-native-quota.linux-amd64.tgz" \
             --output "$archive"
-          echo "06af02af91e90a245f1f30a145629d965ed8837912118915c11b1d46812ec49e  $archive" | sha256sum --check
+          curl --fail --location --silent --show-error \
+            "https://github.com/MainListActivity/surrealdb/releases/download/${candidate}/surreal-native-quota.linux-amd64.txt" \
+            --output "$archive.txt"
+          test "$(awk 'NR == 1 {print $1}' "$archive.txt")" = "44027466ac7ea219967b52827161d9cbafd042e30d7d7587f147cccedbe74a5f"
+          echo "44027466ac7ea219967b52827161d9cbafd042e30d7d7587f147cccedbe74a5f  $archive" | sha256sum --check
           mkdir -p "$RUNNER_TEMP/surreal-cli"
           tar -xzf "$archive" -C "$RUNNER_TEMP/surreal-cli"
           binary="$(find "$RUNNER_TEMP/surreal-cli" -type f -name surreal -print -quit)"
@@ -72,6 +75,9 @@ jobs:
           chmod +x "$binary"
           "$binary" version
           echo "SURREAL_BINARY=$binary" >> "$GITHUB_ENV"
+          # 让 test-kit / test-subjects 的集成用例在 CI 真正执行（开关见
+          # RUN_LOCAL_SURREALDB_TEST_SUBJECT_TESTS 门，否则全部 skip）。
+          echo "RUN_LOCAL_SURREALDB_TEST_SUBJECT_TESTS=1" >> "$GITHUB_ENV"
 
       - name: Test
         run: pnpm test

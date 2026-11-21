@@ -378,7 +378,10 @@ describe("VER04 可恢复执行窗口（真实 SurrealDB + 真实 Mastra driver�
       leaseTtlMs: 30_000,
     });
     rtA.start();
+    let handlerStarted!: () => void;
+    const inHandler = new Promise<void>((resolve) => { handlerStarted = resolve; });
     rtA.registerHandler("daily-claims-risk", async () => {
+      handlerStarted();
       await new Promise(() => {});
       return {};
     });
@@ -395,6 +398,7 @@ describe("VER04 可恢复执行窗口（真实 SurrealDB + 真实 Mastra driver�
     );
     expect(windows).toHaveLength(1);
     expect(windows[0]?.holder).toBeTruthy();
+    await inHandler;
 
     // 进程 B：同员工不同键的触发——拿不到互斥行，保持 pending
     const rtB = createEmployeeTriggerRuntime({

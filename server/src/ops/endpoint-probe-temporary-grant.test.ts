@@ -5,6 +5,7 @@ import {
   ENDPOINT_PROBE_TEMPORARY_CAPABILITY,
   ENDPOINT_PROBE_TEMPORARY_GRANT_MAX_MS,
   EndpointProbeTemporaryGrantService,
+  SurrealTemporaryGrantStore,
   mergeTemporaryCapabilities,
   type TemporaryGrantRevokeInput,
   type TemporaryGrantStore,
@@ -34,6 +35,19 @@ function service(store: FakeTemporaryGrantStore, now: () => number) {
 }
 
 describe("endpoint probe temporary grant service", () => {
+  test("幂等请求记录的操作、可选结果和值仅通过固定 SQL 的参数传递", async () => {
+    const queries: Array<{ sql: string; params?: Record<string, unknown> }> = [];
+    const store = new SurrealTemporaryGrantStore(async () => ({
+      async query(sql, params) { queries.push({ sql, params }); return []; },
+    }));
+    await store.recordRequest({ subject: GRANTEE, capability: "probe", idempotencyKey: "first", operation: "grant" });
+    const at = new Date("2026-11-02T09:00:00Z");
+    await store.recordRequest({ subject: OTHER, capability: "probe", idempotencyKey: "second", operation: "revoke", resultVersion: 3, resultNotAfter: at });
+    expect(queries[0]!.sql).toBe(queries[1]!.sql);
+    expect(queries[0]!.params).toMatchObject({ operation: "grant", resultVersion: undefined, resultNotAfter: undefined });
+    expect(queries[1]!.params).toMatchObject({ operation: "revoke", resultVersion: 3, resultNotAfter: at });
+  });
+
   beforeAll(() => {
     originalEnv = { ...env };
   });

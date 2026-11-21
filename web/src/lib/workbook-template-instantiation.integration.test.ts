@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { Surreal } from "surrealdb";
+import { StringRecordId, Surreal } from "surrealdb";
+import { readFile } from "node:fs/promises";
+import { validateGridFieldValue } from "@surreal-ck/shared/field-schema";
 import {
   deleteDashboardPage,
   listDashboardPages,
@@ -10,7 +12,7 @@ import { runDashboardWidgetQuery } from "./dashboard-query";
 import { createEditorStore } from "./editor-store";
 import { searchReferenceCandidates } from "./reference-cache";
 import { createBrowserConn, type SurrealConn } from "./surreal";
-import { createWorkbooksStore } from "./workbooks";
+import { buildCreateWorkbookTransaction, createWorkbooksStore } from "./workbooks";
 
 const localSurrealTest = test.skipIf(process.env.RUN_LOCAL_SURREALDB_TESTS !== "1");
 const opened: Surreal[] = [];
@@ -31,6 +33,8 @@ async function setupDatabase(): Promise<{ conn: SurrealConn; inspector: Surreal 
   const inspector = new Surreal();
   opened.push(inspector);
   await inspector.connect(url, { authentication, namespace, database });
+  if (!/^[A-Za-z0-9_]+$/.test(namespace)) throw new Error("invalid fixture namespace");
+  await inspector.query(`DEFINE NAMESPACE IF NOT EXISTS \`${namespace}\`; DEFINE DATABASE \`${database}\`;`).collect();
   await inspector.query(`
     DEFINE TABLE workbook_template SCHEMAFULL;
     DEFINE FIELD key ON TABLE workbook_template TYPE string;
@@ -47,6 +51,7 @@ async function setupDatabase(): Promise<{ conn: SurrealConn; inspector: Surreal 
     DEFINE FIELD label ON TABLE sheet TYPE string;
     DEFINE FIELD table_name ON TABLE sheet TYPE string;
     DEFINE FIELD column_defs ON TABLE sheet TYPE any DEFAULT [];
+    DEFINE FIELD template_sheet_key ON TABLE sheet TYPE option<string>;
     DEFINE FIELD created_at ON TABLE sheet TYPE datetime VALUE time::now() READONLY;
     DEFINE FIELD updated_at ON TABLE sheet TYPE datetime VALUE time::now();
     DEFINE INDEX sheet_table_name_unique ON TABLE sheet COLUMNS table_name UNIQUE;
@@ -73,6 +78,55 @@ async function setupDatabase(): Promise<{ conn: SurrealConn; inspector: Surreal 
 }
 
 describe("OIP-02 多数据表模板实例化", () => {
+  localSurrealTest("固定 FOR 样例/回执保持顺序 upsert、NONE、空批次和事务回滚", async () => {
+    const { inspector } = await setupDatabase();
+    await inspector.query('DEFINE FUNCTION fn::current_user() { RETURN user:fixture; };').collect();
+    await inspector.query(await readFile(new URL("../../../shared/sql/workspace-template/023-import-batch-recovery.surql", import.meta.url), "utf8")).collect();
+    await inspector.query(await readFile(new URL("../../../shared/sql/workspace-template/024-import-batch-undo.surql", import.meta.url), "utf8")).collect();
+    await inspector.query(`CREATE import_batch:b CONTENT {
+      file_name: "fixture.xlsx", file_digest: "fixture", mapping_version: "v1", mode: "new_workbook", status: "processing"
+    };`).collect();
+    const transaction = buildCreateWorkbookTransaction("导入", {
+      legacyRecordQuota: false,
+      sheets: [{ key: "items", label: "事项", columns: [{ key: "name", label: "名称", fieldType: "text" }],
+        sampleRecords: [{ key: "a", values: { name: "甲" } }, { key: "b", values: { name: "乙" } }],
+      }],
+      importBatch: { id: "import_batch:b", receipts: [
+        { sheetKey: "items", sheetName: "事项", rowNumber: 2, status: "success", sampleKey: "a" },
+        { sheetKey: "items", sheetName: "事项", rowNumber: 2, status: "rejected", field: "name", reason: "重放拒绝" },
+        { sheetKey: "items", sheetName: "事项", rowNumber: 3, status: "success", sampleKey: "b", sourceCells: ["乙"] },
+      ] },
+    });
+    await inspector.query(transaction.sql, transaction.bindings).collect();
+    const [receipts] = await inspector.query<[Array<Record<string, unknown>>]>("SELECT * FROM import_batch_row ORDER BY source_row_number;");
+    expect(receipts).toHaveLength(2);
+    expect(receipts[0]).toMatchObject({ status: "rejected", field: "name", reason: "重放拒绝" });
+    expect(receipts[0]!.target_record).toBeUndefined();
+    expect(receipts[0]!.target_updated_at).toBeUndefined();
+    expect(receipts[1]!.target_updated_at).toBeDefined();
+    expect(receipts[1]!.source_cells).toEqual(["乙"]);
+    const samples = transaction.bindings.sampleRecords as Array<{ target: unknown }>;
+    const [linked] = await inspector.query<[boolean]>("RETURN $actual = $expected;", {
+      actual: receipts[1]!.target_record, expected: samples[1]!.target,
+    });
+    expect(linked).toBe(true);
+    for (const sample of samples) {
+      const [rows] = await inspector.query<[unknown[]]>("SELECT * FROM $target;", { target: sample.target });
+      expect(rows).toHaveLength(1);
+    }
+    const empty = buildCreateWorkbookTransaction("空", { legacyRecordQuota: false });
+    await inspector.query(empty.sql, empty.bindings).collect();
+    const bad = buildCreateWorkbookTransaction("拒绝", { legacyRecordQuota: false,
+      sheets: [{ label: "错误", columns: [{ key: "reviewed", label: "审核", fieldType: "checkbox" }],
+        sampleRecords: [{ key: "invalid", values: { reviewed: true } }],
+      }],
+    });
+    (bad.bindings.sampleRecords as Array<{ content: Record<string, unknown> }>)[0]!.content.reviewed = "not-a-bool";
+    await expect(inspector.query(bad.sql, bad.bindings).collect()).rejects.toThrow();
+    const [missing] = await inspector.query<[unknown[]]>("SELECT * FROM $target;", { target: new StringRecordId(bad.workbookId) });
+    expect(missing).toHaveLength(0);
+  });
+
   localSurrealTest("双数据表创建后编辑器可见、可切换并能分别读写记录", async () => {
     const { conn } = await setupDatabase();
     const workbooks = createWorkbooksStore({ getConn: () => conn });
@@ -205,8 +259,9 @@ describe("OIP-03 模板内跨数据表引用", () => {
     const editor = createEditorStore({ getConn: () => conn });
     await editor.loadWorkbook(workbook!.id);
     expect(await editor.saveRows([{ values: { name: "甲公司" } }])).toBe(true);
+    await editor.reloadRows();
     const ownerId = editor.rows[0]!.id;
-    const ownerTable = editor.activeSheet!.tableName;
+    const ownerTable = editor.sheets.find((sheet) => sheet.id === editor.activeSheetId)!.tableName;
 
     const candidates = await searchReferenceCandidates(conn, ownerTable, {
       query: "甲公司",
@@ -262,13 +317,14 @@ describe("OIP-03 模板内跨数据表引用", () => {
     const firstEditor = createEditorStore({ getConn: () => conn });
     await firstEditor.loadWorkbook(first!.id);
     expect(await firstEditor.saveRows([{ values: { name: "甲公司" } }])).toBe(true);
+    await firstEditor.reloadRows();
     const firstCreditorId = firstEditor.rows[0]!.id;
     await firstEditor.switchSheet(firstEditor.sheets[1]!.id);
     const firstTarget = firstEditor.columns.find((column) => column.key === "owner")?.referenceTable;
 
     const secondEditor = createEditorStore({ getConn: () => conn });
     await secondEditor.loadWorkbook(second!.id);
-    const secondCreditorTable = secondEditor.activeSheet!.tableName;
+    const secondCreditorTable = secondEditor.sheets.find((sheet) => sheet.id === secondEditor.activeSheetId)!.tableName;
     await secondEditor.switchSheet(secondEditor.sheets[1]!.id);
     const secondReference = secondEditor.columns.find((column) => column.key === "owner");
 
@@ -276,7 +332,10 @@ describe("OIP-03 模板内跨数据表引用", () => {
     expect(secondReference?.referenceTable).toBe(secondCreditorTable);
     expect(secondReference?.referenceSheetId).toBe(secondEditor.sheets[0]!.id);
     expect(await secondEditor.saveRows([{ values: { owner: firstCreditorId } }])).toBe(false);
-    expect(secondEditor.saveError).toContain(`引用值必须属于 ${secondCreditorTable}`);
+    expect(secondEditor.saveError).toBe("记录未通过字段校验");
+    expect(validateGridFieldValue(firstCreditorId, secondReference!).join(";")).toContain(`引用值必须属于 ${secondCreditorTable}`);
+    await secondEditor.reloadRows();
+    expect(secondEditor.rows).toEqual([]);
 
     firstEditor.reset();
     secondEditor.reset();
@@ -374,14 +433,19 @@ describe("OIP-04 模板样例数据可选实例化", () => {
   localSurrealTest("样例类型错误时结构与业务数据在同一事务中整体回滚", async () => {
     const { conn, inspector } = await setupDatabase();
     const keys = ["1111111111111111", "2222222222222222", "3333333333333333"];
-    const workbooks = createWorkbooksStore({ getConn: () => conn, generateKey: () => keys.shift()! });
+    const invalidSampleConn: SurrealConn = { ...conn, query<T = unknown>(sql: string, bindings?: Record<string, unknown>) {
+      const samples = bindings?.sampleRecords as Array<{ content: Record<string, unknown> }> | undefined;
+      if (samples?.[0]) samples[0].content.reviewed = "错误值";
+      return conn.query<T>(sql, bindings);
+    } };
+    const workbooks = createWorkbooksStore({ getConn: () => invalidSampleConn, generateKey: () => keys.shift()! });
     const workbook = await workbooks.createFromTemplate({
       id: "workbook_template:items",
       sheets: [{
         key: "owners",
         label: "负责人表",
         columns: [{ key: "reviewed", label: "已审核", fieldType: "checkbox" }],
-        sampleRecords: [{ key: "owner-a", values: { reviewed: "错误值" } }],
+        sampleRecords: [{ key: "owner-a", values: { reviewed: false } }],
       }],
     });
 

@@ -1,0 +1,5 @@
+#!/usr/bin/python3 -I
+from pathlib import Path
+import runpy
+
+runpy.run_path(str(Path(__file__).with_name("sck_maintenance_fence.py")))["main"]("fence")
