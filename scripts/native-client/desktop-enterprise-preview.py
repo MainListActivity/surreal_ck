@@ -22,7 +22,7 @@ icon_spec.loader.exec_module(brand_icon)
 # 共用安装器 receipt 范围，包含企业信令源码。
 
 FEATURES = {
-    'macos': ['desktop', 'github-manual-updates', 'experimental-enterprise-media', 'experimental-enterprise-files', 'experimental-macos-video'],
+    'macos': ['desktop', 'github-manual-updates', 'experimental-enterprise-media', 'experimental-enterprise-files', 'experimental-enterprise-meeting', 'experimental-macos-video'],
     'windows': ['desktop', 'experimental-enterprise-media', 'experimental-enterprise-files', 'experimental-windows-video', 'windows-auto-update'],
 }
 HOSTS = {'macos': {'aarch64-apple-darwin', 'x86_64-apple-darwin'},
@@ -155,6 +155,20 @@ def stage(event, target, out, snapshot, host):
     shutil.copy2(binary, installed)
     if receipt.digest(installed) != before or receipt.digest(binary) != before:
         raise ValueError('复制期间 binary 改变')
+    # 可选：SURREAL_CK_PREPARED_MEDIA_RUNTIME 指向 prepare-media-runtime.py
+    # 已验证并钉住摘要的输出目录，则把媒体运行时装进企业测试包。
+    runtime_source = os.environ.get('SURREAL_CK_PREPARED_MEDIA_RUNTIME')
+    runtime_report = 'not-bundled; ffmpeg/ffplay availability and device permissions unverified'
+    if runtime_source:
+        source = Path(runtime_source)
+        prepared = source / 'bin' / ('ffmpeg.exe' if target == 'windows' else 'ffmpeg')
+        if not source.is_dir() or not prepared.is_file():
+            raise ValueError('SURREAL_CK_PREPARED_MEDIA_RUNTIME 不是 prepare-media-runtime 的验证输出')
+        destination = (installed.parent / 'media-runtime' if target == 'windows'
+                       else contents / 'Resources/media-runtime')
+        shutil.copytree(source, destination)
+        runtime_report = ('bundled: development candidate (test-only, prepared-media-runtime '
+                          'validated input); device permissions unverified')
     report = snapshot | dict(schema=1, purpose='enterprise-preview-test-only',
         platform=target, rust_host=host, features=sorted(event['features']),
         executable=str(installed.relative_to(out)), executable_sha256=before,
@@ -162,12 +176,14 @@ def stage(event, target, out, snapshot, host):
         signing='not-signed-by-this-script', installer='not-created; staging-only',
         dependency_closure='unverified', runtime_validation='not-run',
         app_resources='brand SVG and theme embedded; dependency resource closure and launch unverified',
-        media_runtime='not-bundled; ffmpeg/ffplay availability and device permissions unverified')
+        media_runtime=runtime_report)
     if icon is not None:
         report['app_icon'] = icon
     (out / 'preview-receipt.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
-    note = ('仅企业实验 staging，不是已验收安装器。未公证；动态依赖闭包未验证。\n'
-            'ffmpeg/ffplay 未捆绑，媒体功能不可假定可用。\n')
+    note = ('仅企业实验 staging，不是已验收安装器。未公证；动态依赖闭包未验证。\n')
+    note += ('ffmpeg/ffplay 未捆绑，媒体功能不可假定可用。\n'
+             if runtime_source is None else
+             'ffmpeg/ffplay 已捆绑（开发候选，仅测试）；设备权限未验证。\n')
     note += ('macOS 预览版使用手动 GitHub 更新检查，不启用签名策略强制更新；企业登录仍需配置。\n'
              '预览版只下载并校验 SHA-256，DMG 需手动安装；下载完成不等于已升级。\n'
              if target == 'macos' else '强制更新门保持不变；缺少有效配置/策略仍锁定。\n')

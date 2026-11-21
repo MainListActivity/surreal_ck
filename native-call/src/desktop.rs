@@ -21,12 +21,12 @@ use tokio::{
     time::{timeout, Instant},
 };
 
-const IO_TIMEOUT: Duration = Duration::from_secs(3);
-const START_TIMEOUT: Duration = Duration::from_secs(5);
-const KEYFRAME_TIMEOUT: Duration = Duration::from_secs(2);
+pub(crate) const IO_TIMEOUT: Duration = Duration::from_secs(3);
+pub(crate) const START_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const KEYFRAME_TIMEOUT: Duration = Duration::from_secs(2);
 const VIDEO_QUEUE: usize = 3;
 const AUDIO_QUEUE: usize = 10;
-const ALL_SOURCES: [Source; 3] = [Source::Microphone, Source::Camera, Source::Screen];
+pub(crate) const ALL_SOURCES: [Source; 3] = [Source::Microphone, Source::Camera, Source::Screen];
 
 /// 必须是非阻塞的有界 mailbox 写入，不能在回调中运行 UI 事件循环或 I/O。
 /// 每个视频源应映射到自己的原生纹理；错误会停止相应解码器并报告。
@@ -71,7 +71,7 @@ impl CaptureState {
         self.revisions[index(source)]
     }
 }
-fn capture_state_changed(
+pub(crate) fn capture_state_changed(
     states: &watch::Sender<CaptureState>,
     source: Source,
     status: CaptureStatus,
@@ -104,7 +104,7 @@ pub enum Error {
     #[error("媒体操作超时")]
     Timeout,
 }
-fn index(source: Source) -> usize {
+pub(crate) fn index(source: Source) -> usize {
     match source {
         Source::Microphone => 0,
         Source::Camera => 1,
@@ -123,7 +123,7 @@ fn failed(events: &mpsc::Sender<CallEvent>, source: Source, message: impl ToStri
         },
     );
 }
-async fn bounded<T, E: ToString>(
+pub(crate) async fn bounded<T, E: ToString>(
     future: impl Future<Output = Result<T, E>>,
     duration: Duration,
 ) -> Result<T, Error> {
@@ -132,12 +132,12 @@ async fn bounded<T, E: ToString>(
         .map_err(|_| Error::Timeout)?
         .map_err(|e| Error::Backend(e.to_string()))
 }
-struct Worker {
-    cancel: watch::Sender<bool>,
-    task: JoinHandle<Result<(), Error>>,
+pub(crate) struct Worker {
+    pub(crate) cancel: watch::Sender<bool>,
+    pub(crate) task: JoinHandle<Result<(), Error>>,
 }
 impl Worker {
-    async fn stop(mut self) -> Result<(), Error> {
+    pub(crate) async fn stop(mut self) -> Result<(), Error> {
         let _ = self.cancel.send_replace(true);
         match timeout(IO_TIMEOUT, &mut self.task).await {
             Ok(Ok(result)) => result,
@@ -162,14 +162,14 @@ impl Drop for Worker {
 }
 /// 控制future取消会直接drop被移出的Worker/采集器；kill-on-drop不是退出确认。
 /// 守卫把这种失去确认的路径固定为Unconfirmed，禁止下一次空stop误清。
-struct CaptureOperation {
+pub(crate) struct CaptureOperation {
     states: watch::Sender<CaptureState>,
     source: Source,
     cancelled_message: &'static str,
     complete: bool,
 }
 impl CaptureOperation {
-    fn new(
+    pub(crate) fn new(
         states: &watch::Sender<CaptureState>,
         source: Source,
         cancelled_message: &'static str,
@@ -181,7 +181,7 @@ impl CaptureOperation {
             complete: false,
         }
     }
-    fn complete(&mut self) {
+    pub(crate) fn complete(&mut self) {
         self.complete = true;
     }
 }
@@ -197,7 +197,7 @@ impl Drop for CaptureOperation {
         }
     }
 }
-async fn cancelled(cancel: &mut watch::Receiver<bool>) {
+pub(crate) async fn cancelled(cancel: &mut watch::Receiver<bool>) {
     if *cancel.borrow() {
         return;
     }
@@ -509,7 +509,7 @@ impl Drop for CallSession {
         // Worker::drop 中取消和 abort，子进程的 kill_on_drop 是未 await stop 时的最后防线。
     }
 }
-fn validate_input(source: Source, input: &CaptureInput) -> Result<(), Error> {
+pub(crate) fn validate_input(source: Source, input: &CaptureInput) -> Result<(), Error> {
     let matches = match input {
         CaptureInput::Microphone { .. }
         | CaptureInput::MacMicrophone { .. }
@@ -517,9 +517,9 @@ fn validate_input(source: Source, input: &CaptureInput) -> Result<(), Error> {
         CaptureInput::Camera { .. } | CaptureInput::WindowsCamera { .. } => {
             source == Source::Camera
         }
-        CaptureInput::X11Screen { .. } | CaptureInput::WindowsScreen { .. } => {
-            source == Source::Screen
-        }
+        CaptureInput::X11Screen { .. }
+        | CaptureInput::WindowsScreen { .. }
+        | CaptureInput::MacScreen { .. } => source == Source::Screen,
         // AVFoundation 的索引可表示摄像头或屏幕，调用者必须通过枚举确认来源。
         CaptureInput::MacVideo { .. } => source == Source::Camera || source == Source::Screen,
     };
@@ -529,7 +529,7 @@ fn validate_input(source: Source, input: &CaptureInput) -> Result<(), Error> {
         Err(Error::SourceMismatch)
     }
 }
-fn validate_encoded(source: Source, encoded: &Encoded) -> Result<(), Error> {
+pub(crate) fn validate_encoded(source: Source, encoded: &Encoded) -> Result<(), Error> {
     match encoded {
         Encoded::Audio { data, duration }
             if source == Source::Microphone && *duration == Duration::from_millis(20) =>
@@ -677,10 +677,10 @@ async fn capture_loop(
     stop_capture_process(&mut capture, source, &states, &events).await
 }
 
-struct RemoteCommand {
-    video: bool,
-    enabled: bool,
-    ack: oneshot::Sender<Result<(), Error>>,
+pub(crate) struct RemoteCommand {
+    pub(crate) video: bool,
+    pub(crate) enabled: bool,
+    pub(crate) ack: oneshot::Sender<Result<(), Error>>,
 }
 struct Packet {
     epoch: u64,
@@ -854,7 +854,6 @@ impl ReceiverState {
                     self.consumers[index(source)] =
                         Some(consumer(source, sink.clone(), events.clone()));
                     self.enabled[index(source)] = true;
-                    playback_state_changed(&self.states, source, CaptureStatus::Running, None);
                 }
             }
         }
@@ -864,6 +863,11 @@ impl ReceiverState {
         if self.enabled[index(source)] {
             if let Some(consumer) = &self.consumers[index(source)] {
                 consumer.submit(timestamp, data);
+                // Running 只在实际收到对端媒体帧后标记：consumer 启动≠对端在采集，
+                // 否则「成员卡设备态/是否共享中」会把没开过设备的远端报成已开启。
+                if self.states.borrow().status(source) != CaptureStatus::Running {
+                    playback_state_changed(&self.states, source, CaptureStatus::Running, None);
+                }
             }
         }
     }
@@ -877,7 +881,7 @@ impl ReceiverState {
         result
     }
 }
-async fn receive_loop(
+pub(crate) async fn receive_loop(
     mut incoming: mpsc::Receiver<Event>,
     mut commands: mpsc::Receiver<RemoteCommand>,
     mut cancel: watch::Receiver<bool>,
@@ -925,7 +929,7 @@ async fn receive_loop(
 }
 
 /// 只接受可显示的 VP8 帧。关键帧携带实际尺寸；每次尺寸变化都重建解码器。
-fn video_dimensions(data: &[u8]) -> Result<Option<(u16, u16)>, Error> {
+pub(crate) fn video_dimensions(data: &[u8]) -> Result<Option<(u16, u16)>, Error> {
     if data.len() < 3 || data.len() > MAX_VIDEO_FRAME || data[0] & 0x10 == 0 {
         return Err(Error::Invalid);
     }
@@ -1570,8 +1574,9 @@ mod tests {
         let playback = session.playback_state();
         session.set_remote_audio_enabled(true).await.unwrap();
         session.set_remote_video_enabled(true).await.unwrap();
+        // 只启用播放、未收到对端媒体帧时不得报 Running。
         for source in ALL_SOURCES {
-            assert_eq!(playback.borrow().status(source), CaptureStatus::Running);
+            assert_eq!(playback.borrow().status(source), CaptureStatus::Stopped);
             assert_eq!(
                 session.capture_state().borrow().status(source),
                 CaptureStatus::Stopped

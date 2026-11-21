@@ -1,5 +1,6 @@
 //! 应用自己的控件风格；页面不重复定义颜色，颜色统一取自 theme.json 的语义角色。
 pub mod icons;
+pub mod meeting;
 
 /// 左侧图标导航的总宽度。
 pub const RAIL_WIDTH: f32 = 76.0;

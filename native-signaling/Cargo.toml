@@ -6,6 +6,10 @@ publish = false
 
 [workspace]
 
+[features]
+default = []
+mock = []
+
 [dependencies]
 surreal-ck-native-identity = { path = "../native-identity" }
 serde = { version = "1", features = ["derive"] }

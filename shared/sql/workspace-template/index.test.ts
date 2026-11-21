@@ -636,6 +636,13 @@ describe("workspace template scripts", () => {
     expect(sql).not.toMatch(/UPDATE |DELETE |REMOVE /i);
   });
 
+  test("069：会议控制面是最新 workspace 模板迁移", async () => {
+    const scripts = await loadTemplateScripts();
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(69);
+    expect(scripts.at(-1)?.name).toBe("069-native-meeting.surql");
+    expect(scripts.at(-1)?.sql).toContain("fn::meeting_capability");
+  });
+
   test("外部协作者门户 v2 的四个迁移按顺序追加", async () => {
     const scripts = await loadTemplateScripts();
     expect(scripts.filter((script) => script.version >= 64 && script.version <= 67).map((script) => script.name)).toEqual([

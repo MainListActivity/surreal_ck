@@ -593,7 +593,7 @@ fn member_key(value: &str) -> Result<&str> {
 /// fork 的 JSON-RPC 会把 UUID / 日期形状的字符串参数转成 uuid / datetime（`:` 已被字符集拒绝）。
 /// 这类键作为 `$peer`/`$sender`/`$recipient` 传回会指向别的记录，必须拒绝而不是静默错配。
 /// 生产 user 键由 CREATE 随机生成（20 位字母数字），不会落入此类。
-fn json_rpc_coerces(key: &str) -> bool {
+pub(crate) fn json_rpc_coerces(key: &str) -> bool {
     let bytes = key.as_bytes();
     let uuid = bytes.len() == 36
         && bytes.iter().enumerate().all(|(index, byte)| match index {

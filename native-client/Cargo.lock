@@ -2331,6 +2331,7 @@ name = "nsh-app-native-client"
 version = "0.1.2"
 dependencies = [
  "async-channel",
+ "bytes",
  "env_logger",
  "jni",
  "nsh-base",

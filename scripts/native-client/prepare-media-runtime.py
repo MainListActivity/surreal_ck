@@ -26,13 +26,16 @@ def development_candidate(expected_hash, platform, arch):
     lock = json.loads(Path(__file__).with_name('development-media-candidate.lock.json').read_text(encoding='utf-8'))
     if os.environ.get('GITHUB_EVENT_NAME') == 'release' or os.environ.get('GITHUB_REF', '').startswith('refs/tags/'):
         raise ValueError('Development media candidates are forbidden in Release/tag builds')
-    if lock.get('enabled') is not True:
-        raise ValueError('Development candidate disabled pending independent review')
-    if datetime.now(timezone.utc) >= datetime.fromisoformat(lock['expires_at']):
-        raise ValueError('Development media candidate expired; independent revalidation required')
-    if (expected_hash, platform, arch) != (lock['manifest_sha256'], lock['platform'], lock['arch']):
-        raise ValueError('Development candidate is not independently pinned')
-    return lock
+    # 顶层字段是主候选；additional_candidates 只追加同等规则的钉住条目。
+    candidates = [lock] + lock.get('additional_candidates', [])
+    for lock in candidates:
+        if lock.get('enabled') is not True:
+            raise ValueError('Development candidate disabled pending independent review')
+        if datetime.now(timezone.utc) >= datetime.fromisoformat(lock['expires_at']):
+            raise ValueError('Development media candidate expired; independent revalidation required')
+        if (expected_hash, platform, arch) == (lock['manifest_sha256'], lock['platform'], lock['arch']):
+            return lock
+    raise ValueError('Development candidate is not independently pinned')
 
 
 def validate_windows_static_material(source, data):
@@ -176,13 +179,15 @@ def main():
     parser.add_argument('--arch', choices=['x86_64', 'aarch64'], required=True)
     parser.add_argument('--destination', type=Path, required=True)
     parser.add_argument('--inspection-tool')
+    parser.add_argument('--development', action='store_true',
+                        help='Validate a development-pinned candidate (unapproved, lock-pinned) instead of a release-approved runtime')
     args = parser.parse_args()
     if args.destination.exists() or args.destination.resolve().is_relative_to(args.source.resolve()):
         raise ValueError('Destination must be absent and outside input tree')
-    report = validate(args.source, args.manifest, args.manifest_sha256, args.platform, args.arch, args.inspection_tool)
+    report = validate(args.source, args.manifest, args.manifest_sha256, args.platform, args.arch, args.inspection_tool, args.development)
     shutil.copytree(args.source, args.destination)
     # Recheck copied bytes, including a source change between validation and copy.
-    validate(args.destination, args.manifest, args.manifest_sha256, args.platform, args.arch, args.inspection_tool)
+    validate(args.destination, args.manifest, args.manifest_sha256, args.platform, args.arch, args.inspection_tool, args.development)
     print(json.dumps(report, indent=2))
 
 

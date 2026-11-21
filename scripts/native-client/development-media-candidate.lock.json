@@ -9,5 +9,20 @@
   "run_id": 42997627548,
   "expires_at": "2026-11-24T00:00:00+00:00",
   "purpose": "development-only; no redistribution approval; business and devices unverified",
-  "enabled": true
+  "enabled": true,
+  "additional_candidates": [
+    {
+      "artifact_id": 13845204305,
+      "platform": "macos",
+      "arch": "aarch64",
+      "zip_sha256": "a3b81eb242b92344285b322c8411f5321043284f7e939270ff4c6b61a7933e24",
+      "manifest_sha256": "7a64b6ec48e6ee3b2b4e6a792c96511633939d7417fb5f776c226c74f24f5ac5",
+      "source_commit": "d6e3fb9c52a9bf6cdda1adf79a3f44257009a36b",
+      "repository": "MainListActivity/surreal_ck",
+      "run_id": 43000330977,
+      "expires_at": "2026-11-24T00:00:00+00:00",
+      "purpose": "development-only; no redistribution approval; business and devices unverified",
+      "enabled": true
+    }
+  ]
 }
