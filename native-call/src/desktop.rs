@@ -854,7 +854,6 @@ impl ReceiverState {
                     self.consumers[index(source)] =
                         Some(consumer(source, sink.clone(), events.clone()));
                     self.enabled[index(source)] = true;
-                    playback_state_changed(&self.states, source, CaptureStatus::Running, None);
                 }
             }
         }
@@ -864,6 +863,11 @@ impl ReceiverState {
         if self.enabled[index(source)] {
             if let Some(consumer) = &self.consumers[index(source)] {
                 consumer.submit(timestamp, data);
+                // Running 只在实际收到对端媒体帧后标记：consumer 启动≠对端在采集，
+                // 否则「成员卡设备态/是否共享中」会把没开过设备的远端报成已开启。
+                if self.states.borrow().status(source) != CaptureStatus::Running {
+                    playback_state_changed(&self.states, source, CaptureStatus::Running, None);
+                }
             }
         }
     }
@@ -1570,8 +1574,9 @@ mod tests {
         let playback = session.playback_state();
         session.set_remote_audio_enabled(true).await.unwrap();
         session.set_remote_video_enabled(true).await.unwrap();
+        // 只启用播放、未收到对端媒体帧时不得报 Running。
         for source in ALL_SOURCES {
-            assert_eq!(playback.borrow().status(source), CaptureStatus::Running);
+            assert_eq!(playback.borrow().status(source), CaptureStatus::Stopped);
             assert_eq!(
                 session.capture_state().borrow().status(source),
                 CaptureStatus::Stopped
