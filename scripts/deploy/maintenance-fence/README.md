@@ -9,7 +9,7 @@
 `/usr/bin/caddy`、`/usr/bin/systemctl`、`/usr/bin/ss`、`/usr/sbin/iptables` 和
 `/usr/sbin/ip6tables`；两个地址族都须可操作。Ubuntu alternatives 的 root-owned
 符号链接可用于这些系统工具。hook/helper/config/state 的父目录也必须由 root 控制，
-不得允许 group/other 写入；Caddyfile 必须是普通 root-owned 0600 文件。
+不得允许 group/other 写入；Caddyfile 必须是普通 root-owned 文件，允许 0600、0640、0644 等只读共享模式，拒绝任何执行位及 group/other 写入。围栏、恢复和校验失败回滚均保留原文件的安全读写权限；新文件默认为 0600。
 
 在仓库根目录执行以下安装命令（**不是围栏执行命令**）：
 

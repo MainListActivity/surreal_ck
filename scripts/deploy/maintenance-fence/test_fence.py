@@ -44,6 +44,33 @@ data.maplayer.top {
 
 
 class RewriteTests(unittest.TestCase):
+    def test_atomic_write_preserves_safe_mode_and_creates_private_files(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(fence.os, "fchown"):
+            path = Path(directory) / "Caddyfile"
+            fence.atomic_write(path, ORIGINAL)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            for mode in (0o600, 0o640, 0o644, 0o444, 0o755):
+                with self.subTest(mode=oct(mode)):
+                    path.chmod(mode)
+                    fence.atomic_write(path, b"replacement")
+                    self.assertEqual(path.stat().st_mode & 0o777, mode & 0o644)
+                    self.assertEqual(path.read_bytes(), b"replacement")
+
+    def test_connections_can_drain_during_the_wait_but_timeout_still_fails(self):
+        pending = subprocess.CompletedProcess([], 0, "0 0 10.0.0.1:8000 198.51.100.1:50000\n", "")
+        closed = subprocess.CompletedProcess([], 0, "", "")
+        with patch.object(fence, "command", side_effect=[pending] * 29 + [closed]) as command, \
+                patch.object(fence.time, "sleep") as sleep:
+            fence.verify_connections()
+            self.assertEqual(command.call_count, 30)
+            self.assertEqual(sleep.call_count, 29)
+        with patch.object(fence, "command", return_value=pending) as command, \
+                patch.object(fence.time, "sleep") as sleep:
+            with self.assertRaisesRegex(RuntimeError, "connections remain"):
+                fence.verify_connections()
+            self.assertEqual(command.call_count, 30)
+            self.assertEqual(sleep.call_count, 29)
+
     def test_only_the_database_fallback_changes(self):
         prefix, remainder = ORIGINAL.rsplit(b"    handle {", 1)
         expected = prefix + b"    handle {\n        respond 503\n    } # retain this comment\n}\n"
@@ -191,6 +218,39 @@ class HookTests(unittest.TestCase):
         self.assertNotIn((fence.SYSTEMCTL, "start", fence.ORIGIN), self.calls)
         self.assertEqual(self.config.stat().st_mode & 0o777, 0o600)
 
+    def test_readable_caddyfile_modes_survive_fence_unfence_and_private_backup(self):
+        for mode in (0o640, 0o644):
+            with self.subTest(mode=oct(mode)):
+                self.config.chmod(mode)
+                fence.operate("fence")
+                self.assertEqual(self.config.stat().st_mode & 0o777, mode)
+                record = json.loads((self.state / "state.json").read_text())
+                for name in ("original.Caddyfile", "fenced.Caddyfile"):
+                    backup = self.state / record["session"] / name
+                    self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
+                fence.operate("unfence")
+                self.assertEqual(self.config.stat().st_mode & 0o777, mode)
+                self.assertEqual(self.config.read_bytes(), ORIGINAL)
+
+    def test_unsafe_caddyfile_permissions_fail_before_any_command(self):
+        for mode in (0o700, 0o610, 0o601, 0o620, 0o602, 0o666, 0o755):
+            with self.subTest(mode=oct(mode)):
+                self.config.chmod(mode)
+                with self.assertRaisesRegex(RuntimeError, "Caddyfile must"):
+                    fence.operate("fence")
+                self.assertFalse(self.calls)
+                self.assertFalse(self.state.exists())
+                self.assertEqual(self.config.read_bytes(), ORIGINAL)
+
+    def test_validation_rollback_preserves_readable_caddyfile_mode(self):
+        self.config.chmod(0o644)
+        self.fail_validate = True
+        with self.assertRaises(RuntimeError):
+            fence.operate("fence")
+        self.assertEqual(self.config.read_bytes(), ORIGINAL)
+        self.assertEqual(self.config.stat().st_mode & 0o777, 0o644)
+        self.assertNotIn((fence.SYSTEMCTL, "reload", "caddy.service"), self.calls)
+
     def test_new_cycle_snapshots_the_current_configuration(self):
         fence.operate("fence")
         fence.operate("unfence")
@@ -224,6 +284,11 @@ class HookTests(unittest.TestCase):
             fence.operate("fence")
         self.assertEqual(self.rules, set(fence.FIREWALLS))
         self.assertEqual(self.config.read_bytes(), fence.fenced_config(ORIGINAL))
+
+        self.ss_output = ""
+        fence.operate("fence")
+        self.assertEqual(len(list(self.state.glob("session-*"))), 1)
+        self.assertEqual(len([call for call in self.calls if "-I" in call]), 2)
 
     def test_configuration_drift_is_never_overwritten(self):
         fence.operate("fence")
