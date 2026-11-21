@@ -179,13 +179,15 @@ def main():
     parser.add_argument('--arch', choices=['x86_64', 'aarch64'], required=True)
     parser.add_argument('--destination', type=Path, required=True)
     parser.add_argument('--inspection-tool')
+    parser.add_argument('--development', action='store_true',
+                        help='Validate a development-pinned candidate (unapproved, lock-pinned) instead of a release-approved runtime')
     args = parser.parse_args()
     if args.destination.exists() or args.destination.resolve().is_relative_to(args.source.resolve()):
         raise ValueError('Destination must be absent and outside input tree')
-    report = validate(args.source, args.manifest, args.manifest_sha256, args.platform, args.arch, args.inspection_tool)
+    report = validate(args.source, args.manifest, args.manifest_sha256, args.platform, args.arch, args.inspection_tool, args.development)
     shutil.copytree(args.source, args.destination)
     # Recheck copied bytes, including a source change between validation and copy.
-    validate(args.destination, args.manifest, args.manifest_sha256, args.platform, args.arch, args.inspection_tool)
+    validate(args.destination, args.manifest, args.manifest_sha256, args.platform, args.arch, args.inspection_tool, args.development)
     print(json.dumps(report, indent=2))
 
 

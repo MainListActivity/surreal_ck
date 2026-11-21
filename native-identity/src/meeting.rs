@@ -414,10 +414,20 @@ fn failure(s: &Value) -> E {
         .get("message")
         .and_then(Value::as_str)
         .or_else(|| s.get("result").and_then(Value::as_str));
-    // 真实 SurrealDB 的 THROW 会带包装前缀 `An error occurred: meeting:<code>`；
-    // 剥掉这个固定前缀再做完全相等匹配，避免把用户内容里内嵌的 meeting: 串误判。
-    let msg = msg.map(|m| m.strip_prefix("An error occurred: ").unwrap_or(m));
-    match msg {
+    // 真实 SurrealDB 的 THROW 会被包装（如 `An error occurred: meeting:<code>`，
+    // 可能再被外层文本包裹）。只在包装文本含 "error occurred" 时取最后的
+    // meeting: 代码做完全匹配；避免把用户内容里内嵌的 meeting: 串误判。
+    let code = msg.and_then(|m| {
+        let lower = m.to_ascii_lowercase();
+        if lower.starts_with("meeting:") {
+            Some(lower)
+        } else if lower.contains("error occurred") {
+            lower.rsplit_once("meeting:").map(|(_, tail)| format!("meeting:{tail}"))
+        } else {
+            None
+        }
+    });
+    match code.as_deref() {
         Some("meeting:not_found") => E::MeetingNotFound,
         Some("meeting:full") => E::MeetingFull,
         Some("meeting:expired") => E::MeetingExpired,

@@ -53,6 +53,7 @@ use surreal_ck_peer_transport::{
 const TICK: Duration = Duration::from_secs(3);
 const ATTEMPT_TTL: Duration = Duration::from_secs(35);
 const RENEW_AFTER: Duration = Duration::from_secs(8);
+const EDGE_RETRY: Duration = Duration::from_secs(15);
 
 fn call_source(source: Source) -> CallSource {
     match source {
@@ -336,9 +337,15 @@ async fn run(
             }
         };
     }
+    // 连续相同的错误只上报一次，避免 tick 循环把同一错误刷成重复 toast。
+    let mut last_error = String::new();
     macro_rules! fail {
         ($error:expr) => {
-            emit!(MeetingUpdate::Error(map_error($error)))
+            let rendered = ($error).to_string();
+            if rendered != last_error {
+                last_error = rendered;
+                emit!(MeetingUpdate::Error(map_error($error)))
+            }
         };
     }
     let rpc = match MeetingConnection::connect(&client, session, &config, &slug).await {
@@ -365,6 +372,8 @@ async fn run(
     let gate = DeviceGate::default();
     let mut lease = None;
     let mut edges: BTreeMap<String, EdgeWork> = BTreeMap::new();
+    // 建边失败后的重试冷却，避免每个 tick 重复创建 PC/套接字。
+    let mut retry_after: BTreeMap<String, Instant> = BTreeMap::new();
     let mut tick = tokio::time::interval(TICK);
     let mut last_renew = Instant::now();
     emit!(MeetingUpdate::Capability(Capability::Available));
@@ -414,8 +423,9 @@ async fn run(
                             let _ = media.detach_edge(&work.slot).await;
                             let _ = work.edge.close().await;
                         }
+                        retry_after.remove(&join_id);
                         let _ = meeting.fail_edge(&join_id);
-                        offer_peer(&mut meeting, &mut media, &mut edges, &join_id, &out, epoch, generation).await;
+                        offer_peer(&mut meeting, &mut media, &mut edges, &mut retry_after, &join_id, &out, epoch, generation).await;
                     }
                     MeetingCommand::Leave => {
                         teardown(&mut media, &mut edges).await;
@@ -470,7 +480,8 @@ async fn run(
                     match meeting.renew().await {
                         Ok(removed) => drop_edges(&mut media, &mut edges, removed, meeting.local_join().unwrap_or_default()).await,
                         Err(error) => {
-                            if matches!(error, SignalingError::Expired) {
+                            // 房间消失/绑定失效都不可自愈：按会议已结束收尾。
+                            if matches!(error, SignalingError::Expired | SignalingError::NotFound | SignalingError::Binding) {
                                 teardown(&mut media, &mut edges).await;
                                 emit!(MeetingUpdate::Ended { by_host: false });
                                 continue;
@@ -482,7 +493,7 @@ async fn run(
                 match meeting.snapshot().await {
                     Ok(removed) => drop_edges(&mut media, &mut edges, removed, meeting.local_join().unwrap_or_default()).await,
                     Err(error) => {
-                        if matches!(error, SignalingError::Expired) {
+                        if matches!(error, SignalingError::Expired | SignalingError::NotFound | SignalingError::Binding) {
                             teardown(&mut media, &mut edges).await;
                             emit!(MeetingUpdate::Ended { by_host: false });
                             continue;
@@ -517,6 +528,13 @@ async fn run(
                         work.status = match stats.route {
                             ObservedRoute::Direct => EdgeStatus::Direct,
                             ObservedRoute::Relay => EdgeStatus::Relay,
+                            // 无 TURN 配置时选中候选对即直连；route 统计依赖媒体包，
+                            // 未开设备时可能长期 Unknown，不能因此卡在“连接中”。
+                            ObservedRoute::Unknown
+                                if work.edge.connection_state() == RTCPeerConnectionState::Connected =>
+                            {
+                                EdgeStatus::Direct
+                            }
                             ObservedRoute::Unknown
                                 if work.deadline < Instant::now()
                                     || matches!(work.edge.connection_state(), RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed) =>
@@ -527,7 +545,7 @@ async fn run(
                         };
                     }
                 }
-                ensure_edges(&mut meeting, &mut media, &mut edges, &out, epoch, generation).await;
+                ensure_edges(&mut meeting, &mut media, &mut edges, &mut retry_after, &out, epoch, generation).await;
                 emit_snapshot(&meeting, &edges, &contacts, &out, epoch, generation, &media).await;
             }
         }
@@ -718,6 +736,7 @@ async fn ensure_edges(
     meeting: &mut Meeting<MeetingConnection>,
     media: &mut MeetingMedia,
     edges: &mut BTreeMap<String, EdgeWork>,
+    retry_after: &mut BTreeMap<String, Instant>,
     out: &Sender<(u64, Event)>,
     epoch: u64,
     generation: u64,
@@ -729,11 +748,24 @@ async fn ensure_edges(
         return;
     };
     for join in snapshot.members.iter().map(|m| m.join_id.clone()) {
-        if join == local || edges.contains_key(&join) {
+        if join == local
+            || edges.contains_key(&join)
+            || retry_after.get(&join).is_some_and(|t| *t > Instant::now())
+        {
             continue;
         }
         if local.as_str() < join.as_str() {
-            offer_peer(meeting, media, edges, &join, out, epoch, generation).await;
+            offer_peer(
+                meeting,
+                media,
+                edges,
+                retry_after,
+                &join,
+                out,
+                epoch,
+                generation,
+            )
+            .await;
         }
     }
 }
@@ -741,12 +773,13 @@ async fn offer_peer(
     meeting: &mut Meeting<MeetingConnection>,
     media: &mut MeetingMedia,
     edges: &mut BTreeMap<String, EdgeWork>,
+    retry_after: &mut BTreeMap<String, Instant>,
     peer_join: &str,
     out: &Sender<(u64, Event)>,
     epoch: u64,
     generation: u64,
 ) {
-    let result = async {
+    let prepared = async {
         let (snapshot, local) = (
             meeting.current_snapshot().cloned().ok_or("未在会议中")?,
             meeting
@@ -763,15 +796,59 @@ async fn offer_peer(
             .clone();
         let attempt =
             transport_attempt(&snapshot.room.id, &local, peer_join, 1, RouteKind::Direct)?;
-        let mut edge = MeetingEdge::new(
+        Ok::<_, String>((attempt, local, member))
+    }
+    .await;
+    let (attempt, local, member) = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            retry_after.insert(peer_join.to_owned(), Instant::now() + EDGE_RETRY);
+            let _ = out
+                .send((
+                    epoch,
+                    Event::Meeting(generation, MeetingUpdate::Error(map_error(error))),
+                ))
+                .await;
+            return;
+        }
+    };
+    let local_id = JoinId::new(&local).map_err(|e| e.to_string());
+    let mut edge = match local_id {
+        Ok(local_id) => match MeetingEdge::new(
             attempt,
-            JoinId::new(&local).map_err(|e| e.to_string())?,
+            local_id,
             TransportRoute::Direct,
             vec![],
             SettingEngine::default(),
         )
         .await
-        .map_err(|e| e.to_string())?;
+        {
+            Ok(edge) => edge,
+            Err(error) => {
+                retry_after.insert(peer_join.to_owned(), Instant::now() + EDGE_RETRY);
+                let _ = out
+                    .send((
+                        epoch,
+                        Event::Meeting(generation, MeetingUpdate::Error(map_error(error))),
+                    ))
+                    .await;
+                return;
+            }
+        },
+        Err(error) => {
+            retry_after.insert(peer_join.to_owned(), Instant::now() + EDGE_RETRY);
+            let _ = out
+                .send((
+                    epoch,
+                    Event::Meeting(generation, MeetingUpdate::Error(map_error(error))),
+                ))
+                .await;
+            return;
+        }
+    };
+    // 建边后的每一步都可能失败：失败时必须 close 已建的 edge，
+    // 否则 PC/UDP 套接字会随每个重试 tick 泄漏。
+    let result = async {
         let offer = edge.offer().await.map_err(|e| e.to_string())?;
         let hash = offer_hash(&offer);
         let offer_json = serde_json::to_string(&offer).map_err(|e| e.to_string())?;
@@ -788,26 +865,36 @@ async fn offer_peer(
             .attach_edge(slot.clone(), edge.media(), events)
             .await
             .map_err(|e| e.to_string())?;
-        edges.insert(
-            peer_join.to_owned(),
-            EdgeWork {
-                slot,
-                edge,
-                offer_hash: Some(hash),
-                deadline: Instant::now() + ATTEMPT_TTL,
-                status: EdgeStatus::Connecting,
-            },
-        );
-        Ok::<(), String>(())
+        Ok::<_, String>((slot, hash))
     }
     .await;
-    if let Err(error) = result {
-        let _ = out
-            .send((
-                epoch,
-                Event::Meeting(generation, MeetingUpdate::Error(map_error(error))),
-            ))
-            .await;
+    match result {
+        Ok((slot, hash)) => {
+            retry_after.remove(peer_join);
+            if let Some(old) = edges.insert(
+                peer_join.to_owned(),
+                EdgeWork {
+                    slot,
+                    edge,
+                    offer_hash: Some(hash),
+                    deadline: Instant::now() + ATTEMPT_TTL,
+                    status: EdgeStatus::Connecting,
+                },
+            ) {
+                let _ = media.detach_edge(&old.slot).await;
+                let _ = old.edge.close().await;
+            }
+        }
+        Err(error) => {
+            let _ = edge.close().await;
+            retry_after.insert(peer_join.to_owned(), Instant::now() + EDGE_RETRY);
+            let _ = out
+                .send((
+                    epoch,
+                    Event::Meeting(generation, MeetingUpdate::Error(map_error(error))),
+                ))
+                .await;
+        }
     }
 }
 async fn answer_offer(
@@ -819,7 +906,7 @@ async fn answer_offer(
     epoch: u64,
     generation: u64,
 ) {
-    let result = async {
+    let prepared = async {
         let (snapshot, local) = (
             meeting.current_snapshot().cloned().ok_or("未在会议中")?,
             meeting
@@ -835,15 +922,55 @@ async fn answer_offer(
             offer.attempt(),
             route_kind(offer.route()),
         )?;
-        let mut edge = MeetingEdge::new(
+        Ok::<_, String>((attempt, local, peer_join))
+    }
+    .await;
+    let (attempt, local, peer_join) = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            let _ = out
+                .send((
+                    epoch,
+                    Event::Meeting(generation, MeetingUpdate::Error(map_error(error))),
+                ))
+                .await;
+            return;
+        }
+    };
+    let local_id = JoinId::new(&local).map_err(|e| e.to_string());
+    let mut edge = match local_id {
+        Ok(local_id) => match MeetingEdge::new(
             attempt,
-            JoinId::new(&local).map_err(|e| e.to_string())?,
+            local_id,
             TransportRoute::Direct,
             vec![],
             SettingEngine::default(),
         )
         .await
-        .map_err(|e| e.to_string())?;
+        {
+            Ok(edge) => edge,
+            Err(error) => {
+                let _ = out
+                    .send((
+                        epoch,
+                        Event::Meeting(generation, MeetingUpdate::Error(map_error(error))),
+                    ))
+                    .await;
+                return;
+            }
+        },
+        Err(error) => {
+            let _ = out
+                .send((
+                    epoch,
+                    Event::Meeting(generation, MeetingUpdate::Error(map_error(error))),
+                ))
+                .await;
+            return;
+        }
+    };
+    // 与 offer_peer 同理：失败必须 close，避免套接字泄漏。
+    let result = async {
         let desc: RTCSessionDescription =
             serde_json::from_str(offer.sdp_json()).map_err(|e| e.to_string())?;
         let answer = edge.answer(desc).await.map_err(|e| e.to_string())?;
@@ -861,26 +988,34 @@ async fn answer_offer(
             .attach_edge(slot.clone(), edge.media(), events)
             .await
             .map_err(|e| e.to_string())?;
-        edges.insert(
-            peer_join,
-            EdgeWork {
-                slot,
-                edge,
-                offer_hash: None,
-                deadline: Instant::now() + ATTEMPT_TTL,
-                status: EdgeStatus::Connecting,
-            },
-        );
-        Ok::<(), String>(())
+        Ok::<_, String>(slot)
     }
     .await;
-    if let Err(error) = result {
-        let _ = out
-            .send((
-                epoch,
-                Event::Meeting(generation, MeetingUpdate::Error(map_error(error))),
-            ))
-            .await;
+    match result {
+        Ok(slot) => {
+            if let Some(old) = edges.insert(
+                peer_join,
+                EdgeWork {
+                    slot,
+                    edge,
+                    offer_hash: None,
+                    deadline: Instant::now() + ATTEMPT_TTL,
+                    status: EdgeStatus::Connecting,
+                },
+            ) {
+                let _ = media.detach_edge(&old.slot).await;
+                let _ = old.edge.close().await;
+            }
+        }
+        Err(error) => {
+            let _ = edge.close().await;
+            let _ = out
+                .send((
+                    epoch,
+                    Event::Meeting(generation, MeetingUpdate::Error(map_error(error))),
+                ))
+                .await;
+        }
     }
 }
 async fn accept_answer(
@@ -906,14 +1041,17 @@ async fn accept_answer(
             .map_err(|e| e.to_string())
     }
     .await;
-    if let Err(error) = result {
-        work.status = EdgeStatus::Failed { retryable: true };
-        let _ = out
-            .send((
-                epoch,
-                Event::Meeting(generation, MeetingUpdate::Error(map_error(error))),
-            ))
-            .await;
+    match result {
+        Ok(()) => work.offer_hash = None,
+        Err(error) => {
+            work.status = EdgeStatus::Failed { retryable: true };
+            let _ = out
+                .send((
+                    epoch,
+                    Event::Meeting(generation, MeetingUpdate::Error(map_error(error))),
+                ))
+                .await;
+        }
     }
 }
 async fn drop_edges(
