@@ -159,6 +159,10 @@ marker 32772 本身不绑定某个引擎；`storage.backend` 与 backend certifi
    原始导出保持不变；逐库流式生成 `<namespace>--<database>.import.surql`（root-owned
    0600），只移除 `DEFINE ACCESS` 顶层 HS256/384/512 JWT 与 issuer 的 `[REDACTED]`
    key 子句，保留 SIGNIN、DURATION 与 JWKS URL，让目标重新生成签名 key。
+   多行 access 定义按引号、转义、注释与配对括号识别顶层分号；不含占位符时
+   用私有临时文件缓冲并按块原样复制，不解析或重写定义。含占位符时仅在完整
+   语句不超过 1 MiB、边界与词法可安全识别时改写；截断、不匹配括号、混入其他
+   语句或不支持的改写词法均失败关闭。临时文件自动清理，真实 key 不进入日志。
    其他位置的占位符或非预期定义格式一律拒绝。`access-transforms.json` 记录每库
    删除子句数及 RECORD access 名称，`SHA256SUMS` 同时覆盖原始与变换文件。
    已签发的 RECORD token 将失效（最长有效期 1h），用户及服务须重新 SIGNIN；

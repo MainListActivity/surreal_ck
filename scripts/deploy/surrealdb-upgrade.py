@@ -17,6 +17,7 @@ import socket
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 import urllib.request
 import urllib.parse
@@ -460,7 +461,118 @@ def private_file(path):
 
 
 REDACTED_KEY = b"[REDACTED]"
+ACCESS_REWRITE_LIMIT = 1024 * 1024
 ACCESS_TOKEN = re.compile(rb"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|`(?:\\.|[^`\\])*`|[A-Za-z0-9_]+|[^\s]")
+ACCESS_HEADER = re.compile(rb"\s*DEFINE\s+ACCESS\s+(?:(?:OVERWRITE|IF\s+NOT\s+EXISTS)\s+)?"
+                           rb"(`[^`]+`|[A-Za-z0-9_]+)\s+ON\s+(?:DATABASE|NAMESPACE|ROOT)\s+TYPE\s+RECORD\b")
+
+
+class AccessBoundary:
+    def __init__(self):
+        self.quote = None
+        self.escaped = False
+        self.pending = None
+        self.comment = None
+        self.block_depth = 0
+        self.block_previous = None
+        self.brackets = []
+        self.rewrite_safe = True
+
+    def feed(self, chunk):
+        for index, value in enumerate(chunk):
+            if self.comment == "line":
+                if value in (10, 13):
+                    self.comment = None
+                continue
+            if self.comment == "block":
+                pair = (self.block_previous, value)
+                if pair == (47, 42):
+                    self.block_depth += 1
+                    self.block_previous = None
+                elif pair == (42, 47):
+                    self.block_depth -= 1
+                    self.block_previous = None
+                    if not self.block_depth:
+                        self.comment = None
+                else:
+                    self.block_previous = value
+                continue
+            if self.quote is not None:
+                if self.escaped:
+                    self.escaped = False
+                elif value == 92:
+                    self.escaped = True
+                elif value == self.quote:
+                    self.quote = None
+                continue
+            if self.pending is not None:
+                pair = (self.pending, value)
+                pending = self.pending
+                self.pending = None
+                if pair in ((45, 45), (47, 47)):
+                    self.comment = "line"
+                    self.rewrite_safe = False
+                    continue
+                if pair == (47, 42):
+                    self.comment = "block"
+                    self.block_depth = 1
+                    self.rewrite_safe = False
+                    continue
+                if pending == 47:
+                    self.rewrite_safe = False
+            if value in (39, 34, 96):
+                self.quote = value
+            elif value in (45, 47):
+                self.pending = value
+            elif value in (40, 91, 123):
+                if len(self.brackets) >= 1024:
+                    raise RuntimeError("exported access nesting exceeds streaming limit")
+                self.brackets.append({40: 41, 91: 93, 123: 125}[value])
+            elif value in (41, 93, 125):
+                if not self.brackets or self.brackets.pop() != value:
+                    raise RuntimeError("unsupported exported access nesting")
+            elif value == 59 and not self.brackets:
+                return index + 1
+        return None
+
+
+def transform_access_statement(original, output, first, directory):
+    boundary = AccessBoundary()
+    header = b""
+    tail = b""
+    redacted = False
+    with tempfile.TemporaryFile(dir=directory) as statement:
+        chunk = first
+        while True:
+            end = boundary.feed(chunk)
+            if end is not None and chunk[end:].strip():
+                raise RuntimeError("multiple statements in exported access definition")
+            statement.write(chunk)
+            header += chunk[:max(0, 4096 - len(header))]
+            redacted = redacted or REDACTED_KEY in tail + chunk
+            tail = chunk[-(len(REDACTED_KEY) - 1):]
+            if end is not None:
+                break
+            chunk = original.readline(TRANSFER_CHUNK)
+            if not chunk:
+                raise RuntimeError("unterminated exported access definition")
+        if redacted:
+            if statement.tell() > ACCESS_REWRITE_LIMIT or not boundary.rewrite_safe:
+                raise RuntimeError("exported redacted access definition cannot be safely rewritten")
+            statement.seek(0)
+            transformed, count, record = transform_access_line(statement.read(ACCESS_REWRITE_LIMIT))
+            if REDACTED_KEY in transformed:
+                raise RuntimeError("redaction placeholder outside permitted access key clauses")
+            output.write(transformed)
+        else:
+            match = ACCESS_HEADER.match(header)
+            record = match[1].strip(b"`").decode("utf-8") if match else None
+            if record is not None:
+                identifier(record)
+            count = 0
+            statement.seek(0)
+            shutil.copyfileobj(statement, output, TRANSFER_CHUNK)
+    return count, record, chunk
 
 
 def transform_access_line(line):
@@ -518,12 +630,13 @@ def transform_export(source, destination):
     with open(source, "rb") as original, private_file(destination) as output:
         while chunk := original.readline(TRANSFER_CHUNK):
             if start_of_line and chunk.lstrip().startswith(b"DEFINE ACCESS "):
-                if len(chunk) == TRANSFER_CHUNK and not chunk.endswith(b"\n"):
-                    raise RuntimeError("exported access definition exceeds streaming limit")
-                chunk, count, record = transform_access_line(chunk)
+                count, record, chunk = transform_access_statement(original, output, chunk, destination.parent)
                 replacements += count
                 if record is not None:
                     records.append(record)
+                start_of_line = chunk.endswith(b"\n")
+                tail = chunk[-(len(REDACTED_KEY) - 1):]
+                continue
             if REDACTED_KEY in tail + chunk:
                 raise RuntimeError("redaction placeholder outside permitted access key clauses")
             output.write(chunk)

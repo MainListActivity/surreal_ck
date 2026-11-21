@@ -64,7 +64,6 @@ class SafetyTests(unittest.TestCase):
                   b"DEFINE ACCESS x ON DATABASE TYPE RECORD COMMENT '[REDACTED]';\n",
                   b"DEFINE ACCESS x ON DATABASE TYPE RECORD SIGNIN { RETURN 'WITH ISSUER KEY \\\'[REDACTED]\\\''; };\n",
                   b"DEFINE ACCESS x ON DATABASE TYPE RECORD SIGNIN { LET $x = WITH ISSUER KEY '[REDACTED]'; };\n",
-                  b"DEFINE ACCESS x ON DATABASE TYPE RECORD\nWITH JWT ALGORITHM HS512 KEY '[REDACTED]';\n",
                   b"DEFINE ACCESS x ON DATABASE TYPE RECORD; INSERT INTO data { v: '[REDACTED]' };\n",
                   b"x" * (upgrade.TRANSFER_CHUNK - 4) + b"[REDACTED]\n")
         for content in values:
@@ -84,6 +83,71 @@ class SafetyTests(unittest.TestCase):
             original.write_bytes(content)
             self.assertEqual(upgrade.transform_export(original, result)["replacements"], 0)
             self.assertEqual(result.read_bytes(), content)
+
+    def test_unredacted_multiline_accesses_pass_unchanged_without_rewriting(self):
+        content = (b'DEFINE ACCESS participant ON DATABASE TYPE RECORD WITH JWT URL "https://issuer.test/jwks"\n'
+                   b'AUTHENTICATE {\n LET $x = {message: "braces }; and ; in strings"};\n'
+                   b' /* nested /* ; } */ comment */\n RETURN $x;\n}\nDURATION FOR SESSION NONE;\n'
+                   b'DEFINE ACCESS madocs ON DATABASE TYPE JWT URL "https://issuer.test/jwks"\n'
+                   b'AUTHENTICATE {\n RETURN true;\n};\n')
+        with tempfile.TemporaryDirectory() as directory, patch.object(upgrade.os, "fchown"), \
+                patch.object(upgrade, "transform_access_line", side_effect=AssertionError("unredacted access parsed")):
+            original, result = Path(directory) / "original", Path(directory) / "result"
+            original.write_bytes(content)
+            self.assertEqual(upgrade.transform_export(original, result), {"replacements": 0, "record_accesses": ["participant"]})
+            self.assertEqual(result.read_bytes(), content)
+            self.assertEqual(original.read_bytes(), content)
+            self.assertEqual(sorted(p.name for p in Path(directory).iterdir()), ["original", "result"])
+
+    def test_multiline_redacted_definition_preserves_real_issuer_and_authenticate(self):
+        content = (b"DEFINE ACCESS employee ON DATABASE TYPE RECORD\n"
+                   b"SIGNIN { RETURN user:bot; }\nWITH JWT ALGORITHM HS512\nKEY '[REDACTED]'\n"
+                   b"WITH ISSUER KEY 'synthetic-real-issuer' ALGORITHM HS512\n"
+                   b"AUTHENTICATE {\n LET $x = ['quoted \\\' ; }', {v: true}];\n RETURN $auth;\n}\n"
+                   b"DURATION FOR TOKEN 1h, FOR SESSION 1h;\n")
+        with tempfile.TemporaryDirectory() as directory, patch.object(upgrade.os, "fchown"):
+            original, result = Path(directory) / "original", Path(directory) / "result"
+            original.write_bytes(content)
+            self.assertEqual(upgrade.transform_export(original, result), {"replacements": 1, "record_accesses": ["employee"]})
+            self.assertEqual(result.read_bytes(), content.replace(b"WITH JWT ALGORITHM HS512\nKEY '[REDACTED]'", b""))
+
+    def test_large_unredacted_access_is_disk_spooled_and_byte_preserved(self):
+        content = b"DEFINE ACCESS x ON DATABASE TYPE RECORD AUTHENTICATE { RETURN '" + b"x" * (upgrade.TRANSFER_CHUNK * 3) + b"'; };\n"
+        with tempfile.TemporaryDirectory() as directory, patch.object(upgrade.os, "fchown"):
+            original, result = Path(directory) / "original", Path(directory) / "result"
+            original.write_bytes(content)
+            self.assertEqual(upgrade.transform_export(original, result), {"replacements": 0, "record_accesses": ["x"]})
+            self.assertEqual(upgrade.digest(original), upgrade.digest(result))
+
+    def test_unterminated_mismatched_oversized_or_ambiguous_redacted_access_fails_closed(self):
+        cases = [
+            b"DEFINE ACCESS x ON DATABASE TYPE RECORD AUTHENTICATE { RETURN true;\n",
+            b"DEFINE ACCESS x ON DATABASE TYPE RECORD AUTHENTICATE { RETURN [true); };\n",
+            b"DEFINE ACCESS x ON DATABASE TYPE RECORD WITH JWT ALGORITHM HS512 KEY '[REDACTED]'; RETURN true;\n",
+            b"DEFINE ACCESS x ON DATABASE TYPE RECORD\n-- WITH ISSUER KEY '[REDACTED]'\n;\n",
+            b"DEFINE ACCESS x ON DATABASE TYPE RECORD WITH JWT ALGORITHM HS512 KEY '[REDACTED]'\nAUTHENTICATE { RETURN 4 / 2; };\n",
+            b"DEFINE ACCESS x ON DATABASE TYPE RECORD WITH JWT ALGORITHM HS512 KEY '[REDACTED]' COMMENT '" + b"x" * upgrade.TRANSFER_CHUNK + b"';\n",
+        ]
+        for content in cases:
+            with self.subTest(prefix=content[:50]), tempfile.TemporaryDirectory() as directory, patch.object(upgrade.os, "fchown"):
+                original, result = Path(directory) / "original", Path(directory) / "result"
+                original.write_bytes(content)
+                with self.assertRaises(RuntimeError):
+                    upgrade.transform_export(original, result)
+                self.assertEqual(sorted(p.name for p in Path(directory).iterdir()), ["original", "result"])
+
+    def test_boundary_and_placeholder_detection_survive_chunk_splits(self):
+        content = (b"DEFINE ACCESS x ON DATABASE TYPE RECORD\nWITH JWT ALGORITHM HS512 KEY '[REDACTED]'\n"
+                   b"WITH ISSUER KEY '[REDACTED]' AUTHENTICATE { RETURN 'escaped \\\' ; }'; };\n")
+        with tempfile.TemporaryDirectory() as directory, patch.object(upgrade.os, "fchown"), \
+                patch.object(upgrade, "TRANSFER_CHUNK", 64):
+            original, result = Path(directory) / "original", Path(directory) / "result"
+            original.write_bytes(content)
+            self.assertEqual(upgrade.transform_export(original, result)["replacements"], 2)
+        boundary = upgrade.AccessBoundary()
+        statement = b"DEFINE ACCESS x ON DATABASE TYPE RECORD AUTHENTICATE { /* ; } */ RETURN 'escaped \\\' ; }'; };"
+        endings = [boundary.feed(bytes([byte])) for byte in statement]
+        self.assertEqual([end for end in endings if end is not None], [1])
 
     def test_transform_preserves_jwks_while_removing_issuer_key_and_algorithm(self):
         original = b'DEFINE ACCESS reader ON DATABASE TYPE JWT URL "https://issuer.test/jwks" WITH ISSUER KEY "[REDACTED]" ALGORITHM HS512 DURATION FOR SESSION 1h;\n'
