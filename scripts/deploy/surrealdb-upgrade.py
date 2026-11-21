@@ -260,8 +260,13 @@ def switch(argv):
     run("systemctl", "daemon-reload")
 
 
-def wait_health(endpoint, origin=False):
+def wait_health(endpoint, origin=False, container=None):
     for _ in range(90):
+        if container is not None:
+            state = container_state(container)
+            if state is None or state.get("Running") is not True:
+                reason = "OOMKilled" if state and state.get("OOMKilled") else "exited before health became ready"
+                raise MaintenanceSafetyError(f"temporary container {container}: {reason}")
         try:
             with urllib.request.urlopen(endpoint + "/health", timeout=5) as response:
                 if response.status == 200:
@@ -304,26 +309,114 @@ def copy_data(source, destination):
     run("cp", "-a", "--reflink=auto", "--", str(source), str(destination))
 
 
-def restore_drill(image, binary, snapshot, destination, auth, before):
+class MaintenanceSafetyError(RuntimeError):
+    pass
+
+
+def container_state(name):
+    result = subprocess.run([PODMAN, "container", "exists", name], capture_output=True, check=False)
+    if result.returncode == 1:
+        return None
+    if result.returncode != 0:
+        raise MaintenanceSafetyError("cannot determine container existence")
+    state = json.loads(run(PODMAN, "inspect", name))[0].get("State")
+    if (not isinstance(state, dict) or not isinstance(state.get("Running"), bool)
+            or type(state.get("Pid")) is not int or state["Pid"] < 0
+            or not isinstance(state.get("OOMKilled"), bool)):
+        raise MaintenanceSafetyError("container exit state is unreadable")
+    return state
+
+
+def temporary_names():
+    return [prefix + str(os.getpid()) for prefix in
+            ("sck-upgrade-version-", "sck-backend-smoke-", "sck-restore-drill-", "surrealdb-upgrade-check-")]
+
+
+def running_surreal_pids():
+    pids = []
+    for process in Path("/proc").iterdir():
+        if not process.name.isdigit():
+            continue
+        try:
+            executable = str((process / "exe").readlink()).removesuffix(" (deleted)")
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        if Path(executable).name in ("surreal", "surreal-upgrade"):
+            pids.append(process.name)
+    return pids
+
+
+def assert_database_idle():
+    for name in [CONTAINER, *temporary_names()]:
+        state = container_state(name)
+        if state and (state["Running"] or state["Pid"] != 0):
+            raise MaintenanceSafetyError(f"container {name} has not exited; refusing database overlap")
+    if running_surreal_pids():
+        raise MaintenanceSafetyError("another SurrealDB process remains; refusing database overlap")
+
+
+def memory_flags(maximum_mib):
+    try:
+        maximum = int(maximum_mib) * 1024 ** 2
+    except (TypeError, ValueError):
+        raise MaintenanceSafetyError("invalid SURREAL_UPGRADE_MEMORY_MAX_MIB") from None
+    if maximum <= 0:
+        raise MaintenanceSafetyError("temporary memory maximum must be positive")
+    available = re.search(r"^MemAvailable:\s+(\d+)\s+kB$", Path("/proc/meminfo").read_text(), re.MULTILINE)
+    if available is None:
+        raise MaintenanceSafetyError("host MemAvailable is unavailable")
+    available = int(available[1]) * 1024
+    if available < 2 * 1024 ** 3:
+        raise MaintenanceSafetyError("host MemAvailable below 2 GiB; refusing temporary container")
+    limit = str(min(available * 70 // 100, maximum))
+    return ["--memory", limit, "--memory-swap", limit]
+
+
+def require_new_container(name):
+    if container_state(name) is not None:
+        raise MaintenanceSafetyError(f"temporary container {name} already exists")
+
+
+def retire_container(name):
+    state = container_state(name)
+    if state is None:
+        return False
+    oom = state.get("OOMKilled") is True
+    if state["Running"]:
+        run(PODMAN, "stop", "--time", "30", name)
+    state = container_state(name)
+    if state is None:
+        raise MaintenanceSafetyError(f"container {name} disappeared before exit verification")
+    if state["Running"] or state["Pid"] != 0:
+        raise MaintenanceSafetyError(f"container {name} has not exited; refusing database overlap")
+    oom = oom or state.get("OOMKilled") is True
+    run(PODMAN, "rm", name)
+    return oom
+
+
+def restore_drill(image, binary, snapshot, destination, auth, before, maximum_mib=6144):
     copy_data(snapshot, destination)
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
     drill_endpoint = f"http://127.0.0.1:{port}"
     name = "sck-restore-drill-" + str(os.getpid())
-    run(PODMAN, "run", "--detach", "--rm", "--name", name, "--user", "0", "--network", "host",
-        "--env-file", str(ENV_FILE), "-v", f"{destination}:/data", "--entrypoint", binary, image,
-        "start", "--bind", f"127.0.0.1:{port}", "rocksdb:/data")
+    assert_database_idle()
+    require_new_container(name)
     try:
-        wait_health(drill_endpoint)
+        run(PODMAN, "run", "--detach", "--name", name, "--user", "0", "--network", "host",
+            *memory_flags(maximum_mib), "--env-file", str(ENV_FILE), "-v", f"{destination}:/data", "--entrypoint", binary, image,
+            "start", "--bind", f"127.0.0.1:{port}", "rocksdb:/data")
+        wait_health(drill_endpoint, container=name)
         if inventory(drill_endpoint, auth) != before:
             raise RuntimeError("restored snapshot row counts differ")
     finally:
-        run(PODMAN, "stop", "--time", "30", name)
+        if retire_container(name):
+            raise MaintenanceSafetyError(f"temporary container {name}: OOMKilled")
 
 
-def target_cli(image, binary=None, data=None, snapshot=None):
-    command = [PODMAN, "run", "--rm", "--user", "0", "--network", "none"]
+def target_cli(image, name, binary=None, data=None, snapshot=None, maximum_mib=6144):
+    command = [PODMAN, "run", "--name", name, "--user", "0", "--network", "none", *memory_flags(maximum_mib)]
     if binary is not None:
         command += ["-v", f"{binary}:/surreal-upgrade:ro", "--entrypoint", "/surreal-upgrade"]
     if data is not None:
@@ -331,6 +424,16 @@ def target_cli(image, binary=None, data=None, snapshot=None):
     if snapshot is not None:
         command += ["-v", f"{snapshot}:/snapshot:ro"]
     return [*command, image]
+
+
+def run_target_cli(image, name, arguments, binary=None, data=None, maximum_mib=6144):
+    assert_database_idle()
+    require_new_container(name)
+    try:
+        return run(*target_cli(image, name, binary, data, maximum_mib=maximum_mib), *arguments)
+    finally:
+        if retire_container(name):
+            raise MaintenanceSafetyError(f"temporary container {name}: OOMKilled")
 
 
 def service_command(image, data, binary=None, engine="rocksdb"):
@@ -575,11 +678,6 @@ def upgrade_locked(args, candidate):
             shutil.copy2(candidate, target_binary)
             target_binary.chmod(0o755)
     mounted_binary = None if args.image else target_binary
-    if parse_version(run(*target_cli(image, mounted_binary), "version")) != TARGET:
-        raise RuntimeError("target container/binary version differs")
-    smoke = backup / "backend-smoke"
-    smoke.mkdir()
-    run(*target_cli(image, mounted_binary, smoke), "datastore", "status", f"{args.storage_engine}:/data")
     shutil.copy2(UNIT, backup / "surrealdb.service.original")
     if DROPIN.exists():
         shutil.copy2(DROPIN, backup / "surrealdb.dropin.original")
@@ -617,22 +715,34 @@ def upgrade_locked(args, candidate):
         (backup / "SHA256SUMS").write_text("\n".join(checksums) + "\n")
         if inventory(endpoint, auth) != before:
             raise RuntimeError("row counts changed under maintenance fence")
-        run("systemctl", "stop", SERVICE)
         database_stopped = True
+        run("systemctl", "stop", SERVICE)
+        assert_database_idle()
+        maximum_mib = config.get("SURREAL_UPGRADE_MEMORY_MAX_MIB", "6144")
+        if parse_version(run_target_cli(image, temporary_names()[0], ["version"], mounted_binary,
+                                        maximum_mib=maximum_mib)) != TARGET:
+            raise RuntimeError("target container/binary version differs")
+        smoke = backup / "backend-smoke"
+        smoke.mkdir()
+        run_target_cli(image, temporary_names()[1], ["datastore", "status", f"{args.storage_engine}:/data"],
+                       mounted_binary, smoke, maximum_mib=maximum_mib)
         copy_data(data, snapshot)
-        restore_drill(report["container_image"], report["binary"], snapshot, backup / "restore-drill", auth, before)
+        restore_drill(report["container_image"], report["binary"], snapshot, backup / "restore-drill", auth, before,
+                      maximum_mib=maximum_mib)
         target_data.mkdir(mode=0o700)
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
             port = listener.getsockname()[1]
         trial_endpoint = f"http://127.0.0.1:{port}"
-        command = [PODMAN, "run", "--detach", "--rm", "--name", trial, "--user", "0", "--network", "host",
+        assert_database_idle()
+        require_new_container(trial)
+        command = [PODMAN, "run", "--detach", "--name", trial, "--user", "0", "--network", "host", *memory_flags(maximum_mib),
                    "--env-file", str(ENV_FILE), "-v", f"{target_data}:/data"]
         if mounted_binary is not None:
             command += ["-v", f"{mounted_binary}:/surreal-upgrade:ro", "--entrypoint", "/surreal-upgrade"]
-        run(*command, image, "start", "--bind", f"127.0.0.1:{port}", "--allow-all", f"{args.storage_engine}:/data")
         trial_started = True
-        wait_health(trial_endpoint)
+        run(*command, image, "start", "--bind", f"127.0.0.1:{port}", "--allow-all", f"{args.storage_engine}:/data")
+        wait_health(trial_endpoint, container=trial)
         # backend 认证在导入和切换前再核验，不能把支持打开误认为生产认证通过。
         validate_capability(request(trial_endpoint + "/capabilities"), args.storage_engine)
         for namespace, database in before:
@@ -642,8 +752,11 @@ def upgrade_locked(args, candidate):
                                      access_transforms[(namespace, database)]["record_accesses"])
         if inventory(trial_endpoint, auth) != before:
             raise RuntimeError("imported row counts differ")
-        run(PODMAN, "stop", "--time", "30", trial)
+        if retire_container(trial):
+            trial_started = False
+            raise MaintenanceSafetyError(f"temporary container {trial}: OOMKilled")
         trial_started = False
+        assert_database_idle()
         switch(service_command(image, target_data, mounted_binary, args.storage_engine))
         run("systemctl", "start", SERVICE)
         wait_health(endpoint)
@@ -662,20 +775,23 @@ def upgrade_locked(args, candidate):
         released = True
         run(str(unfence))
         return {"state": "healthy", "approval_ref": args.approval_ref, "backup": str(backup), "inspection": observed}
-    except BaseException:
+    except BaseException as error:
         if stopped:
             run("systemctl", "stop", ORIGIN)
         if trial_started:
-            run(PODMAN, "stop", "--time", "30", trial)
+            if retire_container(trial):
+                error = MaintenanceSafetyError(f"temporary container {trial}: OOMKilled")
         if database_stopped and not released:
             run("systemctl", "stop", SERVICE)
+            assert_database_idle()
             restore_unit(backup)
             run("systemctl", "start", SERVICE)
             wait_health(endpoint)
         if released:
             run(str(fence))
         # 围栏保持开启；旧 origin 可能已与目标契约绑定，不自动重启或开放写入。
-        raise RuntimeError(f"upgrade failed; maintenance fence retained={fenced}; inspect host backup {backup}") from None
+        reason = f"; {error}" if isinstance(error, MaintenanceSafetyError) else ""
+        raise RuntimeError(f"upgrade failed; maintenance fence retained={fenced}{reason}; inspect host backup {backup}") from None
 
 
 def main():
