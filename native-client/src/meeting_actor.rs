@@ -340,13 +340,13 @@ async fn run(
     // 连续相同的错误只上报一次，避免 tick 循环把同一错误刷成重复 toast。
     let mut last_error = String::new();
     macro_rules! fail {
-        ($error:expr) => {
+        ($error:expr) => {{
             let rendered = ($error).to_string();
             if rendered != last_error {
                 last_error = rendered;
                 emit!(MeetingUpdate::Error(map_error($error)))
             }
-        };
+        }};
     }
     let rpc = match MeetingConnection::connect(&client, session, &config, &slug).await {
         Ok(rpc) => rpc,
