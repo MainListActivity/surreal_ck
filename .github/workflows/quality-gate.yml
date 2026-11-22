@@ -57,14 +57,15 @@ jobs:
       - name: Install company SurrealDB fork for integration tests
         run: |
           set -euo pipefail
-          # 仅用于测试的固定 CLI 制品；生产镜像仍须来自晋升回执。
-          candidate="sck-4.0.1-native-quota.1-candidate.233"
+          # 正式发行 CLI（sck-4.0.1-native-quota.1，提交 eab8473e，与生产镜像同一提交）；
+          # 仅用于测试，生产镜像仍须来自晋升回执。
+          release="sck-4.0.1-native-quota.1"
           archive="$RUNNER_TEMP/surreal-native-quota.linux-amd64.tgz"
           curl --fail --location --silent --show-error \
-            "https://github.com/MainListActivity/surrealdb/releases/download/${candidate}/surreal-native-quota.linux-amd64.tgz" \
+            "https://github.com/MainListActivity/surrealdb/releases/download/${release}/surreal-native-quota.linux-amd64.tgz" \
             --output "$archive"
           curl --fail --location --silent --show-error \
-            "https://github.com/MainListActivity/surrealdb/releases/download/${candidate}/surreal-native-quota.linux-amd64.txt" \
+            "https://github.com/MainListActivity/surrealdb/releases/download/${release}/surreal-native-quota.linux-amd64.txt" \
             --output "$archive.txt"
           test "$(awk 'NR == 1 {print $1}' "$archive.txt")" = "44027466ac7ea219967b52827161d9cbafd042e30d7d7587f147cccedbe74a5f"
           echo "44027466ac7ea219967b52827161d9cbafd042e30d7d7587f147cccedbe74a5f  $archive" | sha256sum --check
