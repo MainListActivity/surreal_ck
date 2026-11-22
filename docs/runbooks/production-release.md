@@ -555,9 +555,13 @@ workflow 的 environment 声明本身不创建审批规则。
 先在 ARM64 runner 以所选 `storage_engine` 启动，打不开该引擎则 check 失败关闭。
 
 生产为 aarch64、root Podman `surrealdb` 容器、host network、
-`/etc/surrealdb/surrealdb.env` 和 `/home/ubuntu/surreal_ck/data-native:/data`。
-源镜像固定为 `ghcr.io/mainlistactivity/surrealdb-native-quota@sha256:4873ac9db79f91196f2b5e6129263d660700fcbfad0c5e1d90595bd3d384dcf8`。
-主机 PATH 中的 surreal 为 3.2.3，不用于维护；导出使用 3.3 容器 binary。
+`/etc/surrealdb/surrealdb.env` 和 `/home/ubuntu/surreal_ck/data-native-4.0-20261121T093915Z:/data`。
+当前生产为 4.0.1：镜像 `ghcr.io/mainlistactivity/surrealdb-native-quota@sha256:e68a34a400c8f8014f1cf1450fd5c4be6ffdf04f73e464d538cc5b9e06ebc66e`，
+版本 `4.0.1-native-quota.1+sha.eab8473e4d4e`，rocksdb，数据目录 `data-native-4.0-20261121T093915Z`
+（依据 2026-11-21 `SurrealDB maintenance` 运行 44890559131 报告）。3.3 源镜像
+`...@sha256:4873ac9db79f91196f2b5e6129263d660700fcbfad0c5e1d90595bd3d384dcf8`
+与原 `data-native` 目录仅作回滚保留，不动。
+主机 PATH 中的 surreal 为上游 3.2.3（本次未复核），不用于维护；不得用于任何维护或测试，导出使用容器 binary。
 
 `mode=upgrade` 另需确认文本 `UPGRADE 3.3 TO 4.0`，受审 binary、已配置且验证的公网
 HTTP/WSS 写围栏、可恢复快照与兼容 origin 目录；按
@@ -595,6 +599,6 @@ main 提交期间以 `--ref main` 手动派发；它没有 `sha` 输入，使用
 
 - 2026-10-21 收口链的 Quality gate 运行（本 PR 头）使用与既有仓库标准一致的 Linux runner 与公司 fork 候选制品；具体 run 号与合并 SHA 记录在交接文档与 PR 描述中。
 
-- Quality gate（CI）安装公司 fork 的测试制品 `sck-4.0.1-native-quota.1-artifacts.1`（`MainListActivity/surrealdb`），校验 `.txt` 和固定 tgz SHA256 `3da64bb89fb36daa9f0511e93a22346d9327090272ac791b4566d3126d59aedc`。它支持 memory schema/SDK 测试，不代表 RocksDB 或生产晋升验收通过。
+- Quality gate（CI）安装公司 fork 的正式发行 CLI `sck-4.0.1-native-quota.1` linux-amd64（`MainListActivity/surrealdb`，提交 `eab8473e`，与生产镜像同一提交），校验 `.txt` 和固定 tgz SHA256 `44027466ac7ea219967b52827161d9cbafd042e30d7d7587f147cccedbe74a5f`。
 - 本机检查器日志 `checker-live-local-surreal-v3.3-nightly.log` 对应 v3.3 nightly 本地构建，不等同于 CI 或生产所用构建。
-- 生产主机 `surrealdb.service` 所用的构建尚未由本次改动核验。启用前由运营经批准运行 `SurrealDB maintenance` 的只读 check，保留实际 binary/version/hash、storage marker 和服务路径报告。
+- 生产主机 `surrealdb.service` 当前运行 `4.0.1-native-quota.1+sha.eab8473e4d4e`、镜像 `e68a34a4`、rocksdb，依据 2026-11-21 `SurrealDB maintenance` 运行 44890559131 报告（backend production/hard_quota/persistent_restart 认证均 true，数据目录 `data-native-4.0-20261121T093915Z`，备份 `backups/surrealdb-20261121T093915Z`）。

@@ -17,7 +17,7 @@
 
 Web pivot 的五个需求簇（A 仓库重组、B Hono 骨架、C workspace-as-database、D1 Router workflow、D2 前端迁移）以及 D3 dashboard 迁移、运营迭代计划（OIP-01..18）、资源检索（RR-001..014）、工作区设置、个人中心、home 重设计全部 done。此外：
 
-- **订阅配额控制面**（`.scratch/native-resource-quota/`）：SCK-NQ-01..10 全部 done，SurrealDB fork 已发布 `sck-3.3.0-native-quota.1`，compose 只接受 digest 固定的自有镜像。剩余的是生产 rollout 运维动作，见下方"长线风险和预发布事项"。
+- **订阅配额控制面**（`.scratch/native-resource-quota/`）：SCK-NQ-01..10 全部 done，SurrealDB fork 生产已于 2026-11-21 升级到 `sck-4.0.1-native-quota.1`（镜像 `e68a34a4`，rocksdb，依据维护运行 44890559131），compose 只接受 digest 固定的自有镜像。剩余的配额产品 rollout 运维动作，见下方"长线风险和预发布事项"。
 - **虚拟员工 runtime**（`.scratch/virtual-employee-runtime/`）：VER-01..06 全部 `Status: done`，实现与测试在 `main`（`server/ai/office/employee-runtime.ts`、`employee-trigger-runtime.ts`、`employee-supervisor.ts`、`server/src/routes/employees.ts` 及对应测试）。剩余为生产侧 QA 复验，见"下一批候选"。
 - **虚拟办公室**（`.scratch/virtual-office/`）：VO-01..06 全部 `Status: done`，实现在 `main`（`server/ai/office/project-manager.ts`、`server/src/routes/office.ts`、`shared/sql/workspace-template/031/041/044/045/046`、`web/src/screens/OfficeScreen.svelte` 等），ADR 见 `docs/adr/virtual-office.md`。剩余为验收与生产证据，见"下一批候选"。
 - **律师破产债权垂直簇**（`.scratch/claims-vertical/`）：01..06 工单头均 `Status: done`，实现已上 `main`（06 的修复可追溯至 PR #132）。生产部署复测无记录，见"下一批候选"。红线不变：法律词汇只留在 `workbook_template` 数据里，平台代码/schema/prompt 不得出现。
