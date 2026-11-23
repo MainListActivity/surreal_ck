@@ -11,7 +11,6 @@ const EXPECTED = Object.freeze({
   manifestRevision: "native-quota-v2.0",
   sdk: "2.2.2",
   capability: "native-quota-v1",
-  backend: "rocksdb",
   contractRevision: "native-quota-contract-v1",
 });
 
@@ -100,6 +99,15 @@ const candidate = await json(candidatePath);
 const compatibility = await json(compatibilityPath);
 const sha = args["expected-sha"];
 const digest = args["expected-digest"];
+const backend = candidate.capability?.storage_backend ?? "rocksdb";
+requireValue(
+  backend === "rocksdb" || backend === "tikv",
+  "candidate storage backend is unsupported",
+);
+requireValue(
+  backend !== "tikv" || args["signature-policy"] === "verify_keyless",
+  "TiKV acceptance requires keyless verification",
+);
 
 requireValue(
   /^[0-9a-f]{40}$/.test(sha),
@@ -131,6 +139,12 @@ requireValue(candidate.image?.digest === digest, "image digest differs");
 requireValue(
   candidate.image?.reference === `${EXPECTED.repository}@${digest}`,
   "image reference is not digest-pinned",
+);
+const tagSuffix = backend === "tikv" ? "-tikv" : "";
+requireValue(
+  JSON.stringify(candidate.image?.immutable_tags) ===
+    JSON.stringify([`${EXPECTED.release}${tagSuffix}`, `sha-${sha}${tagSuffix}`]),
+  "immutable image tags differ",
 );
 const platformDigests = candidate.image?.platform_digests;
 requireValue(
@@ -227,23 +241,23 @@ requireValue(
   "CLI exact-release gate is disabled",
 );
 const productionBackend = compatibility.backends?.find(
-  (backend) => backend.name === EXPECTED.backend,
+  (entry) => entry.name === backend,
 );
 requireValue(
   productionBackend?.production === true,
-  "RocksDB is not marked production",
+  "backend is not marked production",
 );
 requireValue(
   productionBackend?.hard_quota_certified === true,
-  "RocksDB hard quota is uncertified",
+  "backend hard quota is uncertified",
 );
 requireValue(
   productionBackend?.persistent_restart_certified === true,
-  "RocksDB restart is uncertified",
+  "backend restart is uncertified",
 );
 requireValue(
   productionBackend?.certification_revision === EXPECTED.contractRevision,
-  "RocksDB certification revision differs",
+  "backend certification revision differs",
 );
 requireValue(
   candidate.compatibility?.sha256 === (await sha256(compatibilityPath)),
@@ -270,8 +284,10 @@ requireValue(
   "native quota capability is missing",
 );
 requireValue(
-  capability.backend?.name === EXPECTED.backend,
-  "candidate capability is not RocksDB",
+  capability.backend?.name === backend &&
+    capability.storage?.backend === backend &&
+    capability.storage?.ready === true,
+  "candidate capability does not match the ready storage backend",
 );
 requireValue(
   capability.backend?.production === true,
@@ -416,7 +432,7 @@ const identity = {
   digest,
   image_reference: `${EXPECTED.repository}@${digest}`,
   sdk: { package: "surrealdb", version: EXPECTED.sdk },
-  backend: EXPECTED.backend,
+  backend,
   signature_policy: args["signature-policy"],
   cryptographic_evidence: {
     candidate_manifest_signature:
