@@ -26,7 +26,10 @@ MCP = "sck-company-mcp.service"
 RULE = ("!", "-i", "lo", "-p", "tcp", "--dport", "8000",
         "-m", "comment", "--comment", "surreal-ck-maintenance-8000", "-j", "DROP")
 HONO_PREFIX = "/__surreal_ck_hono"
-HONO_ACCEPTANCE_PATHS = ("/health", "/api/ops/mcp", "/api/ops/.well-known/oauth-protected-resource")
+HONO_ACCEPTANCE_PATHS = (
+    "/health", "/api/ops/mcp", "/api/ops/.well-known/oauth-protected-resource",
+    "/api/ops/mcp/.well-known/oauth-protected-resource",
+)
 Token = namedtuple("Token", "value start end literal")
 
 
@@ -128,7 +131,17 @@ def fenced_config(original):
         raise RuntimeError("unexpected Hono path matcher")
     allowlist = " ".join(HONO_PREFIX + route for route in HONO_ACCEPTANCE_PATHS)
 
-    edits = ((start, items[pairs[block]].end, replacement), (prefix.start, prefix.end, allowlist))
+    proxy = hono_ports[0] - 1
+    proxy_start = items[proxy].start
+    proxy_indent = source[source.rfind("\n", 0, proxy_start) + 1:proxy_start]
+    if proxy_indent.strip():
+        raise RuntimeError("unsupported inline Hono proxy")
+    marker = "request_header X-Surreal-CK-Maintenance test-kit\n" + proxy_indent
+    edits = (
+        (start, items[pairs[block]].end, replacement),
+        (prefix.start, prefix.end, allowlist),
+        (proxy_start, proxy_start, marker),
+    )
     for begin, end, value in sorted(edits, reverse=True):
         source = source[:begin] + value + source[end:]
     return source.encode("utf-8")

@@ -85,7 +85,13 @@ class RewriteTests(unittest.TestCase):
         prefix = prefix.replace(
             b"        path /__surreal_ck_hono/*",
             b"        path /__surreal_ck_hono/health /__surreal_ck_hono/api/ops/mcp "
-            b"/__surreal_ck_hono/api/ops/.well-known/oauth-protected-resource",
+            b"/__surreal_ck_hono/api/ops/.well-known/oauth-protected-resource "
+            b"/__surreal_ck_hono/api/ops/mcp/.well-known/oauth-protected-resource",
+        )
+        prefix = prefix.replace(
+            b"        reverse_proxy 127.0.0.1:8080",
+            b"        request_header X-Surreal-CK-Maintenance test-kit\n"
+            b"        reverse_proxy 127.0.0.1:8080",
         )
         expected = prefix + b"    handle {\n        respond 503\n    } # retain this comment\n}\n"
         self.assertEqual(fence.fenced_config(ORIGINAL), expected)

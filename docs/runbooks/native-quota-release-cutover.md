@@ -117,7 +117,9 @@ marker 32772 本身不绑定某个引擎；`storage.backend` 与 backend certifi
 
    fence 停 origin 与 `sck-company-mcp`，备份 root 0600 Caddyfile，将数据库的
    兜底 handle 改为 503；仅保留 Hono 的健康检查、运营 MCP 和 OAuth 元数据路由，
-   便于验收时保持普通应用 API 封闭。Caddy validate 后 reload；其他服务路由不改。
+   便于验收时保持普通应用 API 封闭。验收 origin 须支持维护头部，只允许配有
+   `test.provision` 的测试 agent 使用测试物料工具。Caddy validate 后 reload；
+   其他服务路由不改；单独暂停已确认会写数据库的任务或服务。
    IPv4/IPv6 iptables 丢弃非 lo 的 8000 流量，最终核对远端 established 与 Caddy
    代理连接均消失，否则拒绝继续。unfence 恢复原配置、validate/reload、删除带专用
    comment 的规则，并仅恢复围栏前运行的 MCP。它**不启动 origin**，要求兼容 origin 已健康。
