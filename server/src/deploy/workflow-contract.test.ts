@@ -730,8 +730,10 @@ describe("frontend-barrier-artifact-probe.yml（无生产环境的只读探针�
 
 describe("native-quota-release-acceptance.yml", () => {
   const doc = load("native-quota-release-acceptance.yml");
+  const jq = Bun.which("jq");
 
-  test.each(["tikv", "rocksdb"])("为 %s 生成签名前的验收回执", (backend) => {
+  test.skipIf(!jq && !process.env.CI).each(["tikv", "rocksdb"])("用 jq 为 %s 生成签名前的验收回执", (backend) => {
+    expect(jq, "运行验收回执测试需要 jq：https://jqlang.org/download/").not.toBeNull();
     const step = stepsOf(doc).find(([, , step]) => step.name === "Create and keyless-sign downstream acceptance statement")?.[2];
     expect(typeof step?.run).toBe("string");
 
