@@ -99,6 +99,7 @@ jobs:
           test -f candidate/native-quota-v1.json
 
       - name: Verify manifest, hashes, SDK, CLI, SBOM and provenance
+        id: identity
         env:
           CANDIDATE_TAG: ${{ inputs.candidate_tag }}
           EXPECTED_SHA: ${{ inputs.expected_git_sha }}
@@ -115,6 +116,7 @@ jobs:
             --signature-policy "$SIGNATURE_POLICY" \
             --candidate-tag "$CANDIDATE_TAG" \
             --output candidate/verified-identity.json
+          echo "backend=$(jq -er '.backend' candidate/verified-identity.json)" >> "$GITHUB_OUTPUT"
 
       - name: Verify candidate and image keyless signatures
         if: inputs.signature_policy == 'verify_keyless'
@@ -179,11 +181,29 @@ jobs:
               production_acceptance_signature: "keyless_github_oidc_required"
             }' > candidate/signature-waiver.json
 
+      - name: Checkout verified TiKV candidate test harness
+        if: steps.identity.outputs.backend == 'tikv'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: MainListActivity/surrealdb
+          ref: ${{ inputs.expected_git_sha }}
+          persist-credentials: false
+          path: candidate-source
+          sparse-checkout: |
+            scripts/native-quota/disposable_tikv_ci.sh
+            scripts/native-quota/sdk-acceptance.mjs
+          sparse-checkout-cone-mode: false
+
+      - name: Start disposable TiKV
+        if: steps.identity.outputs.backend == 'tikv'
+        run: bash candidate-source/scripts/native-quota/disposable_tikv_ci.sh start
+
       - name: Verify multi-architecture digest and smoke exact image
         env:
           GH_TOKEN: ${{ github.token }}
           EXPECTED_SHA: ${{ inputs.expected_git_sha }}
           EXPECTED_DIGEST: ${{ inputs.expected_digest }}
+          BACKEND: ${{ steps.identity.outputs.backend }}
         run: |
           set -euo pipefail
           image="ghcr.io/mainlistactivity/surrealdb-native-quota@$EXPECTED_DIGEST"
@@ -198,6 +218,8 @@ jobs:
 
           container="native-quota-acceptance-${GITHUB_RUN_ID}"
           data_dir="${RUNNER_TEMP}/${container}-data"
+          endpoint=http://127.0.0.1:18000
+          test -z "$(ss -H -ltn 'sport = :18000')"
           cleanup() {
             docker rm -f "$container" >/dev/null 2>&1 || true
             rm -rf -- "$data_dir"
@@ -208,15 +230,19 @@ jobs:
           # writable permissions to exercise the same nonroot container path.
           mkdir -p "$data_dir"
           chmod 0777 "$data_dir"
-          docker run -d --name "$container" \
-            -p 18080:8000 \
-            -v "$data_dir:/data" \
-            "$image" \
-            start --no-banner --log none --user root --pass root rocksdb:/data
+          if [ "$BACKEND" = "tikv" ]; then
+            docker run -d --name "$container" --network host "$image" \
+              start --no-banner --log none --bind 127.0.0.1:18000 \
+                --user root --pass root tikv://127.0.0.1:2379
+          else
+            docker run -d --name "$container" -p 127.0.0.1:18000:8000 \
+              -v "$data_dir:/data" "$image" \
+              start --no-banner --log none --user root --pass root rocksdb:/data
+          fi
           ready=false
           for attempt in $(seq 1 60); do
             if curl --fail --silent \
-              'http://127.0.0.1:18080/ready?require=native-quota-v1' >/dev/null; then
+              "$endpoint/ready?require=native-quota-v1" >/dev/null; then
               ready=true
               break
             fi
@@ -230,27 +256,46 @@ jobs:
             docker logs "$container" || true
             echo "status endpoint:"
             curl --silent --show-error --max-time 5 \
-              http://127.0.0.1:18080/status || true
+              "$endpoint/status" || true
             echo "capabilities endpoint:"
             curl --silent --show-error --max-time 5 \
-              http://127.0.0.1:18080/capabilities || true
+              "$endpoint/capabilities" || true
             exit 1
           fi
-          curl --fail --silent http://127.0.0.1:18080/capabilities \
+          curl --fail --silent "$endpoint/capabilities" \
             > candidate/live-capabilities.json
           jq -e \
             --arg sha "$EXPECTED_SHA" \
+            --arg backend "$BACKEND" \
             '.build.git_sha == $sha
              and .fork.id == "mainlistactivity/surrealdb-native-quota"
              and .fork.release == "4.0.1-native-quota.1"
              and .quota.name == "native-quota-v1"
-             and .storage.backend == "rocksdb"
+             and .storage.backend == $backend
              and .storage.ready == true
              and .backend.production == true
              and .backend.hard_quota_certified == true' \
             candidate/live-capabilities.json >/dev/null
+          if [ "$BACKEND" = "tikv" ]; then
+            (
+              cd server
+              RUN_LOCAL_SURREALDB_TEST_SUBJECT_TESTS=1 SURREAL_TEST_KIT_TIKV=1 \
+                bun test ./src/test-kit/service.integration.test.ts ./src/ops/mcp/routes.test.ts \
+                  --preload ./test/setup-env.ts --timeout 30000
+            )
+            sdk_script="$(mktemp --suffix=.mjs server/.native-quota-acceptance.XXXXXX)"
+            cp candidate-source/scripts/native-quota/sdk-acceptance.mjs "$sdk_script"
+            for protocol in http ws; do
+              node "$sdk_script" "${protocol}://127.0.0.1:18000"
+            done
+            rm -f -- "$sdk_script"
+          fi
           cleanup
           trap - EXIT
+
+      - name: Stop disposable TiKV
+        if: always() && steps.identity.outputs.backend == 'tikv' && hashFiles('candidate-source/scripts/native-quota/disposable_tikv_ci.sh') != ''
+        run: bash candidate-source/scripts/native-quota/disposable_tikv_ci.sh stop
 
       - name: Extract exact candidate CLI
         id: cli
@@ -380,7 +425,7 @@ jobs:
                   "snapshot_restore",
                   "vanilla_refusal",
                   "legacy_cleanup"
-                ]
+                ] + (if .backend == "tikv" then ["test_kit_provisioning"] else [] end)
               }
             }' candidate/verified-identity.json \
             > surreal-ck-native-quota-acceptance.json
