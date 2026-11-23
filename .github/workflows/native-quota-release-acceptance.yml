@@ -277,6 +277,12 @@ jobs:
              and .backend.hard_quota_certified == true' \
             candidate/live-capabilities.json >/dev/null
           if [ "$BACKEND" = "tikv" ]; then
+            (
+              cd server
+              RUN_LOCAL_SURREALDB_TEST_SUBJECT_TESTS=1 SURREAL_TEST_KIT_TIKV=1 \
+                bun test ./src/test-kit/service.integration.test.ts ./src/ops/mcp/routes.test.ts \
+                  --preload ./test/setup-env.ts --timeout 30000
+            )
             sdk_script="$(mktemp --suffix=.mjs server/.native-quota-acceptance.XXXXXX)"
             cp candidate-source/scripts/native-quota/sdk-acceptance.mjs "$sdk_script"
             for protocol in http ws; do
@@ -419,7 +425,7 @@ jobs:
                   "snapshot_restore",
                   "vanilla_refusal",
                   "legacy_cleanup"
-                ]
+                ] + (if .backend == "tikv" then ["test_kit_provisioning"] else [] end)
               }
             }' candidate/verified-identity.json \
             > surreal-ck-native-quota-acceptance.json

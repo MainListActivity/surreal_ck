@@ -18,6 +18,7 @@ import { TestKitService, type TestKitActor } from "./service";
 const RUN_INTEGRATION = process.env.RUN_LOCAL_SURREALDB_TEST_SUBJECT_TESTS === "1";
 const localTest = test.skipIf(!RUN_INTEGRATION);
 const surrealBinary = process.env.SURREAL_BINARY ?? "surreal";
+const testTiKV = process.env.SURREAL_TEST_KIT_TIKV === "1";
 
 const AGENT: TestKitActor = { subject: "agent-arch", kind: "agent", capabilities: ["test.provision"] };
 const OTHER_AGENT: TestKitActor = { subject: "agent-other", kind: "agent", capabilities: ["test.provision"] };
@@ -123,26 +124,36 @@ const codeOf = (promise: Promise<unknown>) => promise.then(() => null, (error: {
 describe("test kit on real fork SurrealDB with the real invite service", () => {
   beforeAll(async () => {
     if (!RUN_INTEGRATION) return;
-    workingDirectory = await mkdtemp(join(tmpdir(), "surreal-ck-test-kit-"));
-    const port = await (async () => await new Promise<number>((resolve, reject) => {
-      const listener = createServer();
-      listener.once("error", reject);
-      listener.listen(0, "127.0.0.1", () => {
-        const address = listener.address();
-        if (!address || typeof address === "string") { listener.close(); reject(new Error("no port")); return; }
-        listener.close((error) => (error ? reject(error) : resolve(address.port)));
-      });
-    }))();
-    endpoint = `ws://127.0.0.1:${port}`;
-    server = Bun.spawn(
-      [surrealBinary, "start", "--no-banner", "--log", "none", "--bind", `127.0.0.1:${port}`,
-        "--user", "root", "--pass", "root", `rocksdb:${join(workingDirectory, "data")}`],
-      { cwd: workingDirectory, stdout: "ignore", stderr: "ignore" },
-    );
-    for (let attempt = 0; attempt < 50; attempt += 1) {
-      const probe = Bun.spawn([surrealBinary, "is-ready", "--endpoint", endpoint], { stdout: "ignore", stderr: "ignore" });
-      if ((await probe.exited) === 0) break;
-      await Bun.sleep(100);
+    if (testTiKV) {
+      const capability = await fetch("http://127.0.0.1:18000/capabilities", { redirect: "error" });
+      if (!capability.ok) throw new Error("TiKV candidate is not reachable");
+      const { storage } = await capability.json() as { storage?: { backend?: string; ready?: boolean } };
+      if (storage?.backend !== "tikv" || storage.ready !== true) throw new Error("Expected a ready TiKV candidate");
+      endpoint = "ws://127.0.0.1:18000";
+    } else {
+      workingDirectory = await mkdtemp(join(tmpdir(), "surreal-ck-test-kit-"));
+      const port = await (async () => await new Promise<number>((resolve, reject) => {
+        const listener = createServer();
+        listener.once("error", reject);
+        listener.listen(0, "127.0.0.1", () => {
+          const address = listener.address();
+          if (!address || typeof address === "string") { listener.close(); reject(new Error("no port")); return; }
+          listener.close((error) => (error ? reject(error) : resolve(address.port)));
+        });
+      }))();
+      endpoint = `ws://127.0.0.1:${port}`;
+      server = Bun.spawn(
+        [surrealBinary, "start", "--no-banner", "--log", "none", "--bind", `127.0.0.1:${port}`,
+          "--user", "root", "--pass", "root", `rocksdb:${join(workingDirectory, "data")}`],
+        { cwd: workingDirectory, stdout: "ignore", stderr: "inherit" },
+      );
+      for (let attempt = 0; ; attempt += 1) {
+        const ready = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(1000) })
+          .then((response) => response.ok, () => false);
+        if (ready) break;
+        if (server.exitCode !== null || attempt === 29) throw new Error("RocksDB fixture did not start");
+        await Bun.sleep(1000);
+      }
     }
     db = new Surreal();
     await db.connect(`${endpoint}/rpc`, { authentication: { username: "root", password: "root" } });
@@ -158,11 +169,14 @@ describe("test kit on real fork SurrealDB with the real invite service", () => {
       INSERT INTO test_subject { subject: "${A}", email: "ops-a@example.com", expires_at: <datetime>$exp, origin: "ops" };
       DEFINE DATABASE ws_signal_test_a;
     `, { exp: new DateTime(new Date(Date.now() + 20 * DAY)) });
-  });
+  }, 180_000);
 
   afterAll(async () => {
     try { await db?.close(); } catch { /* noop */ }
-    server?.kill();
+    if (server) {
+      server.kill();
+      await server.exited;
+    }
     if (workingDirectory) await rm(workingDirectory, { recursive: true, force: true });
   });
 
