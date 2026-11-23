@@ -19,8 +19,9 @@ import sys
 import tarfile
 import tempfile
 import time
-import urllib.request
+import urllib.error
 import urllib.parse
+import urllib.request
 
 
 SOURCE = "3.3.0-native-quota.1"
@@ -170,9 +171,20 @@ def validate_image(image):
 
 
 def request(url, data=None, headers=None):
-    req = urllib.request.Request(url, data=data, headers=headers or {})
-    with urllib.request.urlopen(req, timeout=60) as response:
-        return json.load(response)
+    endpoint = urllib.parse.urlsplit(url)
+    if (endpoint.scheme != "http" or endpoint.hostname != "127.0.0.1"
+            or endpoint.username is not None or endpoint.fragment):
+        raise RuntimeError("database request requires a loopback HTTP endpoint")
+    connection = http.client.HTTPConnection(endpoint.hostname, endpoint.port or 80, timeout=60)
+    try:
+        path = urllib.parse.urlunsplit(("", "", endpoint.path, endpoint.query, ""))
+        connection.request("GET" if data is None else "POST", path, body=data, headers=headers or {})
+        with connection.getresponse() as response:
+            if response.status != 200:
+                raise urllib.error.HTTPError(url, response.status, response.reason, response.headers, None)
+            return json.load(response)
+    finally:
+        connection.close()
 
 
 def trusted_file(path, forbidden=0o022):

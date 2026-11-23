@@ -83,6 +83,13 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Test SurrealDB maintenance scripts
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python3 scripts/deploy/surrealdb-upgrade.test.py
+          python3 scripts/deploy/surrealdb-tikv-transfer.test.py
+
       - name: Build web application
         run: pnpm --filter @surreal-ck/web build
 
