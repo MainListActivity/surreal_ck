@@ -411,7 +411,7 @@ jobs:
                 backend: .backend,
                 signature_policy: $signature_policy,
                 cryptographic_evidence: .cryptographic_evidence,
-                scenarios: [
+                scenarios: ([
                   "legacy_bypass",
                   "exact_regex_table_field_record",
                   "batch_atomicity",
@@ -425,7 +425,7 @@ jobs:
                   "snapshot_restore",
                   "vanilla_refusal",
                   "legacy_cleanup"
-                ] + (if .backend == "tikv" then ["test_kit_provisioning"] else [] end)
+                ] + (if .backend == "tikv" then ["test_kit_provisioning"] else [] end))
               }
             }' candidate/verified-identity.json \
             > surreal-ck-native-quota-acceptance.json

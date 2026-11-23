@@ -730,6 +730,33 @@ describe("frontend-barrier-artifact-probe.yml（无生产环境的只读探针�
 
 describe("native-quota-release-acceptance.yml", () => {
   const doc = load("native-quota-release-acceptance.yml");
+  const jq = Bun.which("jq");
+
+  test.skipIf(!jq && !process.env.CI).each(["tikv", "rocksdb"])("用 jq 为 %s 生成签名前的验收回执", (backend) => {
+    expect(jq, "运行验收回执测试需要 jq：https://jqlang.org/download/").not.toBeNull();
+    const step = stepsOf(doc).find(([, , step]) => step.name === "Create and keyless-sign downstream acceptance statement")?.[2];
+    expect(typeof step?.run).toBe("string");
+
+    const dir = mkdtempSync(join(tmpdir(), "acceptance-statement-"));
+    try {
+      mkdirSync(join(dir, "candidate"));
+      writeFileSync(join(dir, "candidate/verified-identity.json"), JSON.stringify({ backend }));
+      const result = runCapture(dir, `cosign() { test "$1" = sign-blob; }\n${step?.run}`, {
+        GITHUB_REPOSITORY: "MainListActivity/surreal_ck",
+        GITHUB_RUN_ID: "1",
+        GITHUB_SHA: "a".repeat(40),
+        SIGNATURE_POLICY: "verify_keyless",
+      });
+      expect(result.code).toBe(0);
+      const { decision, evidence } = JSON.parse(readFileSync(join(dir, "surreal-ck-native-quota-acceptance.json"), "utf8"));
+      expect(decision).toBe("accepted");
+      expect(evidence.backend).toBe(backend);
+      expect(evidence.scenarios).toContain("legacy_cleanup");
+      expect(evidence.scenarios.includes("test_kit_provisioning")).toBe(backend === "tikv");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   test("vanilla 映射、健康探测和负对照 URL 使用同一隔离端口", () => {
     const steps = stepsOf(doc).map(([, , step]) => step);
