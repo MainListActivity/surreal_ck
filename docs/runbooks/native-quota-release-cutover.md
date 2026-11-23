@@ -115,9 +115,10 @@ marker 32772 本身不绑定某个引擎；`storage.backend` 与 backend certifi
    SURREAL_UPGRADE_MEMORY_MAX_MIB=6144
    ```
 
-   fence 停 origin 与 `sck-company-mcp`，备份 root 0600 Caddyfile，仅改
-   `data.maplayer.top` 的最后兜底 handle 为 503，validate 后 reload；其他服务路由不改。
-   IPv4/IPv6 iptables 丢弃非 lo 的 8000 新连接，最终核对远端 established 与 Caddy
+   fence 停 origin 与 `sck-company-mcp`，备份 root 0600 Caddyfile，将数据库的
+   兜底 handle 改为 503；仅保留 Hono 的健康检查、运营 MCP 和 OAuth 元数据路由，
+   便于验收时保持普通应用 API 封闭。Caddy validate 后 reload；其他服务路由不改。
+   IPv4/IPv6 iptables 丢弃非 lo 的 8000 流量，最终核对远端 established 与 Caddy
    代理连接均消失，否则拒绝继续。unfence 恢复原配置、validate/reload、删除带专用
    comment 的规则，并仅恢复围栏前运行的 MCP。它**不启动 origin**，要求兼容 origin 已健康。
    备份/state 仅由 root 读取，不上传 artifact；真实 Caddy/网络规则/断连效果必须在批准

@@ -25,6 +25,8 @@ ORIGIN = "surreal-ck-hono.service"
 MCP = "sck-company-mcp.service"
 RULE = ("!", "-i", "lo", "-p", "tcp", "--dport", "8000",
         "-m", "comment", "--comment", "surreal-ck-maintenance-8000", "-j", "DROP")
+HONO_PREFIX = "/__surreal_ck_hono"
+HONO_ACCEPTANCE_PATHS = ("/health", "/api/ops/mcp", "/api/ops/.well-known/oauth-protected-resource")
 Token = namedtuple("Token", "value start end literal")
 
 
@@ -76,13 +78,16 @@ def fenced_config(original):
         start = source.rfind("\n", 0, items[index].start) + 1
         return [i for i in range(index) if items[i].start >= start]
 
+    def args(index):
+        return [items[i].value for i in header(index)]
+
     sites = [i for i in pairs if parents[i] is None
-             and [items[j].value for j in header(i)] == ["data.maplayer.top"]]
+             and args(i) == ["data.maplayer.top"]]
     if len(sites) != 1:
         raise RuntimeError("expected exactly one explicit data.maplayer.top site")
     handles = [i for i in pairs if parents[i] == sites[0] and header(i)
                and items[header(i)[0]].value in ("handle", "handle_path")]
-    fallback = [i for i in handles if [items[j].value for j in header(i)] == ["handle"]]
+    fallback = [i for i in handles if args(i) == ["handle"]]
     if len(fallback) != 1 or fallback[0] != max(handles):
         raise RuntimeError("expected exactly one final unmatched handle")
     block = fallback[0]
@@ -101,7 +106,32 @@ def fenced_config(original):
     if indent.strip():
         raise RuntimeError("unsupported inline fallback")
     replacement = "handle {\n" + indent + "    respond 503\n" + indent + "}"
-    return (source[:start] + replacement + source[items[pairs[block]].end:]).encode("utf-8")
+
+    hono_matchers = [i for i in pairs if parents[i] == sites[0] and args(i) == ["@hono_secret"]]
+    hono_handlers = [i for i in handles if args(i) == ["handle", "@hono_secret"]]
+    hono_ports = [i for i, token in enumerate(items) if token.value == "127.0.0.1:8080"]
+    if (len(hono_matchers) != 1 or len(hono_handlers) != 1 or len(hono_ports) != 1
+            or parents[hono_ports[0]] != hono_handlers[0]
+            or items[hono_ports[0] - 1].value != "reverse_proxy"):
+        raise RuntimeError("expected one authenticated Hono origin route")
+    matcher = hono_matchers[0]
+    if not any(parents[i] == matcher and not token.literal and token.value == "header" and not header(i)
+               for i, token in enumerate(items)):
+        raise RuntimeError("expected Hono edge authentication header matcher")
+    path = [i for i, token in enumerate(items) if parents[i] == matcher and not token.literal
+            and token.value == "path" and not header(i)]
+    if len(path) != 1:
+        raise RuntimeError("expected one Hono path matcher")
+    path_index = path[0] + 1
+    prefix = items[path_index]
+    if prefix.literal or prefix.value != f"{HONO_PREFIX}/*" or header(path_index + 1):
+        raise RuntimeError("unexpected Hono path matcher")
+    allowlist = " ".join(HONO_PREFIX + route for route in HONO_ACCEPTANCE_PATHS)
+
+    edits = ((start, items[pairs[block]].end, replacement), (prefix.start, prefix.end, allowlist))
+    for begin, end, value in sorted(edits, reverse=True):
+        source = source[:begin] + value + source[end:]
+    return source.encode("utf-8")
 
 
 def secure(path, directory=False):

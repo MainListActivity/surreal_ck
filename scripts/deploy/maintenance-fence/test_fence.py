@@ -21,8 +21,17 @@ data.maplayer.top {
     handle /__company_owner/* {
         reverse_proxy 127.0.0.1:9001
     }
-    handle /__surreal_ck_hono/* {
+    @hono_secret {
+        path /__surreal_ck_hono/*
+        header X-Fixture "synthetic"
+    }
+    handle @hono_secret {
+        uri strip_prefix /__surreal_ck_hono
         reverse_proxy 127.0.0.1:8080
+    }
+    @hono_unauthed path /__surreal_ck_hono/*
+    handle @hono_unauthed {
+        respond 404
     }
     handle /sck-mcp/* {
         reverse_proxy 127.0.0.1:9002
@@ -71,11 +80,27 @@ class RewriteTests(unittest.TestCase):
             self.assertEqual(command.call_count, 30)
             self.assertEqual(sleep.call_count, 29)
 
-    def test_only_the_database_fallback_changes(self):
+    def test_database_is_blocked_and_hono_remains_available_only_for_acceptance(self):
         prefix, remainder = ORIGINAL.rsplit(b"    handle {", 1)
+        prefix = prefix.replace(
+            b"        path /__surreal_ck_hono/*",
+            b"        path /__surreal_ck_hono/health /__surreal_ck_hono/api/ops/mcp "
+            b"/__surreal_ck_hono/api/ops/.well-known/oauth-protected-resource",
+        )
         expected = prefix + b"    handle {\n        respond 503\n    } # retain this comment\n}\n"
         self.assertEqual(fence.fenced_config(ORIGINAL), expected)
         self.assertIn(b"127.0.0.1:8000", remainder)
+
+    def test_refuses_unreviewed_hono_route_shapes(self):
+        fixtures = [
+            ORIGINAL.replace(b"header X-Fixture \"synthetic\"", b"method GET"),
+            ORIGINAL.replace(b"        path /__surreal_ck_hono/*", b"        path /__surreal_ck_hono/* /api/*"),
+            ORIGINAL.replace(b"127.0.0.1:9001", b"127.0.0.1:8080"),
+            ORIGINAL.replace(b"handle @hono_secret {", b"handle /__surreal_ck_hono/* {"),
+        ]
+        for source in fixtures:
+            with self.subTest(source=source), self.assertRaisesRegex(RuntimeError, "Hono"):
+                fence.fenced_config(source)
 
     def test_missing_ambiguous_nonfinal_or_unexpected_upstream_refuses(self):
         fixtures = [b"", ORIGINAL.replace(b"data.maplayer.top", b"missing.example"), ORIGINAL + ORIGINAL,

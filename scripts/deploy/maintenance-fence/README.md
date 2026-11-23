@@ -36,10 +36,11 @@ unfence。`defer_origin_start=true` 时，只保留围栏，由运营另行发�
 验收后执行 `sudo /usr/local/sbin/sck-surrealdb-unfence`。unfence **不启动 origin**，
 要求它已 active 且 loopback `/health` 为 `status=ok,surrealdb=up`。
 
-fence 停止 `surreal-ck-hono.service` 和 `sck-company-mcp.service`；从原文件生成新
-配置，仅将显式 `data.maplayer.top` 站点最后一个无 matcher 的直接 `handle` 改成
-`respond 503`。匹配不到唯一直接 `reverse_proxy 127.0.0.1:8000`、有额外 upstream、
-heredoc、异常括号等情况会拒绝，不猜测配置。其他站点/handle 的文本逐字保持。
+fence 停止 `surreal-ck-hono.service` 和 `sck-company-mcp.service`；把显式
+`data.maplayer.top` 站点最终数据库代理替换为 `respond 503`。同一站点的 Hono
+代理在围栏内只允许健康检查、运营 MCP 和它的 OAuth 元数据；原代理头部校验及
+MCP OAuth 鉴权照常生效。启动 origin 做验收时，普通应用 API 仍不可用，解除围栏
+才恢复。数据库或 Hono 路由结构不符时拒绝，不猜测配置；其他路由保持不变。
 替换后对实际 `/etc/caddy/Caddyfile` 执行 `caddy validate --adapter caddyfile`，保证
 相对 import 路径不变；失败恢复替换前文件且不 reload。验证成功后 reload Caddy，
 再给 IPv4/IPv6 INPUT 插入非 lo、TCP 8000 的 DROP 规则，comment
