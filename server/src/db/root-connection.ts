@@ -1,7 +1,7 @@
-import { Surreal } from "surrealdb";
+import { Surreal, type SurrealSession } from "surrealdb";
 import { env } from "../env";
 import { instrumentSurrealQuery } from "./query-logging";
-import { createRootSessionPool } from "./root-session-pool";
+import { createRootSessionPool, withScopedRootSessions } from "./root-session-pool";
 
 /**
  * root 连接状态机（生产 /health 假阴性卡死修复）。
@@ -531,6 +531,12 @@ export function getStableRootConnection(): Surreal {
 
 export function getRootDatabaseSession(database: string, namespace = env.SURREAL_NS) {
   return manager.getDatabaseSession(database, namespace);
+}
+
+export function withRootDatabaseSessions<TResult>(
+  run: (get: (database: string, namespace: string) => Promise<SurrealSession>) => Promise<TResult>,
+): Promise<TResult> {
+  return withScopedRootSessions(createRootSessionSource(), run);
 }
 
 export function checkRootConnection(timeoutMs = 5000): Promise<boolean> {

@@ -9,9 +9,11 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Surreal, DateTime, StringRecordId } from "surrealdb";
+import { closeRootConnection, getRootDatabaseSession, initRootConnection } from "../db/root-connection";
 import { seedQuotaPlans } from "../db/quota-plan-seed";
 import { SurrealNativeQuotaClient } from "../db/native-quota/client";
 import { toIsoDateTimeString } from "../db/surreal-values";
+import { env, overrideEnv } from "../env";
 import {
   createWorkspaceCreator,
   type CreateWorkspaceSessionFactory,
@@ -412,4 +414,37 @@ describe("workspace provisioning against local SurrealDB", () => {
     expect(toIsoDateTimeString(withoutOrigin?.test_expires_at)).toBe("2099-06-15T12:00:00.000Z");
   }, 30000);
 
+  localTest("开通中的会话不随共享缓存淘汰", async () => {
+    const previousEnv = env;
+    overrideEnv({
+      SURREAL_URL: `${endpoint}/rpc`,
+      SURREAL_NS: namespace,
+      SURREAL_ROOT_USER: "root",
+      SURREAL_ROOT_PASS: "root",
+    });
+    try {
+      await initRootConnection();
+      const creator = createWorkspaceCreator({
+        namespace,
+        generateId: () => "sessionchurn",
+        loadTemplateScripts: async () => {
+          for (let i = 0; i < 21; i++) {
+            await getRootDatabaseSession(`unrelated_${i}`, namespace);
+          }
+          return [];
+        },
+        loadTemplatePackScripts: async () => [],
+      });
+      await expect(creator.createWorkspace({
+        subject: "owner-session-churn",
+        email: "session-churn@example.invalid",
+        name: "Session churn",
+        slug: "session-churn",
+        resourceSource: { planKey: "pro", sourceKind: "manual" },
+      })).resolves.toMatchObject({ kind: "created", dbName: "ws_sessionchurn" });
+    } finally {
+      await closeRootConnection();
+      overrideEnv(previousEnv);
+    }
+  }, 30_000);
 });

@@ -13,7 +13,7 @@ import {
 import { NATIVE_QUOTA_EXPECTED_CONTRACT } from "@surreal-ck/shared/native-quota";
 import { DateTime, StringRecordId } from "surrealdb";
 import { env } from "../env";
-import { getRootDatabaseSession } from "../db/root-connection";
+import { withRootDatabaseSessions } from "../db/root-connection";
 import { toSurrealNone, toIsoDateTimeString } from "../db/surreal-values";
 import { materializeWorkspaceMigrationSql } from "../db/workspace-migration-execution";
 import {
@@ -111,13 +111,6 @@ const MAX_DB_NAME_ATTEMPTS = 5;
 
 function defaultGenerateId(): string {
   return crypto.randomUUID().replace(/-/g, "").slice(0, 12);
-}
-
-async function defaultGetDbSession(
-  database: string,
-  namespace: string,
-): Promise<CreateWorkspaceClient> {
-  return getRootDatabaseSession(database, namespace);
 }
 
 function rowCount(result: unknown): number {
@@ -822,7 +815,10 @@ export function createWorkspaceCreator(
       loadTemplatePackScriptsDefault({ selectedPacks: env.WORKSPACE_TEMPLATE_PACKS }));
   const generateId = options.generateId ?? defaultGenerateId;
   const namespace = options.namespace ?? env.SURREAL_NS;
-  const getDbSession = options.getDbSession ?? defaultGetDbSession;
+  const injectedGetDbSession = options.getDbSession;
+  const withDbSessions = injectedGetDbSession
+    ? <T>(run: (get: CreateWorkspaceSessionFactory) => Promise<T>) => run(injectedGetDbSession)
+    : withRootDatabaseSessions;
   const engineCapabilities = options.engineCapabilities ?? [
     NATIVE_QUOTA_EXPECTED_CONTRACT.capabilityName,
   ];
@@ -838,33 +834,36 @@ export function createWorkspaceCreator(
         };
       }
 
-      const systemDb = await getDbSession(SYSTEM_DATABASE, namespace);
+      // 建库和应用模板共用本次开通的独占会话，不受空闲会话缓存淘汰影响。
+      return withDbSessions(async (getDbSession) => {
+        const systemDb = await getDbSession(SYSTEM_DATABASE, namespace);
 
-      for (let attempt = 0; attempt < MAX_DB_NAME_ATTEMPTS; attempt += 1) {
-        const dbName = makeWorkspaceDbName(generateId());
-        const result = await tryCreateWorkspace({
-          systemDb,
-          getDbSession,
-          namespace,
-          input,
-          dbName,
-          loadScripts,
-          loadPackScripts,
-          idpTokenScopeAdapter,
-          nativeQuotaClient: options.nativeQuotaClient,
-          engineCapabilities,
-          controlPlane: options.controlPlane,
-          deliverTrial: options.deliverTrial,
-        });
+        for (let attempt = 0; attempt < MAX_DB_NAME_ATTEMPTS; attempt += 1) {
+          const dbName = makeWorkspaceDbName(generateId());
+          const result = await tryCreateWorkspace({
+            systemDb,
+            getDbSession,
+            namespace,
+            input,
+            dbName,
+            loadScripts,
+            loadPackScripts,
+            idpTokenScopeAdapter,
+            nativeQuotaClient: options.nativeQuotaClient,
+            engineCapabilities,
+            controlPlane: options.controlPlane,
+            deliverTrial: options.deliverTrial,
+          });
 
-        if (result.kind !== "db-name-conflict") {
-          return result;
+          if (result.kind !== "db-name-conflict") {
+            return result;
+          }
         }
-      }
 
-      throw new Error(
-        `workspace db_name allocation failed after ${MAX_DB_NAME_ATTEMPTS} attempts`,
-      );
+        throw new Error(
+          `workspace db_name allocation failed after ${MAX_DB_NAME_ATTEMPTS} attempts`,
+        );
+      });
     },
   };
 }
