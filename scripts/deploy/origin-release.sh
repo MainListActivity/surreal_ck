@@ -538,6 +538,12 @@ acquire_lock() {
   if [ -n "$other" ] && [ "$other" != "${3:-}" ]; then
     other_state=$(read_field "$other" state)
     if [ -n "$other_state" ] && ! is_terminal "$other_state"; then
+      # 登记进程退出前会把锁交给 worker；旧 pid 消失并不表示发布中断。
+      if [ "$(cat "$lock_dir/pid" 2>/dev/null || true)" != "$owner" ]; then
+        echo "busy: activation $other changed lock owner" >&2
+        release_reclaim
+        return 75
+      fi
       echo "interrupted=$other"
       echo "activation $other was interrupted (worker gone); run --recover $other first" >&2
       release_reclaim
