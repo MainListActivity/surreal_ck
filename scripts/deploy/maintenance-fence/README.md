@@ -53,7 +53,8 @@ heredoc、异常括号等情况会拒绝，不猜测配置。其他站点/handle
 hook 不杀其他服务或任意连接，不操作 `sck-owner-*`。
 
 unfence 校验 origin 健康后，恢复原 Caddyfile、validate/reload，删除 IPv4/IPv6 的
-本 hook 规则，再启动并核对 MCP active。恢复公网不是原子操作；unfence 中途失败时，
+本 hook 规则。仅当本轮围栏开启前 MCP 为 active 时，才启动并核对 MCP active。
+恢复公网不是原子操作；unfence 中途失败时，
 可能已开放部分访问，必须按受控流程重新 fence 并确认现场，不得自动回退旧数据库。
 放开后 8000 恢复安装前的防火墙策略，不把临时围栏当成长期网络加固。
 
@@ -63,6 +64,7 @@ unfence 校验 origin 健康后，恢复原 Caddyfile、validate/reload，删除
 围栏 Caddyfile（0600），`state.json` 登记 active/released，文件锁串行化 hook。
 同一 active 轮重复 fence 不覆盖原备份、不重复插入规则；重复 unfence 可安全恢复同一
 轮。下一轮从当前正常配置新建备份。没有备份时 unfence 拒绝，不猜原配置。
+不要在 active 轮中更换 hook；无 MCP 状态的 active 轮必须用创建它的版本解除。
 备份可能含 secret，禁止上传 artifact；仅在核实 released、无需恢复后受控清理旧轮。
 
 配置与本轮原始/围栏文件都不一致时拒绝覆写，保留现场人工核对；维护期间不得通过
