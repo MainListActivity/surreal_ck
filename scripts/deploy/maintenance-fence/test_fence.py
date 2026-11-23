@@ -177,6 +177,8 @@ class HookTests(unittest.TestCase):
                 self.running.update(args[2:])
             elif args[1] == "is-active":
                 code = 0 if args[-1] in self.running else 3
+            elif args[1] == "show":
+                output = "active\n" if args[-1] in self.running else "inactive\n"
             elif args[1] == "reload" and self.fail_reload:
                 raise RuntimeError("fixture reload failure")
         elif args[0] == fence.CADDY and self.fail_validate:
@@ -197,6 +199,7 @@ class HookTests(unittest.TestCase):
         return subprocess.CompletedProcess(args, code, output, "")
 
     def test_idempotent_fence_and_unfence_preserve_backup_and_origin_lifecycle(self):
+        self.running.add(fence.MCP)
         fence.operate("fence")
         record = json.loads((self.state / "state.json").read_text())
         backup = self.state / record["session"] / "original.Caddyfile"
@@ -215,8 +218,30 @@ class HookTests(unittest.TestCase):
         self.assertEqual(backup.read_bytes(), ORIGINAL)
         self.assertFalse(self.rules)
         self.assertIn(fence.MCP, self.running)
+        self.assertEqual(self.calls.count((fence.SYSTEMCTL, "start", fence.MCP)), 1)
         self.assertNotIn((fence.SYSTEMCTL, "start", fence.ORIGIN), self.calls)
         self.assertEqual(self.config.stat().st_mode & 0o777, 0o600)
+
+    def test_unfence_leaves_previously_inactive_mcp_stopped(self):
+        fence.operate("fence")
+        fence.operate("unfence")
+        self.assertNotIn(fence.MCP, self.running)
+        self.assertNotIn((fence.SYSTEMCTL, "start", fence.MCP), self.calls)
+        self.assertFalse(self.rules)
+        self.assertEqual(self.config.read_bytes(), ORIGINAL)
+
+    def test_active_legacy_session_without_mcp_state_requires_original_hook(self):
+        fence.operate("fence")
+        path = self.state / "state.json"
+        record = json.loads(path.read_text())
+        del record["mcp_was_active"]
+        path.write_text(json.dumps(record))
+        self.calls.clear()
+        for mode in ("fence", "unfence"):
+            with self.assertRaisesRegex(RuntimeError, "hook that created it"):
+                fence.operate(mode)
+        self.assertFalse(self.calls)
+        self.assertEqual(self.rules, set(fence.FIREWALLS))
 
     def test_readable_caddyfile_modes_survive_fence_unfence_and_private_backup(self):
         for mode in (0o640, 0o644):

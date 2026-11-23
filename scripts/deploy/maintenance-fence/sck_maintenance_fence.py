@@ -248,13 +248,18 @@ def load_session(mode):
         if (not isinstance(state, dict) or state.get("phase") not in ("active", "released")
                 or not re.fullmatch(r"session-[a-z0-9_]+", state.get("session", ""))):
             raise RuntimeError("invalid maintenance session")
+        if state["phase"] == "active" and type(state.get("mcp_was_active")) is not bool:
+            raise RuntimeError("active fence must be released by the hook that created it")
     if mode == "fence" and (state is None or state["phase"] == "released"):
         original = CONFIG.read_bytes()
         candidate = fenced_config(original)
+        mcp_state = command(SYSTEMCTL, "show", "--property=ActiveState", "--value", MCP).stdout.strip()
+        if mcp_state not in ("active", "inactive"):
+            raise RuntimeError("company MCP must be active or inactive before fencing")
         directory = Path(tempfile.mkdtemp(prefix="session-", dir=STATE))
         atomic_write(directory / "original.Caddyfile", original)
         atomic_write(directory / "fenced.Caddyfile", candidate)
-        state = {"phase": "active", "session": directory.name}
+        state = {"phase": "active", "session": directory.name, "mcp_was_active": mcp_state == "active"}
         atomic_write(record, json.dumps(state).encode())
     if state is None:
         raise RuntimeError("no recorded fence session; refusing to guess the original configuration")
@@ -301,8 +306,9 @@ def operate(mode):
             origin_ready()
             apply_config(original, (original, candidate))
             firewall(False)
-            command(SYSTEMCTL, "start", MCP)
-            command(SYSTEMCTL, "is-active", "--quiet", MCP)
+            if state["phase"] == "active" and state["mcp_was_active"]:
+                command(SYSTEMCTL, "start", MCP)
+                command(SYSTEMCTL, "is-active", "--quiet", MCP)
             state["phase"] = "released"
             atomic_write(STATE / "state.json", json.dumps(state).encode())
 
