@@ -47,20 +47,45 @@ svc_touched=0
 env_dirty=0
 switched=0
 
+health_clock_cs() {
+  local uptime
+  uptime=$(cat /proc/uptime) || return 1
+  [[ "$uptime" =~ ^([0-9]+)\.([0-9]{2})[[:space:]] ]] || return 1
+  printf '%s\n' "$((10#${BASH_REMATCH[1]} * 100 + 10#${BASH_REMATCH[2]}))"
+}
+
 healthy() {
-  local deadline=$((SECONDS + 240)) remaining body
-  while (( (remaining = deadline - SECONDS) > 0 )); do
-    if body=$(curl -fsS --max-time "$((remaining < 5 ? remaining : 5))" "$health_url" 2>/dev/null) \
+  local now deadline remaining limit pause duration body matched
+  now=$(health_clock_cs) || return 1
+  deadline=$((now + 24000))
+  while (( (remaining = deadline - now) > 0 )); do
+    # 为末秒保留短间隔重试，不让一次探测耗尽末秒。
+    if ((remaining > 100)); then
+      limit=$((remaining - 100 < 500 ? remaining - 100 : 500))
+    else
+      limit=$((remaining < 20 ? remaining : 20))
+    fi
+    printf -v duration '%d.%02d' "$((limit / 100))" "$((limit % 100))"
+    matched=0
+    if body=$(curl -fsS --max-time "$duration" "$health_url" 2>/dev/null) \
       && grep -q '"status":"ok","surrealdb":"up"' <<<"$body"; then
+      matched=1
+    fi
+    now=$(health_clock_cs) || return 1
+    if ((matched && now <= deadline)); then
       return 0
     fi
-    if ((remaining == 1)); then
-      return 1
+    remaining=$((deadline - now))
+    if ((remaining <= 0)); then
+      break
+    elif ((remaining > 100)); then
+      pause=$((remaining - 100 < 300 ? remaining - 100 : 300))
+    else
+      pause=$((remaining < 10 ? remaining : 10))
     fi
-    remaining=$((deadline - SECONDS))
-    if ((remaining > 1)); then
-      sleep "$((remaining <= 3 ? remaining - 1 : 3))"
-    fi
+    printf -v duration '%d.%02d' "$((pause / 100))" "$((pause % 100))"
+    sleep "$duration"
+    now=$(health_clock_cs) || return 1
   done
   return 1
 }

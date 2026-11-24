@@ -105,7 +105,7 @@ origin 是 `data.maplayer.top`（`129.146.179.37`）上的 systemd 服务 `surre
 2. **登记并分离执行（主机）**：`scripts/deploy/origin-release-ci.sh` 通过 SSH 调用 `--launch`。launch 只校验参数与上传件，登记状态并取锁，然后以 `nohup` 启动分离的工作进程并立即返回；SSH 断开不影响工作进程。工作进程依次执行：解包到 `releases/<sha7>-ci<run_id>`；回滚前提预检（登记的 `previous` 必须存在，并通过试用与分配来源门禁；纯静态，零服务与 env 变更，不通过即以 `refused` 结束）；`bunx pnpm@10.32.1 install --frozen-lockfile --prod`（包在 `timeout --kill-after=30 ${ORIGIN_INSTALL_TIMEOUT_SEC:-600}` 内，超时报「dependency install timed out」并失败，不再永久占锁）；撤销预检（`previous` 不含撤销过滤时，于新发布目录中读取撤销计数，计数非零或不可证明即以 `refused` 结束；零服务与 env 变更）；试用与分配来源门禁（纯静态、无副作用）；备份 `server.env` 到 `~/surreal_ck/backups/env/`；把 GitHub `production` Environment 中的 `ORIGIN_ENV_<NAME>` secret 逐行写成 `<NAME>=<值>`（只增改这些键，值必须单行，日志只打印键名；`UNSET` 哨兵表示删除该键）；撤销兼容门禁（见下）；若存在 `scripts/deploy/origin-pre-start.sh` 则停服执行该钩子（`ORIGIN_ENV_FILE` 指向 `server.env`，钩子必须幂等）；原子切换 `current`；重启服务；健康探测。
 3. **收敛（CI 读取主机状态文件）**：CI 每 15 秒用 `--status` 读取状态，最多等 20 分钟。只有 `healthy` 才算成功。`interrupted`（工作进程已消失且未到终态）时 CI 在主机接受 `--recover` 之前每轮请求一次（忙或结果未知时下一轮重试），接受后只等待主机状态，不重复请求。任何终态失败都会让 job 失败。SSH 失败、超时或状态不可读**既不是成功，也不是回滚**：job 以「结果未知」失败，由运维读取主机状态后判定。
 
-健康探测轮询 `http://127.0.0.1:8080/health` 自开始探测起最多等待 240 秒，每次 curl 超时最多 5 秒、间隔最多 3 秒。立即拒绝连接不会提前耗尽窗口，回滚也使用同一探测窗口。钩子失败或健康探测失败时，先过门禁，再恢复 `server.env` 备份与上一个 `current` 并重启，结果为 `rolled-back`，job 失败，Cloudflare 不会发布。CI 发布目录与 env 备份各保留最近 8 个，手工发布目录不动。
+健康探测轮询 `http://127.0.0.1:8080/health` 自开始探测起最多等待 240 秒，每次 curl 超时最多 5 秒、间隔最多 3 秒。使用 Linux 单调计时，最后一秒改用短间隔重试；立即拒绝连接不会提前耗尽窗口，回滚也使用同一探测窗口。钩子失败或健康探测失败时，先过门禁，再恢复 `server.env` 备份与上一个 `current` 并重启，结果为 `rolled-back`，job 失败，Cloudflare 不会发布。CI 发布目录与 env 备份各保留最近 8 个，手工发布目录不动。
 
 ### 状态与处置
 

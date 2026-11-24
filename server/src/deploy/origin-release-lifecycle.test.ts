@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { type TrialCompat, writeTrialTree } from "./origin-release-fixtures";
+import { HEALTH_CLOCK_STUB, type TrialCompat, writeTrialTree } from "./origin-release-fixtures";
 
 /**
  * origin-release.sh 脚本级生命周期测试（真实 --launch / --status / --log / --recover
@@ -49,18 +49,13 @@ curl() {
   local target
   target=$(readlink "\${ORIGIN_ROOT}/current" 2>/dev/null || true)
   target=\${target##*/}
-  echo "curl:$target:$SECONDS:$3" >>"$GATE_LOG"
+  echo "curl:$target:$HEALTH_CLOCK_CS:$3" >>"$GATE_LOG"
   if [ -n "\${T_HEALTH_BAD_RELEASE:-}" ] && [ "$target" = "$T_HEALTH_BAD_RELEASE" ]; then return 22; fi
-  if [ -n "\${T_HEALTH_READY_AT:-}" ] && (( SECONDS < T_HEALTH_READY_AT )); then return 7; fi
+  if [ -n "\${T_HEALTH_READY_AT:-}" ] && (( HEALTH_CLOCK_CS < T_HEALTH_READY_AT )); then return 7; fi
   printf '%s' '{"status":"ok","surrealdb":"up"}'
 }
-unset SECONDS
-SECONDS=0
-sleep() {
-  if [[ "$1" =~ ^[0-9]+$ ]]; then
-    SECONDS=$((SECONDS + $1))
-  fi
-}
+${HEALTH_CLOCK_STUB}
+cat() { if [ "\${1:-}" = /proc/uptime ]; then fake_uptime; else command cat "$@"; fi; }
 mv() {
   if [ "\${1:-}" = "-T" ]; then
     shift
@@ -633,20 +628,22 @@ describe("origin-release 生命周期（脚本级）", () => {
       const h = makeHarness();
       const id = "rel-ci-delayed";
       stageRelease(h, id, { target: "explicit", filtered: true });
-      expect(launch(h, id, { extraEnv: { T_HEALTH_READY_AT: "165" } }).exitCode).toBe(0);
+      expect(launch(h, id, { extraEnv: { T_HEALTH_READY_AT: "16500" } }).exitCode).toBe(0);
       expect((await waitTerminal(h, id)).state).toBe("healthy");
       expect(currentBasename(h)).toBe(id);
       expect(countPrefix(gateCalls(h), "systemctl:restart")).toBe(1);
     });
 
-    t("在截止前最后一秒就绪 → 最后一次探测通过，不回滚", async () => {
+    t("最后一秒初次探测失败、随后就绪 → 截止前重试通过，不回滚", async () => {
       const h = makeHarness();
       const id = "rel-ci-last-second";
       stageRelease(h, id, { target: "explicit", filtered: true });
-      expect(launch(h, id, { extraEnv: { T_HEALTH_READY_AT: "239" } }).exitCode).toBe(0);
+      expect(launch(h, id, { extraEnv: { T_HEALTH_READY_AT: "23950" } }).exitCode).toBe(0);
       expect((await waitTerminal(h, id)).state).toBe("healthy");
       expect(currentBasename(h)).toBe(id);
-      expect(gateCalls(h).filter((call) => call.startsWith("curl:")).at(-1)).toBe(`curl:${id}:239:1`);
+      const probes = gateCalls(h).filter((call) => call.startsWith("curl:"));
+      expect(probes).toContain(`curl:${id}:23900:0.20`);
+      expect(probes.at(-1)).toBe(`curl:${id}:23950:0.20`);
       expect(countPrefix(gateCalls(h), "systemctl:restart")).toBe(1);
     });
 
@@ -661,9 +658,9 @@ describe("origin-release 生命周期（脚本级）", () => {
       expect(readText(h.envFile)).toBe(BEFORE);
       expect(countPrefix(gateCalls(h), "systemctl:restart")).toBe(2);
       const probes = gateCalls(h).filter((call) => call.startsWith("curl:"));
-      const lastForward = probes.filter((call) => call.startsWith("curl:rel-ci-hbad:")).at(-1);
-      expect(lastForward).toBe(`curl:${id}:239:1`);
-      expect(probes.at(-1)).toBe("curl:rel-old:239:5");
+      const lastForward = probes.filter((call) => call.startsWith(`curl:${id}:`)).at(-1);
+      expect(lastForward).toBe(`curl:${id}:23990:0.10`);
+      expect(probes.at(-1)).toBe("curl:rel-old:24000:5.00");
       const log = run(h, ["--log", id]).stdout;
       expect(log).toContain("env: set REVIEW_FIXTURE");
       expect(log).not.toContain("after-value-7f3");
