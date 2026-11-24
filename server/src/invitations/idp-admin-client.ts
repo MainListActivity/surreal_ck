@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { env } from "../env";
 import type { PlatformSecretStore } from "../platform/secret-store";
 
@@ -55,7 +56,7 @@ function asUser(value: unknown): IdpUser | null {
  *（scopes: tenant.read / user.read / user.provision），不调用 /admin/login，
  * 不缓存人类 admin session，不读取人类 admin 密码。
  *
- * 仅调用：GET /admin/tenants、GET .../users、POST .../users。
+ * 仅调用租户读取及用户开通、查询、重签发、带凭证的开通撤销。
  * admin API 无邀请邮件通道：激活交接物恒为一次性 activation_url，由运营转交。
  */
 export class HttpIdpAdminClient {
@@ -110,17 +111,20 @@ export class HttpIdpAdminClient {
     return null;
   }
 
-  async ensureUser(input: { email: string; displayName: string }): Promise<EnsureUserResult> {
+  async ensureUser(input: { email: string; displayName: string; cancellationToken?: string }): Promise<EnsureUserResult> {
     const tenantId = await this.resolveTenantId();
     const res = await this.admin(`/admin/tenants/${tenantId}/users`, {
       method: "POST",
       body: JSON.stringify({
         email: input.email.trim(),
         display_name: input.displayName.trim(),
+        cancellation_token_hash: input.cancellationToken
+          ? createHash("sha256").update(input.cancellationToken).digest("base64url")
+          : undefined,
       }),
     });
     const body = await res.json().catch(() => null) as
-      | { user?: unknown; activation_url?: unknown; error?: unknown }
+      | { user?: unknown; activation_url?: unknown; error?: unknown; cancellable?: unknown }
       | null;
     if (res.status === 409) {
       const existing = await this.findUserByEmail(input.email);
@@ -138,11 +142,25 @@ export class HttpIdpAdminClient {
     }
     const user = asUser(body?.user);
     if (!user) throw new IdpAdminError("idp-admin-user-malformed", "IdP 返回的用户对象不完整");
+    if (input.cancellationToken && body?.cancellable !== true) {
+      throw new IdpAdminError("idp-admin-cancellation-unavailable", "IdP 未确认开通撤销凭证");
+    }
     return {
       user,
       created: true,
       activationUrl: typeof body?.activation_url === "string" ? body.activation_url : null,
     };
+  }
+
+  async cancelProvision(cancellationToken: string): Promise<void> {
+    const tenantId = await this.resolveTenantId();
+    const res = await this.admin(`/admin/tenants/${tenantId}/users/cancel-provision`, {
+      method: "POST",
+      body: JSON.stringify({ cancellation_token: cancellationToken }),
+    });
+    if (res.status !== 204) {
+      throw new IdpAdminError("idp-admin-cancellation-failed", `IdP 无法撤销未激活开通（${res.status}）`, res.status);
+    }
   }
 
   /**
@@ -217,6 +235,14 @@ export function createProvisionTokenSource(input: {
 
 /** 懒装配的 IdP admin 客户端来源：每次调用按现行 token 新建，轮换即刻生效。 */
 export type IdpAdminClientSource = () => Promise<HttpIdpAdminClient | null>;
+
+export function createIdpProvisionCancellation(source: IdpAdminClientSource) {
+  return async (cancellationToken: string): Promise<void> => {
+    const idp = await source();
+    if (!idp) throw new Error("IdP provision token 未配置");
+    await idp.cancelProvision(cancellationToken);
+  };
+}
 
 export function createIdpAdminClientSource(input: {
   tokenSource: ProvisionTokenSource;

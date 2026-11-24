@@ -13,7 +13,7 @@ import { createNativeMeetingBatchRunner, sweepNativeMeetingWorkspaces } from "..
 import { InviteService } from "../invitations/invite-service";
 import { SurrealInviteAuditStore } from "../invitations/invite-store";
 import type { Queryable } from "../test-subjects/store";
-import { purgeTestWorkspace } from "../test-subjects/reaper";
+import { purgeTestWorkspace, runFailedTestKitInvitationReaper } from "../test-subjects/reaper";
 import { TestKitService, type TestKitActor } from "./service";
 
 const RUN_INTEGRATION = process.env.RUN_LOCAL_SURREALDB_TEST_SUBJECT_TESTS === "1";
@@ -34,7 +34,8 @@ let db: Surreal | undefined;
 
 // ---- 外部依赖替身 ----
 const idpUsers = new Map<string, { id: string; email: string; displayName: string; status: string }>();
-let assignBehaviour: "ok" | "hang" | "fail" = "ok";
+const cancellationProofs = new Map<string, string>();
+let assignBehaviour: "ok" | "hang" | "fail" | "conflict" = "ok";
 let clockOffset = 0;
 
 function rows(result: unknown): Record<string, unknown>[] {
@@ -46,15 +47,21 @@ const q = async (sql: string, params?: Record<string, unknown>) => rows(await db
 const queryClient = (): Queryable => ({ query: async (sql, params) => await db!.query(sql, params) });
 
 const fakeIdp = {
-  async ensureUser(input: { email: string; displayName: string }) {
+  async ensureUser(input: { email: string; displayName: string; cancellationToken?: string }) {
     const email = input.email.toLowerCase();
     const existing = idpUsers.get(email);
     if (existing) return { user: existing, created: false, activationUrl: null };
     const user = { id: `sub-${email.split("+")[1]!.split("@")[0]}`, email, displayName: input.displayName, status: "pending" };
     idpUsers.set(email, user);
+    if (input.cancellationToken) cancellationProofs.set(input.cancellationToken, email);
     return { user, created: true, activationUrl: `https://auth.example/activate/${user.id}` };
   },
   async findUserByEmail(email: string) { return idpUsers.get(email.toLowerCase()) ?? null; },
+  async cancelProvision(token: string) {
+    const email = cancellationProofs.get(token);
+    if (email) idpUsers.delete(email);
+    cancellationProofs.delete(token);
+  },
 };
 
 function inviteService(opts: { syncWindowMs?: number; staleProcessingMs?: number } = {}) {
@@ -78,6 +85,10 @@ function inviteService(opts: { syncWindowMs?: number; staleProcessingMs?: number
       async assign() {
         if (assignBehaviour === "hang") return await new Promise<never>(() => {});
         if (assignBehaviour === "fail") throw new Error("entitlement backend down");
+        if (assignBehaviour === "conflict") {
+          assignBehaviour = "ok";
+          throw { kind: "Quota", details: { code: "quota_conflict", retryable: true, details: {} } };
+        }
         return {} as never;
       },
     },
@@ -109,6 +120,7 @@ function kit(invites = inviteService()) {
     reaperDeps: async () => ({
       systemDb: queryClient(),
       dropDatabase: async (name: string) => { await db!.query(`REMOVE DATABASE IF EXISTS ${name};`); },
+      cancelIdpProvision: fakeIdp.cancelProvision,
       log: () => {},
     }),
     emailPattern: "kit[+][a-z0-9-]+@example[.]com",
@@ -260,14 +272,59 @@ describe("test kit on real fork SurrealDB with the real invite service", () => {
     expect((await q(`SELECT VALUE slug FROM workspace;`)).length).toBe(before);
   });
 
-  localTest("建出用户后失败：status=failed，但账号被登记交给 reaper，邮箱作废", async () => {
+  localTest("权益写入遭遇 quota_conflict 后自动重试，不重复开出用户或工作区", async () => {
+    assignBehaviour = "conflict";
+    const svc = kit();
+    expect(await svc.provision(AGENT, provisionArgs("conflict"))).toMatchObject({ status: "completed", subject: "sub-conflict" });
+    expect(await q(`SELECT id FROM workspace WHERE owner_subject = "sub-conflict";`)).toHaveLength(1);
+    expect(await svc.purge(AGENT, { subject: "sub-conflict", confirm: "purge sub-conflict" })).toMatchObject({ workspacesPurged: 1 });
+    expect(await databases()).not.toContain("ws_kit_conflict");
+  });
+
+  localTest("建出用户后失败：自动清理后才返回 failed，邮箱作废", async () => {
     assignBehaviour = "fail";
     const out = await kit().provision(AGENT, provisionArgs("broken")) as Record<string, unknown>;
     expect(out.status).toBe("failed");
-    expect((await subjectRow("sub-broken"))?.origin).toBe("test-kit:agent-arch");
-    expect((await q(`SELECT test_expires_at FROM workspace WHERE slug = "kit-broken";`))[0]?.test_expires_at).toBeTruthy();
+    expect(await subjectRow("sub-broken")).toBeUndefined();
+    expect(await fakeIdp.findUserByEmail("kit+broken@example.com")).toBeNull();
+    expect(await q(`SELECT id FROM workspace WHERE slug = "kit-broken";`)).toEqual([]);
+    expect(await databases()).not.toContain("ws_kit_broken");
+    expect((await q(`SELECT activation_url, test_kit_purged_at, test_kit_cancellation_token FROM ops_invitation WHERE email = "kit+broken@example.com";`))[0]).toEqual({
+      test_kit_purged_at: expect.any(String),
+    });
     assignBehaviour = "ok";
     expect((await kit().provision(AGENT, provisionArgs("broken")) as Record<string, unknown>).status).toBe("failed");
+  });
+
+  localTest("同步窗之后失败且 agent 未轮询，reaper 重试清理，不改变其他账号", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const svc = kit(inviteService({ syncWindowMs: 20, ...{
+      products: { async assign() { await gate; throw new Error("fixture failure"); } },
+    } }));
+    expect(await svc.provision(AGENT, provisionArgs("late-fail"))).toMatchObject({ status: "processing", activationUrl: null });
+    release();
+    for (let i = 0; i < 50 && (await q(`SELECT VALUE status FROM ops_invitation WHERE email = "kit+late-fail@example.com";`))[0] !== "failed"; i += 1) await Bun.sleep(20);
+    expect(await databases()).toContain("ws_kit_late_fail");
+    const deps = {
+      systemDb: queryClient(),
+      dropDatabase: async (name: string) => { await db!.query(`REMOVE DATABASE IF EXISTS ${name};`); },
+      cancelIdpProvision: fakeIdp.cancelProvision,
+      log: () => {},
+    };
+    await runFailedTestKitInvitationReaper({ ...deps, dropDatabase: async () => { throw new Error("fixture unavailable"); } });
+    expect(await databases()).toContain("ws_kit_late_fail");
+    await runFailedTestKitInvitationReaper({ ...deps, cancelIdpProvision: async () => { throw new Error("IdP unavailable"); } });
+    expect(await fakeIdp.findUserByEmail("kit+late-fail@example.com")).not.toBeNull();
+    expect((await svc.list(AGENT)).inFlight).toContainEqual(expect.objectContaining({ email: "kit+late-fail@example.com" }));
+    await runFailedTestKitInvitationReaper(deps);
+    expect(await databases()).not.toContain("ws_kit_late_fail");
+    expect(await databases()).toContain("ws_signal_test_a");
+    expect(await subjectRow("sub-late-fail")).toBeUndefined();
+    expect(await fakeIdp.findUserByEmail("kit+late-fail@example.com")).toBeNull();
+    expect(await subjectRow(A)).toBeDefined();
+    expect((await svc.list(AGENT)).inFlight.map((row) => row.email)).not.toContain("kit+late-fail@example.com");
+    expect(await svc.status(AGENT, { email: "kit+late-fail@example.com" })).toMatchObject({ status: "failed", activationUrl: null });
   });
 
   localTest("同步窗内完成后登记失败：仍返回一次性链接，下次 list 补登记", async () => {

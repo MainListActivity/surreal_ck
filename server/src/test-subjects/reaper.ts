@@ -4,6 +4,7 @@
 
 import { DateTime, StringRecordId } from "surrealdb";
 import type { Queryable } from "./store";
+import { retryAtomicConflict } from "../db/atomic-conflict-retry";
 
 type Log = (event: string, fields: Record<string, unknown>) => void;
 
@@ -56,6 +57,7 @@ export interface TestSubjectReaperDeps {
   testSubjects?: string[];
   /** 删除一个 database 的客户端（root 平台维护身份）。 */
   dropDatabase: (dbName: string) => Promise<void>;
+  cancelIdpProvision?: (cancellationToken: string) => Promise<void>;
   now?: () => Date;
   log?: Log;
 }
@@ -215,11 +217,6 @@ export async function purgeTestSubject(
       `DELETE user_workspace_index WHERE subject = NONE AND email != NONE AND string::lowercase(email) = $email AND workspace.test_expires_at != NONE;`,
       { email },
     );
-    await deps.systemDb.query(
-      `UPDATE ops_invitation SET test_kit_purged_at = time::now()
-       WHERE string::starts_with(idempotency_key, "test-kit:") AND email = $email AND test_kit_purged_at = NONE;`,
-      { email },
-    );
   }
 
   // 计费残留：测试 workspace 走 manual 来源会留下
@@ -263,8 +260,85 @@ export async function purgeTestSubject(
     log("billing.purged", { billing_account: billingId, subject });
   }
 
+  if (own && typeof own.origin === "string" && own.origin.startsWith("test-kit:")
+    && typeof own.email === "string" && own.email.length > 0) {
+    await deps.systemDb.query(
+      `UPDATE ops_invitation SET test_kit_purged_at = time::now()
+       WHERE string::starts_with(idempotency_key, "test-kit:") AND email = $email
+         AND (test_kit_managed = NONE OR test_kit_managed = false OR status != "failed") AND test_kit_purged_at = NONE;`,
+      { email: own.email.toLowerCase() },
+    );
+  }
   await deps.systemDb.query(`DELETE test_subject WHERE subject = $subject;`, { subject });
   log("subject.purged", { subject });
+}
+
+/** 失败行本身是持久清理队列，不依赖调用方再次轮询。 */
+export async function purgeFailedTestKitInvitation(deps: TestSubjectReaperDeps, key: string): Promise<boolean> {
+  const db: Queryable = { query: (sql, params) => retryAtomicConflict(() => deps.systemDb.query(sql, params)) };
+  const [row] = firstArray(await db.query(
+    `SELECT id, operator_subject, email, idp_user_id, workspace_slug, test_kit_purged_at, test_kit_cancellation_token
+     FROM ops_invitation WHERE idempotency_key = $key AND test_kit_managed = true AND status = "failed" LIMIT 1;`,
+    { key },
+  ));
+  if (!row) return false;
+  if (row.test_kit_purged_at) return true;
+  if (!deps.cancelIdpProvision || typeof row.test_kit_cancellation_token !== "string") return false;
+  if (typeof row.idp_user_id === "string") {
+    const subject = row.idp_user_id;
+    const origin = `test-kit:${String(row.operator_subject)}`;
+    const workspaces = firstArray(await db.query(
+      `SELECT id, slug FROM workspace WHERE owner_subject = $subject;`,
+      { subject },
+    ));
+    if (workspaces.some((workspace) => workspace.slug !== row.workspace_slug)) return false;
+
+    // 只使用本行持久化的 IdP id；不按邮箱认领，不能覆盖已有主体归属。
+    await db.query(
+      `INSERT INTO test_subject { subject: $subject, email: $email, origin: $origin, expires_at: time::now() }
+       ON DUPLICATE KEY UPDATE updated_at = time::now();`,
+      { subject, email: row.email, origin },
+    );
+    const [registered] = firstArray(await db.query(
+      `SELECT origin, email FROM test_subject WHERE subject = $subject LIMIT 1;`,
+      { subject },
+    ));
+    if (registered?.origin !== origin || registered.email !== row.email) return false;
+    const cleanupDeps = {
+      ...deps,
+      systemDb: db,
+      dropDatabase: (name: string) => retryAtomicConflict(() => deps.dropDatabase(name)),
+    };
+    for (const workspace of workspaces) {
+      if (await purgeTestWorkspace(cleanupDeps, String(workspace.id)) !== "purged") return false;
+    }
+    await purgeTestSubject(cleanupDeps, subject);
+  }
+  // 撤销凭证在调用 IdP 前已落库，响应丢失时同样能精确撤销，不按邮箱找人。
+  await deps.cancelIdpProvision(row.test_kit_cancellation_token);
+  await db.query(
+    `UPDATE $id SET test_kit_purged_at = time::now(), test_kit_cancellation_token = NONE
+     WHERE test_kit_purged_at = NONE;`,
+    { id: new StringRecordId(String(row.id)) },
+  );
+  return true;
+}
+
+export async function runFailedTestKitInvitationReaper(deps: TestSubjectReaperDeps): Promise<void> {
+  const log = deps.log ?? defaultLog;
+  const failedInvites = firstArray(await retryAtomicConflict(() => deps.systemDb.query(
+    `SELECT idempotency_key FROM ops_invitation
+     WHERE test_kit_managed = true AND status = "failed" AND test_kit_purged_at = NONE;`,
+  )));
+  for (const row of failedInvites) {
+    try {
+      if (!await purgeFailedTestKitInvitation(deps, String(row.idempotency_key))) {
+        log("test_kit.cleanup_deferred", {});
+      }
+    } catch {
+      log("test_kit.cleanup_failed", {});
+    }
+  }
 }
 
 /** 一轮清理：到期 workspace → 到期 test_subject。返回处理统计。 */
@@ -277,7 +351,6 @@ export async function runTestSubjectReaper(
   let workspacesPurged = 0;
   let workspacesSkipped = 0;
   let subjectsPurged = 0;
-
   const expiredWorkspaces = firstArray(await deps.systemDb.query(
     `SELECT id, slug, db_name, owner_subject, test_origin
      FROM workspace
@@ -301,7 +374,9 @@ export async function runTestSubjectReaper(
   }
 
   const expiredSubjects = firstArray(await deps.systemDb.query(
-    `SELECT subject FROM test_subject WHERE expires_at <= $now;`,
+    `SELECT subject FROM test_subject WHERE expires_at <= $now
+     AND subject NOT IN (SELECT VALUE idp_user_id FROM ops_invitation
+       WHERE test_kit_managed = true AND status = "failed" AND test_kit_purged_at = NONE AND idp_user_id != NONE);`,
     { now: nowParam },
   ));
 

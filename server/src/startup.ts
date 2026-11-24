@@ -15,7 +15,9 @@ import { seedQuotaPlans } from "./db/quota-plan-seed";
 import { migrateAllWorkspaces } from "./db/migration-runner";
 import { startReconcileLoop, type ReconcileLoopHandle } from "./db/reconciler";
 import { startNativeMeetingGc } from "./db/native-meeting-gc";
-import { runTestSubjectReaper } from "./test-subjects/reaper";
+import { runFailedTestKitInvitationReaper, runTestSubjectReaper, type TestSubjectReaperDeps } from "./test-subjects/reaper";
+import { createIdpAdminClientFromEnv, createIdpProvisionCancellation } from "./invitations/idp-admin-client";
+import { createPlatformSecretStore } from "./platform/secret-store";
 import { startFunnelLoop, type FunnelLoopHandle } from "./funnel/loop";
 import {
   NativeQuotaStartupGateError,
@@ -154,13 +156,17 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
         // 测试主体清理心跳：每轮扫到期 workspace/test_subject，失败只告警。
         const intervalMs = env.TEST_SUBJECT_REAPER_INTERVAL_SEC * 1000;
         let stopped = false;
-        const tick = async () => {
+        const cancelIdpProvision = createIdpProvisionCancellation(createIdpAdminClientFromEnv({
+          secretStore: createPlatformSecretStore(env.PLATFORM_SECRET_KEY),
+        }));
+        const tick = async (sweep: (deps: TestSubjectReaperDeps) => Promise<unknown>) => {
           try {
-            await runTestSubjectReaper({
+            await sweep({
               systemDb: await getRootDatabaseSession("_system"),
               dropDatabase: async (dbName) => {
                 await getRootConnection().query(`REMOVE DATABASE IF EXISTS ${dbName};`);
               },
+              cancelIdpProvision,
             });
           } catch (cause) {
             console.error("[test-subject-reaper] sweep failed; retry next tick", {
@@ -168,9 +174,23 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
             });
           }
         };
-        void tick();
-        const timer = setInterval(() => { void tick(); }, intervalMs);
-        return { stop: () => { if (!stopped) { stopped = true; clearInterval(timer); } } };
+        const expire = () => { void tick(runTestSubjectReaper); };
+        let cleaning = false;
+        const cleanup = async () => {
+          if (cleaning) return;
+          cleaning = true;
+          try { await tick(runFailedTestKitInvitationReaper); } finally { cleaning = false; }
+        };
+        expire();
+        if (env.TEST_KIT_EMAIL_PATTERN) void cleanup();
+        const timer = setInterval(expire, intervalMs);
+        const cleanupTimer = env.TEST_KIT_EMAIL_PATTERN ? setInterval(() => { void cleanup(); }, 60_000) : null;
+        return { stop: () => {
+          if (stopped) return;
+          stopped = true;
+          clearInterval(timer);
+          if (cleanupTimer) clearInterval(cleanupTimer);
+        } };
       });
   const closeRoot = deps.closeRootConnection ?? closeRootConnection;
   const initProbe = deps.initHealthProbe

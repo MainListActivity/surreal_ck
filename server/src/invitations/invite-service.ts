@@ -7,6 +7,7 @@ import type { AiAllowanceService } from "../ai-allowance/service";
 import type { EnsureUserResult, HttpIdpAdminClient, IdpAdminClientSource } from "./idp-admin-client";
 import { IdpAdminError } from "./idp-admin-client";
 import type { InviteAuditStore, InviteAuditRow, InviteOutcome } from "./invite-store";
+import { retryAtomicConflict } from "../db/atomic-conflict-retry";
 
 export class InviteError extends Error {
   constructor(
@@ -153,7 +154,10 @@ export class InviteService {
     this.staleProcessingMs = deps.staleProcessingMs ?? 240_000;
   }
 
-  async provision(actor: InviteActor, input: CreateOpsInvitation): Promise<InviteResult> {
+  async provision(actor: InviteActor, input: CreateOpsInvitation, options?: { testKit: true }): Promise<InviteResult> {
+    if (Boolean(options?.testKit) !== input.idempotencyKey.startsWith("test-kit:")) {
+      throw new InviteError("invite-idempotency-key-reserved", "test-kit: 幂等键仅供测试工具使用");
+    }
     const idp = await this.deps.idp();
     if (!idp) {
       throw new InviteError("invite-idp-not-configured", "IdP provision token 未配置（密封仓与 IDP_PROVISION_TOKEN 兜底均为空），无法代办开通");
@@ -166,6 +170,7 @@ export class InviteService {
     const digest = requestDigest(input);
     const recordId = recordIdFor(input.idempotencyKey);
     const workspaceName = input.workspaceName ?? input.displayName;
+    const cancellationToken = options?.testKit ? crypto.randomUUID() : undefined;
 
     const claim = await this.deps.store.claim({
       recordId,
@@ -179,6 +184,7 @@ export class InviteService {
       planKey: input.planKey,
       reason: input.reason,
       requestDigest: digest,
+      testKitCancellationToken: cancellationToken,
     });
     if (claim.kind === "existing") {
       const row = claim.row;
@@ -190,7 +196,7 @@ export class InviteService {
         const staleBefore = new Date(Date.now() - this.staleProcessingMs);
         const stale = !startedAt || Date.parse(startedAt) < staleBefore.getTime();
         // 仍在执行：直接回 processing 供轮询（旧契约的 invite-in-progress 409 改为可轮询 200）。
-        if (!stale) return replayResult(row);
+        if (!stale || options?.testKit) return replayResult(row);
         // 僵死行（上轮请求被断连杀死）：CAS 抢续跑权，失败者只读不回写。
         const resumed = await this.deps.store.markProcessing(row.id, staleBefore);
         if (!resumed) return replayResult(row);
@@ -199,7 +205,7 @@ export class InviteService {
       return replayResult(row);
     }
 
-    return this.runWithWindow(actor, input, recordId, workspaceName, expiresAt, idp, false);
+    return this.runWithWindow(actor, input, recordId, workspaceName, expiresAt, idp, false, cancellationToken);
   }
 
   /**
@@ -215,8 +221,9 @@ export class InviteService {
     expiresAtMs: number,
     idp: HttpIdpAdminClient,
     replayed: boolean,
+    cancellationToken?: string,
   ): Promise<InviteResult> {
-    const task = this.execute(actor, input, recordId, workspaceName, expiresAtMs, idp)
+    const task = this.execute(actor, input, recordId, workspaceName, expiresAtMs, idp, cancellationToken)
       .catch(async (error: unknown) => {
         const code = error instanceof InviteError ? error.code
           : error instanceof IdpAdminError ? error.code
@@ -247,8 +254,11 @@ export class InviteService {
       };
     }
     // 同步窗内完成且携带激活链接：标记为已收取，collect-delivery 不再重复下发。
-    if (raced.delivery.activationUrl) {
+    if (raced.delivery.activationUrl && !cancellationToken) {
       await this.deps.store.collectActivationUrl(recordId).catch(() => undefined);
+    }
+    if (cancellationToken && raced.delivery.activationUrl) {
+      return { ...raced, delivery: { ...raced.delivery, activationUrl: null, pendingCollect: true } };
     }
     return replayed ? { ...raced, replayed: true } : raced;
   }
@@ -260,18 +270,25 @@ export class InviteService {
     workspaceName: string,
     expiresAtMs: number,
     idp: HttpIdpAdminClient,
+    cancellationToken?: string,
   ): Promise<InviteResult> {
     // 1) IdP：建用户或幂等复用；仅新建返回一次性 activation_url。
     const ensured: EnsureUserResult = await idp.ensureUser({
       email: input.email,
       displayName: input.displayName,
+      ...(cancellationToken ? { cancellationToken } : {}),
     });
     const user = ensured.user;
+    if (cancellationToken && !ensured.created) {
+      throw new InviteError("email_in_use", "该邮箱在身份系统已有账号；请换一个未用过的邮箱");
+    }
     // 一次性激活链接：拿到就先落行——此后任务被断连/超时打断，续跑或
     // collect-delivery 仍能救回（否则链接随请求死亡永久丢失）。新建用户时同一次写入记下其 id，
     // 执行中断/失败后可凭行找回「本行建出的用户」做清理归因（测试物料自助收养用）。
     let activationUrl = ensured.activationUrl;
-    if (activationUrl) {
+    if (cancellationToken) {
+      await this.deps.store.saveActivationUrl(recordId, activationUrl, user.id);
+    } else if (activationUrl) {
       await this.deps.store.saveActivationUrl(recordId, activationUrl, ensured.created ? user.id : undefined).catch(() => undefined);
     } else {
       // 续跑/复用：IdP 不重复签发，读回上环已签发暂存的链接。
@@ -317,7 +334,8 @@ export class InviteService {
     if (!productRevisionId) {
       throw new InviteError("invite-product-revision-missing", "未指定产品版本且无可用默认（pro_trial_configuration）");
     }
-    await this.deps.products.assign(
+    // 产品分配按自己的幂等键续跑；AI grant 是一笔事务，只在明确回滚时重试。
+    await retryAtomicConflict(() => this.deps.products.assign(
       { subject: actor.subject, capabilities: actor.capabilities },
       {
         workspaceSlug: input.workspaceSlug,
@@ -326,7 +344,7 @@ export class InviteService {
         reason: input.reason,
         idempotencyKey: `${input.idempotencyKey}:assign`,
       },
-    );
+    ));
 
     // 4) AI 额度桶：period_key=invite:<key> 查重防重放重复授额（中途失败重试场景）。
     const periodKey = `invite:${input.idempotencyKey}`;
@@ -334,7 +352,7 @@ export class InviteService {
     const existingBucket = balance.buckets.find((b) => b.period_key === periodKey);
     let bucketId: string | null = existingBucket ? String(existingBucket.id) : null;
     if (!existingBucket) {
-      const granted = await this.deps.allowance.grant({
+      const granted = await retryAtomicConflict(() => this.deps.allowance.grant({
         db: workspaceDb,
         kind: "compensation",
         amount: input.aiAllowance.amount,
@@ -344,7 +362,7 @@ export class InviteService {
         expiresAt: new Date(expiresAtMs),
         source: "ops-invite",
         operatorSubject: actor.subject,
-      });
+      }));
       bucketId = granted.bucket ? String(granted.bucket) : null;
     }
 

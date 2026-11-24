@@ -11,7 +11,7 @@
 //     行归先占到的 agent，其他 agent 一律 not_owned。开通前确认产品与 IdP 都没有这个邮箱。
 //   - 只登记「本行建出的用户」：完成时 outcome=created，或 InviteService 在新建用户后立即落到行上的
 //     idp_user_id。绝不按邮箱回查 IdP 认领用户。
-//   - 不能正常完成的行（执行失败、或 processing 超过 STALE_MS 视为中断）不续跑，直接「收养」：
+//   - 明确执行失败的测试开通由 reaper 自动清理；中断行不续跑，继续沿用「收养」：
 //     有 idp_user_id 就把该用户登记为测试主体（到期锚定行 created_at + 30 天），交给 reaper 清掉
 //     它留下的 workspace 等产物；邮箱作废。没有 idp_user_id 说明还没建出用户，无产物可清。
 //   - 清理（手动或到期 reaper）给开通行打 test_kit_purged_at，对账不再登记回来。
@@ -23,7 +23,8 @@ import { InviteError } from "../invitations/invite-service";
 import type { MemberManager } from "../workspaces/member-manager";
 import { findTestSubject, isExpired, type Queryable } from "../test-subjects/store";
 import { computeTestSubjectPreflight, lookupSubjectsByEmail } from "../test-subjects/preflight";
-import { purgeTestSubject, purgeTestWorkspace, type TestSubjectReaperDeps } from "../test-subjects/reaper";
+import { purgeFailedTestKitInvitation, purgeTestSubject, purgeTestWorkspace, type TestSubjectReaperDeps } from "../test-subjects/reaper";
+import { isAtomicConflict, retryAtomicConflict } from "../db/atomic-conflict-retry";
 import { dateTimeTimestamp } from "../db/surreal-values";
 import { stableSha256 } from "../quota/canonical";
 
@@ -68,6 +69,7 @@ type InviteRow = {
   /** InviteService 新建 IdP 用户后立即落下的用户 id（= 本行建出的用户）。 */
   idpUserId: string | null;
   purged: boolean;
+  managed: boolean;
   /** 已按失败/中断收养：对外终态恒为 failed，之后哪怕后台执行完成也不改口。 */
   adopted: boolean;
 };
@@ -92,7 +94,7 @@ function str(args: Record<string, unknown>, name: string, required = true): stri
   return value.trim();
 }
 
-const INVITE_ROW_FIELDS = "idempotency_key, operator_subject, email, status, created_at, idp_user_id, test_kit_purged_at, test_kit_adopted_at";
+const INVITE_ROW_FIELDS = "idempotency_key, operator_subject, email, status, created_at, idp_user_id, test_kit_purged_at, test_kit_adopted_at, test_kit_managed";
 
 function toInviteRow(row: Record<string, unknown>): InviteRow {
   return {
@@ -103,6 +105,7 @@ function toInviteRow(row: Record<string, unknown>): InviteRow {
     createdAtMs: dateTimeTimestamp(row.created_at),
     idpUserId: typeof row.idp_user_id === "string" && row.idp_user_id.length > 0 ? row.idp_user_id : null,
     purged: dateTimeTimestamp(row.test_kit_purged_at) > 0,
+    managed: row.test_kit_managed === true,
     adopted: dateTimeTimestamp(row.test_kit_adopted_at) > 0,
   };
 }
@@ -131,6 +134,11 @@ export class TestKitService {
     return `test-kit:${agentSubject}`;
   }
 
+  private async systemDb(): Promise<Queryable> {
+    const db = await this.deps.getSystemDb();
+    return { query: (sql, params) => retryAtomicConflict(() => db.query(sql, params)) };
+  }
+
   rules(actor: TestKitActor) {
     this.authorize(actor);
     return {
@@ -153,7 +161,7 @@ export class TestKitService {
       throw new TestKitError("email_not_allowed", `邮箱不在测试物料允许范围内（须整串匹配 ${this.deps.emailPattern}）`);
     }
     const key = inviteKey(email);
-    const db = await this.deps.getSystemDb();
+    const db = await this.systemDb();
     const existing = await this.inviteRow(db, key);
     if (existing) return this.report(actor, db, this.own(actor, existing));
 
@@ -202,24 +210,25 @@ export class TestKitService {
     try {
       // 代办开通内部的权益分配以 subscription.manage 执行；对外能力仍只有 test.provision，
       // 输入已收窄到 trial/小额度/受限邮箱，审计行 operator_subject 记为该 agent。
-      result = await this.deps.invites.provision({ subject: actor.subject, capabilities: ["subscription.manage"] }, input);
+      result = await this.deps.invites.provision({ subject: actor.subject, capabilities: ["subscription.manage"] }, input, { testKit: true });
     } catch (error) {
       // 失败已落库（或别人抢先占了该邮箱的行）：按行的现状汇报，所有权照常校验。
       const row = await this.inviteRow(db, key).catch(() => null);
-      if (row && row.status !== "processing") return this.report(actor, db, this.own(actor, row));
+      if (row) return this.report(actor, db, this.own(actor, row));
       if (error instanceof InviteError) throw new TestKitError(error.code, error.message);
       throw error;
     }
     const row = await this.inviteRow(db, key).catch(() => null);
     const activationUrl = result.delivery?.activationUrl ?? null;
+    if (!row && !activationUrl) return this.processing(email);
     if (!row) return this.fallback(result, activationUrl);
-    return this.settle(actor, db, this.own(actor, row), result, activationUrl);
+    return this.settleAndCollect(actor, db, this.own(actor, row), result, activationUrl);
   }
 
   async status(actor: TestKitActor, args: Record<string, unknown>) {
     this.authorize(actor);
     const email = str(args, "email")!.toLowerCase();
-    const db = await this.deps.getSystemDb();
+    const db = await this.systemDb();
     const row = await this.inviteRow(db, inviteKey(email));
     if (!row) throw new TestKitError("not_found", "本 agent 没有该邮箱的开通记录");
     return this.report(actor, db, this.own(actor, row));
@@ -227,7 +236,7 @@ export class TestKitService {
 
   async list(actor: TestKitActor) {
     this.authorize(actor);
-    const db = await this.deps.getSystemDb();
+    const db = await this.systemDb();
     await this.reconcile(actor, db);
     const subjects = rows(await db.query(
       `SELECT subject, email, expires_at FROM test_subject WHERE origin = $origin ORDER BY expires_at;`,
@@ -248,9 +257,8 @@ export class TestKitService {
         workspaces: workspaces.map((w) => ({ slug: w.slug ?? null, role: w.role ?? null })),
       });
     }
-    const inFlight = (await this.myInviteRows(db, actor, `status = "processing"`))
-      .filter((row) => !this.stale(row))
-      .map((row) => ({ email: row.email, status: row.status, next: "稍后用该 email 调 test_kit_status" }));
+    const inFlight = (await this.pendingRows(db, actor))
+      .map((row) => ({ email: row.email, status: "processing", next: "稍后用该 email 调 test_kit_status" }));
     return { maxActive: this.maxActive, subjects: out, inFlight };
   }
 
@@ -372,14 +380,41 @@ export class TestKitService {
 
   /** 已有开通行的现状：已清理 → 拒绝；中断 → 收养；其余按 InviteService 记录结算并补收链接。 */
   private async report(actor: TestKitActor, db: Queryable, row: InviteRow) {
+    if (row.status === "failed" && row.managed) return this.reportManagedFailure(row);
     if (row.purged) throw new TestKitError("purged", "该邮箱的测试账号已清理，不能复用；换一个新别名");
     if (row.adopted || this.stale(row)) return this.adopt(actor, db, row);
     const result = await this.deps.invites.get(row.key);
     if (!result) throw new TestKitError("not_found", "开通记录不存在");
-    const settled = await this.settle(actor, db, row, result, null);
-    if (settled.status !== "completed" || settled.activationUrl) return settled;
-    const collected = await this.deps.invites.collect(row.key);
-    return { ...settled, activationUrl: collected?.activationUrl ?? null };
+    return this.settleAndCollect(actor, db, row, result, null);
+  }
+
+  private async settleAndCollect(actor: TestKitActor, db: Queryable, row: InviteRow, result: InviteResult, activationUrl: string | null) {
+    try {
+      const settled = await this.settle(actor, db, row, result, activationUrl);
+      if (settled.status !== "completed" || settled.activationUrl) return settled;
+      const collected = await this.deps.invites.collect(row.key);
+      return { ...settled, activationUrl: collected?.activationUrl ?? null };
+    } catch (error) {
+      if (isAtomicConflict(error)) return this.processing(row.email);
+      if (result.status === "completed" && result.delivery?.pendingCollect && error instanceof TestKitError) {
+        const collected = await this.deps.invites.collect(row.key);
+        if (collected?.activationUrl) return this.fallback(result, collected.activationUrl);
+      }
+      throw error;
+    }
+  }
+
+  private processing(email: string) {
+    return { email, status: "processing", activationUrl: null, next: "开通结果处理中：稍后用同一 email 调 test_kit_status" };
+  }
+
+  private async reportManagedFailure(row: InviteRow) {
+    const cleaned = row.purged || await (async () => {
+      const deps = await this.deps.reaperDeps();
+      return purgeFailedTestKitInvitation(deps, row.key);
+    })().catch(() => false);
+    if (!cleaned) return { ...this.processing(row.email), next: "正在自动清理开通产物：稍后用同一 email 调 test_kit_status" };
+    return { email: row.email, status: "failed", activationUrl: null, next: "开通失败，测试工作区和权限已自动清理；请换一个新别名重试" };
   }
 
   private fallback(result: InviteResult, activationUrl: string | null) {
@@ -402,6 +437,7 @@ export class TestKitService {
   }
 
   private async settleInner(actor: TestKitActor, db: Queryable, row: InviteRow, result: InviteResult, activationUrl: string | null) {
+    if (row.managed && result.status === "failed") return this.reportManagedFailure(row);
     const base = { email: row.email, status: result.status as string };
     if (result.status === "processing") {
       if (this.stale(row)) return this.adopt(actor, db, row);
@@ -454,6 +490,7 @@ export class TestKitService {
     )).map(String));
     for (const row of candidates) {
       // 已登记的正常行跳过；收养过的行每次都过一遍，以标记后台执行迟到建出的 workspace。
+      if (row.managed && row.status === "failed") continue;
       if (known.has(row.email.toLowerCase()) && !row.adopted) continue;
       if (row.status === "processing" && !this.stale(row)) continue;
       await (async () => {
@@ -470,8 +507,13 @@ export class TestKitService {
       { origin: TestKitService.originFor(actor.subject) },
     ));
     const now = this.now();
-    const processing = (await this.myInviteRows(db, actor, `status = "processing"`)).filter((row) => !this.stale(row));
+    const processing = await this.pendingRows(db, actor);
     return list.filter((row) => !isExpired({ expires_at: row.expires_at as string }, now)).length + processing.length;
+  }
+
+  private async pendingRows(db: Queryable, actor: TestKitActor): Promise<InviteRow[]> {
+    const rows = await this.myInviteRows(db, actor, `(status = "processing" OR (status = "failed" AND test_kit_managed = true))`);
+    return rows.filter((row) => row.status === "failed" || (!row.adopted && !this.stale(row)));
   }
 
   private async register(actor: TestKitActor, db: Queryable, subject: string, email: string, expiresAt: Date): Promise<void> {

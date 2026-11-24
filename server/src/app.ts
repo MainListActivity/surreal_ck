@@ -159,6 +159,7 @@ import { InviteService } from "./invitations/invite-service";
 import { SurrealInviteAuditStore } from "./invitations/invite-store";
 import {
   createIdpAdminClientSource,
+  createIdpProvisionCancellation,
   createProvisionTokenSource,
   type ProvisionTokenSource,
 } from "./invitations/idp-admin-client";
@@ -566,6 +567,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
         reaperDeps: async () => ({
           systemDb: await getRootDatabaseSession("_system"),
           dropDatabase: async (dbName) => { await getRootConnection().query(`REMOVE DATABASE IF EXISTS ${dbName};`); },
+          cancelIdpProvision: createIdpProvisionCancellation(idpAdminSource),
           now: () => new Date(),
         }),
         emailPattern: env.TEST_KIT_EMAIL_PATTERN,

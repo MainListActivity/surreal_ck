@@ -10,12 +10,13 @@ import {
   LEGACY_QUOTA_CLEANUP_MIGRATION_VERSION,
   selectContinuousEligibleMigrations,
 } from "@surreal-ck/shared/workspace-migration-manifest";
-import { extractNativeQuotaError, NATIVE_QUOTA_EXPECTED_CONTRACT } from "@surreal-ck/shared/native-quota";
-import { DateTime, isRetryableConflict, StringRecordId } from "surrealdb";
+import { NATIVE_QUOTA_EXPECTED_CONTRACT } from "@surreal-ck/shared/native-quota";
+import { DateTime, StringRecordId } from "surrealdb";
 import { env } from "../env";
 import { withRootDatabaseSessions } from "../db/root-connection";
 import { toSurrealNone, toIsoDateTimeString } from "../db/surreal-values";
 import { materializeWorkspaceMigrationSql } from "../db/workspace-migration-execution";
+import { retryAtomicConflict } from "../db/atomic-conflict-retry";
 import {
   SurrealNativeQuotaClient,
   type NativeQuotaClient,
@@ -108,24 +109,12 @@ export type CreateWorkspaceCreatorOptions = {
 
 const SYSTEM_DATABASE = "_system";
 const MAX_DB_NAME_ATTEMPTS = 5;
-const MAX_PROVISIONING_TRANSACTION_ATTEMPTS = 24;
-
 export async function runProvisioningTransaction(
   db: CreateWorkspaceClient,
   sql: string,
-  params: Record<string, unknown>,
+  params?: Record<string, unknown>,
 ): Promise<unknown> {
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      return await db.query(sql, params);
-    } catch (error) {
-      const quota = extractNativeQuotaError(error);
-      const retryable = isRetryableConflict(error)
-        || (quota?.code === "quota_conflict" && quota.retryable);
-      if (!retryable || attempt >= MAX_PROVISIONING_TRANSACTION_ATTEMPTS) throw error;
-      await Bun.sleep(Math.min(500, 10 * 2 ** (attempt - 1)) * (0.5 + Math.random()));
-    }
-  }
+  return retryAtomicConflict(() => db.query(sql, params));
 }
 
 function defaultGenerateId(): string {
@@ -282,7 +271,7 @@ function createSurrealControlPlane(
         );
         if (rowCount(dbNameResult) > 0) return { kind: "db-name-conflict" };
 
-        const result = await systemDb.query(
+        const result = await runProvisioningTransaction(systemDb,
           `
             CREATE ONLY workspace CONTENT {
               db_name: $dbName,
@@ -460,37 +449,36 @@ function createSurrealControlPlane(
             ? "provider"
             : input.sourceKind;
 
+      // 唯一键 upsert 可独立重放；订阅和明细仍原子提交，缩短配额争用窗口。
+      let billingAccount: StringRecordId;
+      if (input.trial) {
+        billingAccount = new StringRecordId(input.trial.billingAccountId);
+      } else {
+        const account = firstRow(await runProvisioningTransaction(systemDb,
+          `INSERT INTO billing_account {
+            account_key: $accountKey, name: $accountName, kind: "personal", status: "active"
+          } ON DUPLICATE KEY UPDATE name = $accountName, status = "active";`,
+          { accountKey, accountName: input.email || input.ownerSubject },
+        ));
+        if (!account?.id) throw new Error("provisioning billing account is missing");
+        billingAccount = new StringRecordId(String(account.id));
+        await runProvisioningTransaction(systemDb,
+          `INSERT INTO billing_account_member {
+            billing_account: $billingAccount, subject: $subject, role: "owner", status: "active"
+          } ON DUPLICATE KEY UPDATE role = "owner", status = "active";`,
+          { billingAccount, subject: input.ownerSubject },
+        );
+      }
+
       await runProvisioningTransaction(systemDb,
         `
           BEGIN TRANSACTION;
-
-          LET $billing = IF $billingAccount != NONE {
-            SELECT * FROM ONLY $billingAccount
-          } ELSE { (
-            INSERT INTO billing_account {
-              account_key: $accountKey,
-              name: $accountName,
-              kind: "personal",
-              status: "active"
-            }
-            ON DUPLICATE KEY UPDATE
-              name = $input.name,
-              status = "active"
-          )[0] };
-
-          IF $billingAccount = NONE { INSERT INTO billing_account_member {
-            billing_account: $billing.id,
-            subject: $subject,
-            role: "owner",
-            status: "active"
-          }
-          ON DUPLICATE KEY UPDATE role = "owner", status = "active"; };
 
           LET $subscription = CREATE ONLY type::record(
             "quota_subscription",
             $subscriptionKey
           ) CONTENT {
-            billing_account: $billing.id,
+            billing_account: $billingAccount,
             source: $subscriptionSource,
             status: $subscriptionStatus,
             revision: 1,
@@ -518,11 +506,8 @@ function createSurrealControlPlane(
           COMMIT TRANSACTION;
         `,
         {
-          billingAccount: toSurrealNone(input.trial ? new StringRecordId(input.trial.billingAccountId) : null),
+          billingAccount,
           productRevision: toSurrealNone(input.trial ? new StringRecordId(input.trial.productRevisionId) : null),
-          accountKey,
-          accountName: input.email || input.ownerSubject,
-          subject: input.ownerSubject,
           subscriptionSource,
           subscriptionStatus: input.sourceKind === "trial" ? "trialing" : "active",
           trialStart:
@@ -738,8 +723,9 @@ function createSurrealControlPlane(
     },
 
     async markAppliedFromNative(input) {
-      await systemDb.query(
+      await runProvisioningTransaction(systemDb,
         `
+          BEGIN;
           UPDATE $workspace SET
             applied_entitlement = $entitlementId,
             applied_quota_projection = $projectionId,
@@ -781,6 +767,7 @@ function createSurrealControlPlane(
               ledger_state = $ledgerState,
               usage_trusted = $usageTrusted;
           };
+          COMMIT;
         `,
         {
           workspace: input.workspaceId,
@@ -796,7 +783,7 @@ function createSurrealControlPlane(
 
     async createPhysicalDatabase(dbName) {
       try {
-        await systemDb.query(`DEFINE DATABASE ${dbName};`);
+        await runProvisioningTransaction(systemDb, `DEFINE DATABASE ${dbName};`);
         return { kind: "created" };
       } catch (cause) {
         if (isDbNameConflict(cause)) return { kind: "db-name-conflict" };
@@ -932,7 +919,7 @@ async function tryCreateWorkspace({
         params?: Record<string, unknown>,
       ): Promise<T> {
         // Root client already scoped per session; native DDL uses ON DATABASE.
-        return systemDb.query(sql, params) as Promise<T>;
+        return runProvisioningTransaction(systemDb, sql, params) as Promise<T>;
       },
     });
 
@@ -1036,7 +1023,7 @@ async function tryCreateWorkspace({
       await workspaceDb.query(script.sql);
     }
 
-    await workspaceDb.query(
+    await runProvisioningTransaction(workspaceDb,
       `INSERT INTO user {
          subject: $subject,
          email: $email,
@@ -1186,7 +1173,7 @@ async function createMembershipIndex(
   dbName: string,
   workspaceId: StringRecordId,
 ): Promise<void> {
-  await systemDb.query(
+  await runProvisioningTransaction(systemDb,
     `
       INSERT INTO user_workspace_index {
         subject: $subject,
