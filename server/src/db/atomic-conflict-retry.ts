@@ -15,12 +15,15 @@ export function isAtomicConflict(error: unknown): boolean {
 }
 
 /** 只重试明确已回滚的单条语句或整笔事务。 */
-export async function retryAtomicConflict<T>(run: () => Promise<T>): Promise<T> {
+export async function retryAtomicConflict<T>(
+  run: () => Promise<T>,
+  wasNotExecuted?: (error: unknown) => boolean,
+): Promise<T> {
   for (let attempt = 1; ; attempt += 1) {
     try {
       return await run();
     } catch (error) {
-      if (!isAtomicConflict(error) || attempt >= 24) throw error;
+      if (attempt >= 24 || (!isAtomicConflict(error) && !wasNotExecuted?.(error))) throw error;
       await Bun.sleep(Math.min(500, 10 * 2 ** (attempt - 1)) * (0.5 + Math.random()));
     }
   }

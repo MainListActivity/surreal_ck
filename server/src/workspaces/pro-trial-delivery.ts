@@ -24,7 +24,7 @@ export function createProTrialDelivery(deps: {
   const getContent = deps.content ?? getContentProjectionSession;
   return async (input: { workspaceId: string; dbName: string; subject: string; trial: NonNullable<ExplicitResourceSource["trial"]> }) => {
   if (Date.parse(input.trial.endsAt) <= Date.now()) throw new Error("trial-expired");
-  const store = new SurrealProductEntitlementStore(session);
+  const store = new SurrealProductEntitlementStore(deps.session);
   const products = new ProductEntitlementService(store);
   const { planCycle } = await products.refreshSubscriptionDriven(input.workspaceId, { correlationId: input.trial.claimId });
   if (!planCycle || planCycle.baseSourceKind !== "trial" || planCycle.expiresAt !== input.trial.endsAt) throw new Error("trial-product-not-ready");
