@@ -90,7 +90,7 @@ curl() {
   if [ -n "\${T_HEALTH_BAD_RELEASE:-}" ] && [ "$target" = "$T_HEALTH_BAD_RELEASE" ]; then return 22; fi
   printf '%s' '{"status":"ok","surrealdb":"up"}'
 }
-sleep() { :; }
+sleep() { if [[ "$1" =~ ^[0-9]+$ ]]; then SECONDS=$((SECONDS + $1)); fi; }
 mv() {
   if [ "\${1:-}" = "-T" ]; then
     echo "mv:-T" >>"$GATE_LOG"

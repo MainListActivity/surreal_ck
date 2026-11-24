@@ -48,11 +48,16 @@ env_dirty=0
 switched=0
 
 healthy() {
-  for _ in $(seq 1 30); do
-    if curl -fsS --max-time 5 "$health_url" 2>/dev/null | grep -q '"status":"ok","surrealdb":"up"'; then
+  local deadline=$((SECONDS + 240)) remaining body
+  while (( (remaining = deadline - SECONDS) > 0 )); do
+    if body=$(curl -fsS --max-time "$((remaining < 5 ? remaining : 5))" "$health_url" 2>/dev/null) \
+      && grep -q '"status":"ok","surrealdb":"up"' <<<"$body"; then
       return 0
     fi
-    sleep 3
+    remaining=$((deadline - SECONDS))
+    if ((remaining > 0)); then
+      sleep "$((remaining < 3 ? remaining : 3))"
+    fi
   done
   return 1
 }

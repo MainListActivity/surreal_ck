@@ -554,7 +554,7 @@ systemctl() {
   esac
 }
 curl() { printf '%s' "\${T_HEALTH_BODY:-}"; }
-sleep() { :; }
+sleep() { if [[ "$1" =~ ^[0-9]+$ ]]; then SECONDS=$((SECONDS + $1)); fi; }
 journalctl() { :; }
 mv() { if [ "\${1:-}" = "-T" ]; then shift; [ -L "\$2" ] && command rm -f "\$2"; fi; command mv -f "$@"; }
 cp() {

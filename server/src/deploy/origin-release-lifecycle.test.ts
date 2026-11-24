@@ -50,9 +50,16 @@ curl() {
   target=$(readlink "\${ORIGIN_ROOT}/current" 2>/dev/null || true)
   target=\${target##*/}
   if [ -n "\${T_HEALTH_BAD_RELEASE:-}" ] && [ "$target" = "$T_HEALTH_BAD_RELEASE" ]; then return 22; fi
+  if [ -n "\${T_HEALTH_READY_AT:-}" ] && (( T_HEALTH_ELAPSED < T_HEALTH_READY_AT )); then return 7; fi
   printf '%s' '{"status":"ok","surrealdb":"up"}'
 }
-sleep() { :; }
+T_HEALTH_ELAPSED=0
+sleep() {
+  if [[ "$1" =~ ^[0-9]+$ ]]; then
+    SECONDS=$((SECONDS + $1))
+    T_HEALTH_ELAPSED=$((T_HEALTH_ELAPSED + $1))
+  fi
+}
 mv() {
   if [ "\${1:-}" = "-T" ]; then
     shift
@@ -621,6 +628,16 @@ describe("origin-release 生命周期（脚本级）", () => {
   });
 
   describe("健康失败与回滚", () => {
+    t("启动超过旧的 90 秒窗口但在 240 秒内就绪 → 不回滚", async () => {
+      const h = makeHarness();
+      const id = "rel-ci-delayed";
+      stageRelease(h, id, { target: "explicit", filtered: true });
+      expect(launch(h, id, { extraEnv: { T_HEALTH_READY_AT: "165" } }).exitCode).toBe(0);
+      expect((await waitTerminal(h, id)).state).toBe("healthy");
+      expect(currentBasename(h)).toBe(id);
+      expect(countPrefix(gateCalls(h), "systemctl:restart")).toBe(1);
+    });
+
     t("健康探测失败 → 回滚到 rel-old，env 恢复，日志不含增改值", async () => {
       const h = makeHarness();
       const id = "rel-ci-hbad";
