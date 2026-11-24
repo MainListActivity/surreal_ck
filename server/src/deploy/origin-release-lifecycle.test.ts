@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { type TrialCompat, writeTrialTree } from "./origin-release-fixtures";
+import { HEALTH_CLOCK_STUB, type TrialCompat, writeTrialTree } from "./origin-release-fixtures";
 
 /**
  * origin-release.sh 脚本级生命周期测试（真实 --launch / --status / --log / --recover
@@ -49,10 +49,13 @@ curl() {
   local target
   target=$(readlink "\${ORIGIN_ROOT}/current" 2>/dev/null || true)
   target=\${target##*/}
+  echo "curl:$target:$HEALTH_CLOCK_CS:$3" >>"$GATE_LOG"
   if [ -n "\${T_HEALTH_BAD_RELEASE:-}" ] && [ "$target" = "$T_HEALTH_BAD_RELEASE" ]; then return 22; fi
+  if [ -n "\${T_HEALTH_READY_AT:-}" ] && (( HEALTH_CLOCK_CS < T_HEALTH_READY_AT )); then return 7; fi
   printf '%s' '{"status":"ok","surrealdb":"up"}'
 }
-sleep() { :; }
+${HEALTH_CLOCK_STUB}
+cat() { if [ "\${1:-}" = /proc/uptime ]; then fake_uptime; else command cat "$@"; fi; }
 mv() {
   if [ "\${1:-}" = "-T" ]; then
     shift
@@ -621,6 +624,29 @@ describe("origin-release 生命周期（脚本级）", () => {
   });
 
   describe("健康失败与回滚", () => {
+    t("启动超过旧的 90 秒窗口但在 240 秒内就绪 → 不回滚", async () => {
+      const h = makeHarness();
+      const id = "rel-ci-delayed";
+      stageRelease(h, id, { target: "explicit", filtered: true });
+      expect(launch(h, id, { extraEnv: { T_HEALTH_READY_AT: "16500" } }).exitCode).toBe(0);
+      expect((await waitTerminal(h, id)).state).toBe("healthy");
+      expect(currentBasename(h)).toBe(id);
+      expect(countPrefix(gateCalls(h), "systemctl:restart")).toBe(1);
+    });
+
+    t("最后一秒初次探测失败、随后就绪 → 截止前重试通过，不回滚", async () => {
+      const h = makeHarness();
+      const id = "rel-ci-last-second";
+      stageRelease(h, id, { target: "explicit", filtered: true });
+      expect(launch(h, id, { extraEnv: { T_HEALTH_READY_AT: "23950" } }).exitCode).toBe(0);
+      expect((await waitTerminal(h, id)).state).toBe("healthy");
+      expect(currentBasename(h)).toBe(id);
+      const probes = gateCalls(h).filter((call) => call.startsWith("curl:"));
+      expect(probes).toContain(`curl:${id}:23900:0.20`);
+      expect(probes.at(-1)).toBe(`curl:${id}:23950:0.20`);
+      expect(countPrefix(gateCalls(h), "systemctl:restart")).toBe(1);
+    });
+
     t("健康探测失败 → 回滚到 rel-old，env 恢复，日志不含增改值", async () => {
       const h = makeHarness();
       const id = "rel-ci-hbad";
@@ -631,6 +657,10 @@ describe("origin-release 生命周期（脚本级）", () => {
       expect(currentBasename(h)).toBe("rel-old");
       expect(readText(h.envFile)).toBe(BEFORE);
       expect(countPrefix(gateCalls(h), "systemctl:restart")).toBe(2);
+      const probes = gateCalls(h).filter((call) => call.startsWith("curl:"));
+      const lastForward = probes.filter((call) => call.startsWith(`curl:${id}:`)).at(-1);
+      expect(lastForward).toBe(`curl:${id}:23990:0.10`);
+      expect(probes.at(-1)).toBe("curl:rel-old:24000:5.00");
       const log = run(h, ["--log", id]).stdout;
       expect(log).toContain("env: set REVIEW_FIXTURE");
       expect(log).not.toContain("after-value-7f3");

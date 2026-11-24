@@ -2,6 +2,19 @@
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+export const HEALTH_CLOCK_STUB = `
+HEALTH_CLOCK_CS=0
+fake_uptime() { printf '%d.%02d 0.00\\n' "$((HEALTH_CLOCK_CS / 100))" "$((HEALTH_CLOCK_CS % 100))"; }
+sleep() {
+  local whole=\${1%%.*} fraction=00
+  if [[ "$1" == *.* ]]; then
+    fraction=\${1#*.}00
+    fraction=\${fraction:0:2}
+  fi
+  HEALTH_CLOCK_CS=$((HEALTH_CLOCK_CS + whole * 100 + 10#$fraction))
+}
+`;
+
 export type TrialCompat =
   | "explicit"
   | "implicit"

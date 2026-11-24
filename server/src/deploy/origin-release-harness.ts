@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, type Stats, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { type TrialCompat, writeTrialTree } from "./origin-release-fixtures";
+import { HEALTH_CLOCK_STUB, type TrialCompat, writeTrialTree } from "./origin-release-fixtures";
 
 /**
  * origin-release.sh 脚本级测试的共享夹具（真实脚本、真实 --launch / --status / --recover 与分离工作进程）。
@@ -90,7 +90,8 @@ curl() {
   if [ -n "\${T_HEALTH_BAD_RELEASE:-}" ] && [ "$target" = "$T_HEALTH_BAD_RELEASE" ]; then return 22; fi
   printf '%s' '{"status":"ok","surrealdb":"up"}'
 }
-sleep() { :; }
+${HEALTH_CLOCK_STUB}
+cat() { if [ "\${1:-}" = /proc/uptime ]; then fake_uptime; else command cat "$@"; fi; }
 mv() {
   if [ "\${1:-}" = "-T" ]; then
     echo "mv:-T" >>"$GATE_LOG"
