@@ -1,9 +1,11 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { createServer } from "node:net";
-import { Surreal } from "surrealdb";
+import { QueryError, Surreal } from "surrealdb";
 import type { GrantContentCollection, SessionUser } from "@surreal-ck/shared";
 import { ensureSystemSchema } from "../db/system-schema";
+import { closeRootConnection, getRootConnection, getRootDatabaseSession, initRootConnection } from "../db/root-connection";
 import { createContentReaderExchangeHandler } from "../content/reader-handler";
+import { env, overrideEnv } from "../env";
 import { ProductEntitlementService } from "./service";
 import { SurrealProductEntitlementStore } from "./store";
 
@@ -69,6 +71,49 @@ afterAll(async () => {
 });
 
 describe("product entitlement surreal store", () => {
+  localTest("权益指针遇到冲突时不受共享会话淘汰影响", async () => {
+    const previousEnv = env;
+    overrideEnv({
+      SURREAL_URL: `${endpoint}/rpc`,
+      SURREAL_NS: "main",
+      SURREAL_ROOT_USER: "root",
+      SURREAL_ROOT_PASS: "root",
+    });
+    try {
+      await initRootConnection();
+      const root = getRootConnection();
+      const fork = root.forkSession.bind(root);
+      let attempts = 0;
+      const patchedFork = spyOn(root, "forkSession").mockImplementationOnce(async () => {
+        const db = await fork();
+        const query = db.query.bind(db);
+        db.query = ((sql: string, params?: Record<string, unknown>) => {
+          if (++attempts > 1) return query(sql, params);
+          return (async () => {
+            for (let i = 0; i < 21; i++) {
+              await getRootDatabaseSession(`entitlement_pool_${i}`, "main");
+            }
+            throw new QueryError({
+              kind: "Query",
+              message: "Cannot COMMIT: Transaction conflict: fixture. This transaction can be retried",
+            });
+          })() as unknown as ReturnType<typeof query>;
+        }) as typeof db.query;
+        return db;
+      });
+      try {
+        const store = new SurrealProductEntitlementStore();
+        await store.pointWorkspace("workspace:team", "workspace_product_entitlement:session_fixture");
+        expect(attempts).toBe(2);
+      } finally {
+        patchedFork.mockRestore();
+      }
+    } finally {
+      await closeRootConnection();
+      overrideEnv(previousEnv);
+    }
+  }, 30_000);
+
   localTest("夹具版本可分配，旧资源套餐名不会变成内容授权", async () => {
     const store = new SurrealProductEntitlementStore(async () => await session(), "main");
     const service = new ProductEntitlementService(store, () => new Date("2026-09-24T00:00:00.000Z"));

@@ -1,6 +1,6 @@
 import { DateTime, StringRecordId } from "surrealdb";
 import { retryAtomicConflict } from "../db/atomic-conflict-retry";
-import { getRootDatabaseSession } from "../db/root-connection";
+import { getRootDatabaseSession, withRootDatabaseSessions } from "../db/root-connection";
 import { toIsoDateTimeString, toStringRecordId, toSurrealNone } from "../db/surreal-values";
 import { env } from "../env";
 import type { ContentGrantFact, FeatureValue, NamedCollection, ProductRevisionBody, ResourceFact, SubscriptionFact } from "./resolve";
@@ -52,15 +52,19 @@ function isConflict(error: unknown): boolean {
 }
 
 export class SurrealProductEntitlementStore implements ProductEntitlementStore {
-  constructor(private readonly getSession: SessionFactory = getRootDatabaseSession, private readonly namespace = env.SURREAL_NS) {}
+  constructor(private readonly getSession?: SessionFactory, private readonly namespace = env.SURREAL_NS) {}
 
   private async db(): Promise<Queryable> {
-    return await this.getSession("_system", this.namespace);
+    return await (this.getSession ?? getRootDatabaseSession)("_system", this.namespace);
   }
 
   private async atomicWrite(sql: string, params: Record<string, unknown>): Promise<unknown> {
-    const db = await this.db();
-    return retryAtomicConflict(() => db.query(sql, params));
+    const write = async (openSession: SessionFactory) => {
+      const db = await openSession("_system", this.namespace);
+      return retryAtomicConflict(() => db.query(sql, params));
+    };
+    // 重试退避期间，别的工作区流量可能淘汰共享池中的会话。
+    return this.getSession ? write(this.getSession) : withRootDatabaseSessions(write);
   }
 
   async workspaceBySlug(slug: string): Promise<WorkspaceRef | null> {
