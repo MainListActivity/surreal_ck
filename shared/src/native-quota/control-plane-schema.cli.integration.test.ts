@@ -280,7 +280,7 @@ describe("_system native quota schema against local SurrealDB", () => {
         };
       `));
 
-      expect(await applyPendingMigrations(migrations)).toBe(48);
+      expect(await applyPendingMigrations(migrations)).toBe(migrations.length - 3);
       expectSuccessful(await runSurrealCli("ALTER DATABASE COMPATIBILITY 4;"));
       const existingWorkspace = await runSurrealCli(
         "SELECT id, status FROM ONLY workspace:existing;",
