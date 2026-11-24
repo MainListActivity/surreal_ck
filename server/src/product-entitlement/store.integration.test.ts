@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { createServer } from "node:net";
 import { NotFoundError, StringRecordId, Surreal } from "surrealdb";
 import type { GrantContentCollection, SessionUser } from "@surreal-ck/shared";
+import { isAtomicConflict } from "../db/atomic-conflict-retry";
 import { ensureSystemSchema } from "../db/system-schema";
 import { closeRootConnection, getRootConnection, getRootDatabaseSession, initRootConnection } from "../db/root-connection";
 import { createContentReaderExchangeHandler } from "../content/reader-handler";
@@ -149,6 +150,9 @@ describe("product entitlement surreal store", () => {
               const batch = sql.replace("COMMIT TRANSACTION;", "LET $fixture = http::get($barrier); COMMIT TRANSACTION;");
               expect(batch).not.toBe(sql);
               return await query(batch, { ...params, barrier: barrierUrl });
+            } catch (error) {
+              expect(isAtomicConflict(error)).toBe(true);
+              throw error;
             } finally {
               competingWrite = undefined;
             }
