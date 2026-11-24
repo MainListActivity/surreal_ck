@@ -1,6 +1,7 @@
 import { StringRecordId } from "surrealdb";
 import { getRootDatabaseSession } from "../db/root-connection";
 import { toIsoDateTimeString, toSurrealNone } from "../db/surreal-values";
+import { retryAtomicConflict } from "../db/atomic-conflict-retry";
 
 type Queryable = {
   query(sql: string, params?: Record<string, unknown>): Promise<unknown>;
@@ -58,6 +59,7 @@ export type InviteAuditRow = Readonly<{
 }>;
 
 export type InviteClaimInsert = Readonly<{
+  testKitCancellationToken?: string;
   recordId: string;
   idempotencyKey: string;
   operatorSubject: string;
@@ -92,7 +94,7 @@ export interface InviteAuditStore {
   markProcessing(recordId: string, staleBefore: Date): Promise<boolean>;
   /** ensureUser 一拿到一次性激活链接就先落行——任务此后中断也能被续跑/收取救回。 */
   /** createdIdpUserId：本行新建出的 IdP 用户 id，与链接同一次写入（执行中断也能凭行找回）。 */
-  saveActivationUrl(recordId: string, activationUrl: string, createdIdpUserId?: string): Promise<void>;
+  saveActivationUrl(recordId: string, activationUrl: string | null, createdIdpUserId?: string): Promise<void>;
   /** 续跑时读回上次已签发的链接（不读全新建时不签发）。 */
   storedActivationUrl(recordId: string): Promise<string | null>;
   /**
@@ -169,9 +171,15 @@ function parseRow(row: Row): InviteAuditRow {
 
 export class SurrealInviteAuditStore implements InviteAuditStore {
   constructor(
-    private readonly session: (database: string, namespace?: string) => Promise<Queryable> = getRootDatabaseSession,
+    private readonly openSession: (database: string, namespace?: string) => Promise<Queryable> = getRootDatabaseSession,
     private readonly database = "_system",
   ) {}
+
+  private async session(database: string): Promise<Queryable> {
+    const db = await this.openSession(database);
+    // 此 store 的每次 query 只执行一条语句。
+    return { query: (sql, params) => retryAtomicConflict(() => db.query(sql, params)) };
+  }
 
   async claim(input: InviteClaimInsert) {
     const db = await this.session(this.database);
@@ -182,7 +190,8 @@ export class SurrealInviteAuditStore implements InviteAuditStore {
           email: $email, display_name: $displayName, workspace_slug: $slug, workspace_name: $wsName,
           plan_key: $plan, reason: $reason, request_digest: $digest,
           status: "processing", activation_url_issued: false, created_at: time::now(),
-          processing_since: time::now()
+          processing_since: time::now(), test_kit_managed: $testKit,
+          test_kit_cancellation_token: $testKitCancellationToken
         };`,
         {
           id: new StringRecordId(input.recordId),
@@ -196,14 +205,16 @@ export class SurrealInviteAuditStore implements InviteAuditStore {
           plan: input.planKey,
           reason: input.reason,
           digest: input.requestDigest,
+          testKit: input.testKitCancellationToken ? true : undefined,
+          testKitCancellationToken: input.testKitCancellationToken,
         },
       );
       return { kind: "claimed" as const };
-    } catch {
+    } catch (cause) {
       const existing = await this.byKey(input.idempotencyKey);
       if (existing) return { kind: "existing" as const, row: existing };
       // 唯一索引竞争但行未读回（极窄窗口）：让调用方按失败处理可重试。
-      throw new Error("ops-invitation-claim-conflict-unresolved");
+      throw cause;
     }
   }
 
@@ -216,7 +227,8 @@ export class SurrealInviteAuditStore implements InviteAuditStore {
         workspace_db = $dbName, workspace_outcome = $wsOutcome,
         product_revision = $revision, content_assigned = $assigned,
         ai_allowance = { kind: $aiKind, amount: $aiAmount, period_key: $aiPeriod, expires_at: $aiExpires, bucket: $aiBucket },
-        delivery_channel = $channel, activation_url_issued = $issued;`,
+        delivery_channel = $channel, activation_url_issued = $issued,
+        test_kit_cancellation_token = NONE;`,
       {
         id: new StringRecordId(recordId),
         userId: outcome.idpUserId,
@@ -240,7 +252,9 @@ export class SurrealInviteAuditStore implements InviteAuditStore {
   async fail(recordId: string, code: string, message: string): Promise<void> {
     const db = await this.session(this.database);
     await db.query(
-      `UPDATE $id SET status = "failed", error_code = $code, error_message = $message, completed_at = time::now();`,
+      `UPDATE $id SET status = "failed", error_code = $code, error_message = $message,
+        completed_at = time::now(), activation_url = IF test_kit_managed = true THEN NONE ELSE activation_url END
+        WHERE status = "processing";`,
       { id: new StringRecordId(recordId), code, message: message.slice(0, 500) },
     );
   }
@@ -259,13 +273,13 @@ export class SurrealInviteAuditStore implements InviteAuditStore {
     return updated.length > 0;
   }
 
-  async saveActivationUrl(recordId: string, activationUrl: string, createdIdpUserId?: string): Promise<void> {
+  async saveActivationUrl(recordId: string, activationUrl: string | null, createdIdpUserId?: string): Promise<void> {
     const db = await this.session(this.database);
     await db.query(
       createdIdpUserId
         ? `UPDATE $id SET activation_url = $url, idp_user_id = $userId WHERE status = "processing";`
         : `UPDATE $id SET activation_url = $url WHERE status = "processing";`,
-      { id: new StringRecordId(recordId), url: activationUrl, userId: createdIdpUserId },
+      { id: new StringRecordId(recordId), url: toSurrealNone(activationUrl), userId: createdIdpUserId },
     );
   }
 

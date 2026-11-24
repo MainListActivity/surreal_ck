@@ -11,7 +11,7 @@
 //     行归先占到的 agent，其他 agent 一律 not_owned。开通前确认产品与 IdP 都没有这个邮箱。
 //   - 只登记「本行建出的用户」：完成时 outcome=created，或 InviteService 在新建用户后立即落到行上的
 //     idp_user_id。绝不按邮箱回查 IdP 认领用户。
-//   - 不能正常完成的行（执行失败、或 processing 超过 STALE_MS 视为中断）不续跑，直接「收养」：
+//   - 明确执行失败的测试开通由 reaper 自动清理；中断行不续跑，继续沿用「收养」：
 //     有 idp_user_id 就把该用户登记为测试主体（到期锚定行 created_at + 30 天），交给 reaper 清掉
 //     它留下的 workspace 等产物；邮箱作废。没有 idp_user_id 说明还没建出用户，无产物可清。
 //   - 清理（手动或到期 reaper）给开通行打 test_kit_purged_at，对账不再登记回来。
@@ -19,13 +19,14 @@
 import { DateTime, StringRecordId } from "surrealdb";
 import { createOpsInvitationSchema, type CreateOpsInvitation } from "@surreal-ck/shared";
 import type { InviteResult, InviteService } from "../invitations/invite-service";
+import { TEST_KIT_KEY_PREFIX, TEST_KIT_STALE_MS, testKitInviteKey } from "./provision-state";
 import { InviteError } from "../invitations/invite-service";
 import type { MemberManager } from "../workspaces/member-manager";
 import { findTestSubject, isExpired, type Queryable } from "../test-subjects/store";
 import { computeTestSubjectPreflight, lookupSubjectsByEmail } from "../test-subjects/preflight";
-import { purgeTestSubject, purgeTestWorkspace, type TestSubjectReaperDeps } from "../test-subjects/reaper";
+import { purgeFailedTestKitInvitation, purgeTestSubject, purgeTestWorkspace, type TestSubjectReaperDeps } from "../test-subjects/reaper";
+import { isAtomicConflict, retryAtomicConflict } from "../db/atomic-conflict-retry";
 import { dateTimeTimestamp } from "../db/surreal-values";
-import { stableSha256 } from "../quota/canonical";
 
 export class TestKitError extends Error {
   constructor(readonly code: string, message: string) {
@@ -39,11 +40,8 @@ export type TestKitActor = Readonly<{ subject: string; kind?: string; capabiliti
 export const TEST_KIT_TTL_DAYS = 30;
 export const TEST_KIT_AI_AMOUNT = 100;
 const DAY_MS = 86_400_000;
-/** processing 超过该时长视为执行中断（远大于代办开通的同步窗与续跑阈值）。 */
-export const TEST_KIT_STALE_MS = 15 * 60_000;
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/u;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u;
-const KEY_PREFIX = "test-kit:";
 
 export type TestKitDeps = Readonly<{
   invites: Pick<InviteService, "provision" | "get" | "collect">;
@@ -68,6 +66,7 @@ type InviteRow = {
   /** InviteService 新建 IdP 用户后立即落下的用户 id（= 本行建出的用户）。 */
   idpUserId: string | null;
   purged: boolean;
+  managed: boolean;
   /** 已按失败/中断收养：对外终态恒为 failed，之后哪怕后台执行完成也不改口。 */
   adopted: boolean;
 };
@@ -92,7 +91,7 @@ function str(args: Record<string, unknown>, name: string, required = true): stri
   return value.trim();
 }
 
-const INVITE_ROW_FIELDS = "idempotency_key, operator_subject, email, status, created_at, idp_user_id, test_kit_purged_at, test_kit_adopted_at";
+const INVITE_ROW_FIELDS = "idempotency_key, operator_subject, email, status, created_at, idp_user_id, test_kit_purged_at, test_kit_adopted_at, test_kit_managed";
 
 function toInviteRow(row: Record<string, unknown>): InviteRow {
   return {
@@ -103,13 +102,9 @@ function toInviteRow(row: Record<string, unknown>): InviteRow {
     createdAtMs: dateTimeTimestamp(row.created_at),
     idpUserId: typeof row.idp_user_id === "string" && row.idp_user_id.length > 0 ? row.idp_user_id : null,
     purged: dateTimeTimestamp(row.test_kit_purged_at) > 0,
+    managed: row.test_kit_managed === true,
     adopted: dateTimeTimestamp(row.test_kit_adopted_at) > 0,
   };
-}
-
-/** 幂等键只由邮箱派生（不含 agent），同一邮箱无论谁开通都收敛到同一行。 */
-function inviteKey(email: string): string {
-  return `${KEY_PREFIX}${stableSha256(email.trim().toLowerCase()).slice(0, 32)}`;
 }
 
 export class TestKitService {
@@ -129,6 +124,12 @@ export class TestKitService {
 
   static originFor(agentSubject: string): string {
     return `test-kit:${agentSubject}`;
+  }
+
+  private systemDb(): Queryable {
+    return {
+      query: (sql, params) => retryAtomicConflict(async () => (await this.deps.getSystemDb()).query(sql, params)),
+    };
   }
 
   rules(actor: TestKitActor) {
@@ -152,8 +153,8 @@ export class TestKitService {
     if (!EMAIL_RE.test(email) || !emailRe.test(email)) {
       throw new TestKitError("email_not_allowed", `邮箱不在测试物料允许范围内（须整串匹配 ${this.deps.emailPattern}）`);
     }
-    const key = inviteKey(email);
-    const db = await this.deps.getSystemDb();
+    const key = testKitInviteKey(email);
+    const db = this.systemDb();
     const existing = await this.inviteRow(db, key);
     if (existing) return this.report(actor, db, this.own(actor, existing));
 
@@ -202,32 +203,33 @@ export class TestKitService {
     try {
       // 代办开通内部的权益分配以 subscription.manage 执行；对外能力仍只有 test.provision，
       // 输入已收窄到 trial/小额度/受限邮箱，审计行 operator_subject 记为该 agent。
-      result = await this.deps.invites.provision({ subject: actor.subject, capabilities: ["subscription.manage"] }, input);
+      result = await this.deps.invites.provision({ subject: actor.subject, capabilities: ["subscription.manage"] }, input, { testKit: true });
     } catch (error) {
       // 失败已落库（或别人抢先占了该邮箱的行）：按行的现状汇报，所有权照常校验。
       const row = await this.inviteRow(db, key).catch(() => null);
-      if (row && row.status !== "processing") return this.report(actor, db, this.own(actor, row));
+      if (row) return this.report(actor, db, this.own(actor, row));
       if (error instanceof InviteError) throw new TestKitError(error.code, error.message);
       throw error;
     }
     const row = await this.inviteRow(db, key).catch(() => null);
     const activationUrl = result.delivery?.activationUrl ?? null;
+    if (!row && !activationUrl) return this.processing(email);
     if (!row) return this.fallback(result, activationUrl);
-    return this.settle(actor, db, this.own(actor, row), result, activationUrl);
+    return this.settleAndCollect(actor, db, this.own(actor, row), result, activationUrl);
   }
 
   async status(actor: TestKitActor, args: Record<string, unknown>) {
     this.authorize(actor);
     const email = str(args, "email")!.toLowerCase();
-    const db = await this.deps.getSystemDb();
-    const row = await this.inviteRow(db, inviteKey(email));
+    const db = this.systemDb();
+    const row = await this.inviteRow(db, testKitInviteKey(email));
     if (!row) throw new TestKitError("not_found", "本 agent 没有该邮箱的开通记录");
     return this.report(actor, db, this.own(actor, row));
   }
 
   async list(actor: TestKitActor) {
     this.authorize(actor);
-    const db = await this.deps.getSystemDb();
+    const db = this.systemDb();
     await this.reconcile(actor, db);
     const subjects = rows(await db.query(
       `SELECT subject, email, expires_at FROM test_subject WHERE origin = $origin ORDER BY expires_at;`,
@@ -248,9 +250,8 @@ export class TestKitService {
         workspaces: workspaces.map((w) => ({ slug: w.slug ?? null, role: w.role ?? null })),
       });
     }
-    const inFlight = (await this.myInviteRows(db, actor, `status = "processing"`))
-      .filter((row) => !this.stale(row))
-      .map((row) => ({ email: row.email, status: row.status, next: "稍后用该 email 调 test_kit_status" }));
+    const inFlight = (await this.pendingRows(db, actor))
+      .map((row) => ({ email: row.email, status: "processing", next: "稍后用该 email 调 test_kit_status" }));
     return { maxActive: this.maxActive, subjects: out, inFlight };
   }
 
@@ -299,7 +300,13 @@ export class TestKitService {
     if (args.confirm !== `purge ${subject}`) {
       throw new TestKitError("confirmation_required", `不可逆：整库删除该账号自己拥有的 workspace。确认请在 confirm 原样填写「purge ${subject}」`);
     }
-    const db = await this.deps.getSystemDb();
+    const db = this.systemDb();
+    const pending = rows(await db.query(
+      `SELECT id FROM ops_invitation WHERE idp_user_id = $subject AND operator_subject = $agent
+       AND test_kit_managed = true AND status != "completed" AND test_kit_purged_at = NONE LIMIT 1;`,
+      { subject, agent: actor.subject },
+    ))[0];
+    if (pending) throw new TestKitError("cleanup_pending", "开通仍在处理，失败产物会自动清理；请调用 test_kit_status");
     const row = await findTestSubject(db, subject);
     if (!row) {
       // 已清理过的账号：test_subject 行已删，开通行留着 test_kit_purged_at
@@ -320,7 +327,11 @@ export class TestKitService {
     }
     // 先打清理标记（purgeTestSubject 末尾也会打）：中途失败也不会被对账登记回来。
     if (row.email) {
-      await db.query(`UPDATE ops_invitation SET test_kit_purged_at = time::now() WHERE idempotency_key = $key;`, { key: inviteKey(row.email) });
+      await db.query(
+        `UPDATE ops_invitation SET test_kit_purged_at = time::now() WHERE idempotency_key = $key
+         AND (test_kit_managed = NONE OR test_kit_managed = false OR status = "completed");`,
+        { key: testKitInviteKey(row.email) },
+      );
     }
     const deps = await this.deps.reaperDeps();
     // 只删该账号自己拥有的 workspace；它被加入的别人的测试 workspace 只摘成员索引（purgeTestSubject）。
@@ -354,7 +365,7 @@ export class TestKitService {
   }
 
   private stale(row: InviteRow): boolean {
-    return row.status === "processing" && this.now().getTime() - row.createdAtMs > TEST_KIT_STALE_MS;
+    return !row.managed && row.status === "processing" && this.now().getTime() - row.createdAtMs > TEST_KIT_STALE_MS;
   }
 
   private async inviteRow(db: Queryable, key: string): Promise<InviteRow | null> {
@@ -366,20 +377,48 @@ export class TestKitService {
     return rows(await db.query(
       `SELECT ${INVITE_ROW_FIELDS} FROM ops_invitation
        WHERE operator_subject = $agent AND string::starts_with(idempotency_key, $prefix) AND test_kit_purged_at = NONE AND ${where};`,
-      { agent: actor.subject, prefix: KEY_PREFIX },
+      { agent: actor.subject, prefix: TEST_KIT_KEY_PREFIX },
     )).map(toInviteRow);
   }
 
   /** 已有开通行的现状：已清理 → 拒绝；中断 → 收养；其余按 InviteService 记录结算并补收链接。 */
   private async report(actor: TestKitActor, db: Queryable, row: InviteRow) {
+    if (row.status === "failed" && row.managed) return this.reportManagedFailure(row);
     if (row.purged) throw new TestKitError("purged", "该邮箱的测试账号已清理，不能复用；换一个新别名");
+    if (row.managed && row.status === "processing") return this.processing(row.email);
     if (row.adopted || this.stale(row)) return this.adopt(actor, db, row);
     const result = await this.deps.invites.get(row.key);
     if (!result) throw new TestKitError("not_found", "开通记录不存在");
-    const settled = await this.settle(actor, db, row, result, null);
-    if (settled.status !== "completed" || settled.activationUrl) return settled;
-    const collected = await this.deps.invites.collect(row.key);
-    return { ...settled, activationUrl: collected?.activationUrl ?? null };
+    return this.settleAndCollect(actor, db, row, result, null);
+  }
+
+  private async settleAndCollect(actor: TestKitActor, db: Queryable, row: InviteRow, result: InviteResult, activationUrl: string | null) {
+    try {
+      const settled = await this.settle(actor, db, row, result, activationUrl);
+      if (settled.status !== "completed" || settled.activationUrl) return settled;
+      const collected = await this.deps.invites.collect(row.key, { testKit: true });
+      return { ...settled, activationUrl: collected?.activationUrl ?? null };
+    } catch (error) {
+      if (isAtomicConflict(error)) return this.processing(row.email);
+      if (result.status === "completed" && result.delivery?.pendingCollect && error instanceof TestKitError) {
+        const collected = await this.deps.invites.collect(row.key, { testKit: true });
+        if (collected?.activationUrl) return this.fallback(result, collected.activationUrl);
+      }
+      throw error;
+    }
+  }
+
+  private processing(email: string) {
+    return { email, status: "processing", activationUrl: null, next: "开通结果处理中：稍后用同一 email 调 test_kit_status" };
+  }
+
+  private async reportManagedFailure(row: InviteRow) {
+    const cleaned = row.purged || await (async () => {
+      const deps = await this.deps.reaperDeps();
+      return purgeFailedTestKitInvitation(deps, row.key);
+    })().catch(() => false);
+    if (!cleaned) return { ...this.processing(row.email), next: "正在自动清理开通产物：稍后用同一 email 调 test_kit_status" };
+    return { email: row.email, status: "failed", activationUrl: null, next: "开通失败，测试工作区和权限已自动清理；请换一个新别名重试" };
   }
 
   private fallback(result: InviteResult, activationUrl: string | null) {
@@ -402,8 +441,10 @@ export class TestKitService {
   }
 
   private async settleInner(actor: TestKitActor, db: Queryable, row: InviteRow, result: InviteResult, activationUrl: string | null) {
+    if (row.managed && result.status === "failed") return this.reportManagedFailure(row);
     const base = { email: row.email, status: result.status as string };
     if (result.status === "processing") {
+      if (row.managed) return this.processing(row.email);
       if (this.stale(row)) return this.adopt(actor, db, row);
       return { ...base, activationUrl: null, next: "开通进行中：稍后用同一 email 调 test_kit_status" };
     }
@@ -454,6 +495,7 @@ export class TestKitService {
     )).map(String));
     for (const row of candidates) {
       // 已登记的正常行跳过；收养过的行每次都过一遍，以标记后台执行迟到建出的 workspace。
+      if (row.managed && row.status !== "completed") continue;
       if (known.has(row.email.toLowerCase()) && !row.adopted) continue;
       if (row.status === "processing" && !this.stale(row)) continue;
       await (async () => {
@@ -470,8 +512,13 @@ export class TestKitService {
       { origin: TestKitService.originFor(actor.subject) },
     ));
     const now = this.now();
-    const processing = (await this.myInviteRows(db, actor, `status = "processing"`)).filter((row) => !this.stale(row));
+    const processing = await this.pendingRows(db, actor);
     return list.filter((row) => !isExpired({ expires_at: row.expires_at as string }, now)).length + processing.length;
+  }
+
+  private async pendingRows(db: Queryable, actor: TestKitActor): Promise<InviteRow[]> {
+    const rows = await this.myInviteRows(db, actor, `(status = "processing" OR (status = "failed" AND test_kit_managed = true))`);
+    return rows.filter((row) => row.managed || (!row.adopted && !this.stale(row)));
   }
 
   private async register(actor: TestKitActor, db: Queryable, subject: string, email: string, expiresAt: Date): Promise<void> {

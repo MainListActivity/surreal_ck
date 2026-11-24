@@ -94,6 +94,10 @@ describe("product entitlement surreal store", () => {
     expect(assigned.ai.consumableAllowance).toBeNull();
     expect(assigned.baseSource.planKey).toBe("fixture_plus");
     expect(assigned.features).toEqual([{ key: "audit_export", enabled: true, limit: null }]);
+    expect(await store.auditByKey(operator.subject, "assign-fixture-001")).toMatchObject({
+      assignmentItemId: "quota_subscription_item:team",
+      entitlementId: expect.any(String),
+    });
     const repeated = await service.assign(operator, {
       workspaceSlug: "team", billingAccountKey: "acct-a", productPlanRevisionId: published.productPlanRevisionId,
       reason: "为夹具工作区开通", idempotencyKey: "assign-fixture-001",
@@ -128,6 +132,23 @@ describe("product entitlement surreal store", () => {
     await store.pointWorkspace("workspace:team", olderId);
     const pointer = await db.query(`SELECT VALUE current_product_entitlement.revision FROM ONLY workspace:team;`).collect();
     expect(pointer[0]).toBe(expired.revision);
+
+    let attempts = 0;
+    const racingStore = new SurrealProductEntitlementStore(async () => ({
+      async query(sql, params) {
+        if (++attempts === 1) {
+          await db.query(`UPDATE quota_subscription_item:team SET status = "ended";`).collect();
+          throw { kind: "Quota", details: { code: "quota_conflict", retryable: true, details: {} } };
+        }
+        return await db.query(sql, params);
+      },
+    }), "main");
+    const currentBinding = `SELECT status, revision, product_plan_revision FROM ONLY quota_subscription_item:team;`;
+    const [beforeEnd] = await db.query(currentBinding).collect();
+    expect(await racingStore.bindProductRevision("quota_subscription_item:team", published.productPlanRevisionId)).toBe(false);
+    expect(attempts).toBe(2);
+    const [afterEnd] = await db.query(currentBinding).collect();
+    expect(afterEnd).toEqual({ ...(beforeEnd as object), status: "ended" });
   }, 30000);
 
   localTest("指派到低配产品再恢复同 digest 产品时指针回指旧快照", async () => {

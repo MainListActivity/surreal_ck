@@ -8,8 +8,8 @@
 | --- | --- |
 | `test_kit_rules` | 只读。是否启用、邮箱正则、每个 agent 未到期上限、有效期、套餐、AI 额度。连接器授权后先调它。 |
 | `test_kit_provision` | `email`、`displayName`、`workspaceSlug`、可选 `workspaceName`。一个邮箱 = 一个账号：同一 email 重复调用是幂等的（只返回现状）。新建 IdP 用户 + trial workspace（trial_v2 容量）+ 100 AI 额度，登记为 30 天到期的测试主体（origin=`test-kit:<agent subject>`），一次性返回激活链接。 |
-| `test_kit_status` | `email`。开通慢于同步窗时轮询；完成后登记测试主体并一次性收取激活链接。失败或中断（processing 超过 15 分钟）返回 failed，该邮箱作废。 |
-| `test_kit_list` | 只列本 agent 开的测试账号与开通中的邮箱；顺带把已完成但未轮询、失败或中断但已建出账号的开通补登记。 |
+| `test_kit_status` | `email`。开通慢于同步窗时轮询；完成后登记测试主体并一次性收取激活链接。受自动清理的开通失败或中断时，清理完成后返回 failed，该邮箱作废。 |
+| `test_kit_list` | 只列本 agent 开的测试账号与开通中的邮箱；顺带补登记已完成但未轮询的开通。 |
 | `test_kit_add_member` | `workspaceSlug`、`email`、可选 `isAdmin`/`displayName`。被加者必须是本 agent 开的未到期测试账号；workspace 必须由本 agent 开的账号（可加管理员）或运营登记的测试账号（只能加普通成员）拥有，其他 agent 的账号不能碰。首次登录按邮箱绑定。 |
 | `test_kit_purge` | `subject`、`confirm="purge <subject>"`。立即清理本 agent 开的测试账号：整库删除它自己拥有的 workspace，它加入的别人的 workspace 只摘成员索引。到期也会被 reaper 自动清理。成功返回 `{subject, workspacesPurged, workspacesSkipped}`；对已清理过的账号重复调用返回 `{subject, alreadyPurged:true, ...}` 幂等结果。已清理的账号不再出现在 test_kit_list 里；要确认某个邮箱是否已清理，用 test_kit_status，返回 code=purged 表示已清理且该邮箱作废不可复用。 |
 
@@ -18,12 +18,12 @@
 ## 边界
 
 - 邮箱必须整串匹配 `TEST_KIT_EMAIL_PATTERN`（忽略大小写）；未配置 = 全部关闭。正则只覆盖测试专用别名（例如 `name[+][a-z0-9-]+@gmail[.]com`；用字符类代替反斜杠，避免 env 文件转义）。
-- 身份系统里已有该邮箱（包括清理过的测试账号：清理不删 IdP 用户）→ 开通前直接拒绝。每个测试账号用一个新别名。
+- 身份系统里已有该邮箱 → 开通前直接拒绝。正常开通后的手动或到期清理不删除 IdP 用户；失败清理会按凭证撤销本次未激活的 IdP 用户。每次开通都用新别名。
 - 邮箱已出现在产品成员索引或测试主体登记里 → 直接拒绝，不开通。
 - 每个 agent「未到期 + 开通中」测试账号 ≤ `TEST_KIT_MAX_ACTIVE`（默认 10）。上限按调用时读数判断，并发开通可能略超，是软上限。
 - 到期时间锚定开通行的创建时刻（+30 天）；补登记、续跑都不会延长。
-- 不做续跑：失败或中断的开通直接「收养」——代办开通新建 IdP 用户后会立即把用户 id 记在开通行上（`idp_user_id`），收养只登记这个 id，绝不按邮箱回查 IdP 认领用户；没建出用户的行没有产物可清。收养会给行打 `test_kit_adopted_at`，对外终态恒为 failed；后台执行即便迟到完成，建出的 workspace 也会在下次对账时补标记进入到期清理。
-- 任何留下产物的结局（完成未轮询、执行中失败、中断、登记出错）都会被补登记交给 reaper；清理（手动或到期）给开通行打 `test_kit_purged_at`，不会被补登记回来。
+- 明确回滚的事务冲突会自动重试。失败或中断的开通不续跑：后台清理只使用该行记录的用户 ID 和开通撤销凭证，不按邮箱认领账号。清理完成前状态仍为 processing，不需要调用方手动清理。
+- 未完成的失败清理保存在开通行，由 reaper 重试。超过 15 分钟的中断开通也由 reaper 清理，但不会中断仍在运行的任务。历史开通行没有撤销凭证，仍按原来的测试主体登记与到期清理流程处理。
 - 预加入但从未登录的成员索引（subject = NONE）：邮箱属于测试物料账号（来自 IdP，运营手填的不算）时 reaper 视为测试成员；该账号被清理/到期时一并摘除（仅限测试 workspace），并给开通行打清理标记。
 - 一个邮箱只属于先开通它的 agent；其他 agent 用同一邮箱一律 `not_owned`。
 - 套餐固定 trial，额度固定 100，有效期固定 30 天；不能登记、清理他人主体，不能操作非测试 workspace。

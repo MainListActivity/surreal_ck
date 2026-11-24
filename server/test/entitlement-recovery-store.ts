@@ -34,7 +34,12 @@ export class EntitlementRecoveryStore implements ProductEntitlementStore {
   async membership(subject: string, workspaceId: string) { return this.members.get(`${subject}:${workspaceId}`) ?? null; }
   async activeItem(workspaceId: string) { return this.items.get(workspaceId) ?? null; }
   async bindProductRevision(itemId: string, productPlanRevisionId: string) {
-    for (const [workspaceId, item] of this.items) if (item.itemId === itemId) this.items.set(workspaceId, { ...item, productPlanRevisionId });
+    for (const [workspaceId, item] of this.items) {
+      if (item.itemId !== itemId || item.status !== "active") continue;
+      this.items.set(workspaceId, { ...item, productPlanRevisionId });
+      return true;
+    }
+    return false;
   }
   async productRevision(id: string) { return this.revisions.get(id) ?? null; }
   async resourceTemplateExists(id: string) { return this.resources.has(id); }
@@ -95,10 +100,6 @@ export class EntitlementRecoveryStore implements ProductEntitlementStore {
   async snapshotById(id: string) { return this.snapshots.find((item) => item.id === id) ?? null; }
   async snapshotByDigest(workspaceId: string, digest: string) {
     return this.snapshots.find((item) => item.workspaceId === workspaceId && item.digest === digest) ?? null;
-  }
-  async newestSnapshotRevision(workspaceId: string, productPlanRevisionId: string) {
-    const revisions = this.snapshots.filter((item) => item.workspaceId === workspaceId && item.productPlanRevisionId === productPlanRevisionId).map((item) => item.revision);
-    return revisions.length === 0 ? null : Math.max(...revisions);
   }
   async maxSnapshotRevision(workspaceId: string) {
     const revisions = this.snapshots.filter((item) => item.workspaceId === workspaceId).map((item) => item.revision);

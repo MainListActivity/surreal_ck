@@ -1,8 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import { loadTemplateScripts, type WorkspaceTemplateScript } from "@surreal-ck/shared/workspace-template";
 import type { TemplatePackScript } from "@surreal-ck/shared/template-packs";
 import { NATIVE_QUOTA_EXPECTED_CONTRACT, type NativeQuotaInfo } from "@surreal-ck/shared/native-quota";
-import { DateTime, StringRecordId } from "surrealdb";
+import { DateTime, QueryError, StringRecordId } from "surrealdb";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -313,6 +313,17 @@ function baseInput(overrides: Record<string, unknown> = {}) {
 }
 
 describe("workspace provisioning transactions", () => {
+  test("retries the signed TiKV legacy conflict through an error cause", async () => {
+    const error = new QueryError({
+      kind: "Query",
+      message: "Cannot COMMIT: Transaction conflict: fixture!qm. This transaction can be retried",
+    });
+    expect(error.isTransactionConflict).toBe(false);
+    const query = mock(async () => ["committed"]);
+    query.mockImplementationOnce(async () => { throw new Error("workspace write failed", { cause: error }); });
+    expect(await runProvisioningTransaction({ query }, "BEGIN; CREATE workspace; COMMIT;")).toEqual(["committed"]);
+    expect(query).toHaveBeenCalledTimes(2);
+  });
   test("replays the entire transaction after a structured quota conflict", async () => {
     const sql = "BEGIN TRANSACTION; CREATE workspace; COMMIT TRANSACTION;";
     const params = { subject: "fixture" };

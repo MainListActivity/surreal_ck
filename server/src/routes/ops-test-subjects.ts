@@ -5,7 +5,7 @@ import { z } from "zod";
 import { HttpError } from "../http-error";
 import type { AppBindings } from "../hono-types";
 import { requirePlatformOperator } from "../ops/operator-auth";
-import { getRootDatabaseSession } from "../db/root-connection";
+import { getRootDatabaseSession, removeRootWorkspaceDatabase } from "../db/root-connection";
 import {
   findTestSubject,
   isExpired,
@@ -15,7 +15,6 @@ import { computeTestSubjectPreflight, lookupSubjectsByEmail } from "../test-subj
 import { purgeTestSubject, purgeTestWorkspace, type TestSubjectReaperDeps } from "../test-subjects/reaper";
 import type { WorkspaceCreator } from "../workspaces/create-workspace";
 import { env } from "../env";
-import { getRootConnection } from "../db/root-connection";
 import { toSurrealNone, dateTimeTimestamp } from "../db/surreal-values";
 
 const CONTENT_CAPABILITIES = [
@@ -59,10 +58,7 @@ export function createOpsTestSubjectsRoutes(input: Readonly<{
 
   const reaperDeps = async (): Promise<TestSubjectReaperDeps> => ({
     systemDb: await getSystemDb(),
-    dropDatabase: input.dropDatabase ?? (async (dbName) => {
-      const client = getRootConnection();
-      await client.query(`REMOVE DATABASE IF EXISTS ${dbName};`);
-    }),
+    dropDatabase: input.dropDatabase ?? removeRootWorkspaceDatabase,
     now,
   });
 

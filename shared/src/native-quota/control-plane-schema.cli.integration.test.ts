@@ -214,8 +214,8 @@ const compiledRule = `{
     "041 放宽能力白名单到 funnel.read：历史项仍通过、未知能力仍拒绝、重复迁移安全",
     async () => {
       const migrations = await readMigrations();
-      expect(migrations).toHaveLength(50);
-      expect(await applyPendingMigrations(migrations)).toBe(50);
+      expect(migrations).toHaveLength(52);
+      expect(await applyPendingMigrations(migrations)).toBe(52);
 
       expectSuccessful(await runSurrealCli(`
         CREATE platform_operator:probe CONTENT {
@@ -251,8 +251,8 @@ const compiledRule = `{
       `, undefined, true);
       expect(unknown).toMatch(/must conform to|Found 'funnel\.write'/u);
 
-      // 重复执行最新迁移安全：不报错，既有行不被改写或删除。
-      expectSuccessful(await runSurrealCli(migrations.at(-1)!));
+      // 重复执行 041 安全：不报错，既有行不被改写或删除。
+      expectSuccessful(await runSurrealCli(migrations[40]!));
       const rows = await runSurrealCli(
         "SELECT count() AS total FROM platform_operator_capability GROUP ALL;",
       );
@@ -265,7 +265,7 @@ describe("_system native quota schema against local SurrealDB", () => {
     "upgrades existing data, enforces authority invariants, denies database users, and reruns safely",
     async () => {
       const migrations = await readMigrations();
-      expect(migrations).toHaveLength(50);
+      expect(migrations).toHaveLength(52);
 
       // 001–003 历史夹具来自 3.x 创建的数据库。
       expectSuccessful(await runSurrealCli("ALTER DATABASE COMPATIBILITY 3;"));
@@ -280,7 +280,7 @@ describe("_system native quota schema against local SurrealDB", () => {
         };
       `));
 
-      expect(await applyPendingMigrations(migrations)).toBe(47);
+      expect(await applyPendingMigrations(migrations)).toBe(migrations.length - 3);
       expectSuccessful(await runSurrealCli("ALTER DATABASE COMPATIBILITY 4;"));
       const existingWorkspace = await runSurrealCli(
         "SELECT id, status FROM ONLY workspace:existing;",
@@ -631,7 +631,7 @@ describe("_system platform_secret sealed store against local SurrealDB", () => {
   localSurrealTest(
     "rotation write persists secret row and flexible audit detail (prod 030 schema regression)",
     async () => {
-      expect(await applyPendingMigrations(await readMigrations())).toBe(50);
+      expect(await applyPendingMigrations(await readMigrations())).toBe(52);
       // PlatformSecretStore.put() 的写入形状：UPSERT 密文行 + CREATE 审计事件，
       // detail 为开放元数据对象（031 前 SCHEMAFULL 严格 object 会拒绝
       // detail.verifiedAgainst，导致生产 rotate 端点 500）。
