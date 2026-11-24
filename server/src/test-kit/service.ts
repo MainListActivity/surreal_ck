@@ -18,7 +18,8 @@
 
 import { DateTime, StringRecordId } from "surrealdb";
 import { createOpsInvitationSchema, type CreateOpsInvitation } from "@surreal-ck/shared";
-import { TEST_KIT_STALE_MS, type InviteResult, type InviteService } from "../invitations/invite-service";
+import type { InviteResult, InviteService } from "../invitations/invite-service";
+import { TEST_KIT_STALE_MS } from "./provision-state";
 import { InviteError } from "../invitations/invite-service";
 import type { MemberManager } from "../workspaces/member-manager";
 import { findTestSubject, isExpired, type Queryable } from "../test-subjects/store";
@@ -450,6 +451,7 @@ export class TestKitService {
     if (row.managed && result.status === "failed") return this.reportManagedFailure(row);
     const base = { email: row.email, status: result.status as string };
     if (result.status === "processing") {
+      if (row.managed) return this.processing(row.email);
       if (this.stale(row)) return this.adopt(actor, db, row);
       return { ...base, activationUrl: null, next: "开通进行中：稍后用同一 email 调 test_kit_status" };
     }

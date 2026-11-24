@@ -5,7 +5,7 @@
 import { DateTime, StringRecordId } from "surrealdb";
 import type { Queryable } from "./store";
 import { retryAtomicConflict } from "../db/atomic-conflict-retry";
-import { isTestKitProvisionRunning, TEST_KIT_STALE_MS } from "../invitations/invite-service";
+import { runningTestKitProvisions, TEST_KIT_STALE_MS } from "../test-kit/provision-state";
 
 type Log = (event: string, fields: Record<string, unknown>) => void;
 
@@ -274,8 +274,18 @@ export async function purgeTestSubject(
   log("subject.purged", { subject });
 }
 
+const failedInvitationCleanups = new Map<string, Promise<boolean>>();
+
 /** 失败行本身是持久清理队列，不依赖调用方再次轮询。 */
-export async function purgeFailedTestKitInvitation(deps: TestSubjectReaperDeps, key: string): Promise<boolean> {
+export function purgeFailedTestKitInvitation(deps: TestSubjectReaperDeps, key: string): Promise<boolean> {
+  const existing = failedInvitationCleanups.get(key);
+  if (existing) return existing;
+  const cleanup = purgeFailedTestKitInvitationOnce(deps, key).finally(() => failedInvitationCleanups.delete(key));
+  failedInvitationCleanups.set(key, cleanup);
+  return cleanup;
+}
+
+async function purgeFailedTestKitInvitationOnce(deps: TestSubjectReaperDeps, key: string): Promise<boolean> {
   const db: Queryable = { query: (sql, params) => retryAtomicConflict(() => deps.systemDb.query(sql, params)) };
   const [row] = firstArray(await db.query(
     `SELECT id, operator_subject, email, idp_user_id, workspace_slug, test_kit_purged_at, test_kit_cancellation_token
@@ -340,7 +350,7 @@ export async function runFailedTestKitInvitationReaper(deps: TestSubjectReaperDe
       const key = String(row.idempotency_key);
       if (row.status === "processing") {
         // 开通与清理共用单个 origin 进程；不能清理仍在执行的慢请求。
-        if (isTestKitProvisionRunning(key)) continue;
+        if (runningTestKitProvisions.has(key)) continue;
         const updated = firstArray(await query(
           `UPDATE $id SET status = "failed", completed_at = time::now(),
             error_code = "invite-interrupted", activation_url = NONE
@@ -371,7 +381,9 @@ export async function runTestSubjectReaper(
   const expiredWorkspaces = firstArray(await deps.systemDb.query(
     `SELECT id, slug, db_name, owner_subject, test_origin
      FROM workspace
-     WHERE test_expires_at != NONE AND test_expires_at <= $now;`,
+     WHERE test_expires_at != NONE AND test_expires_at <= $now
+     AND owner_subject NOT IN (SELECT VALUE idp_user_id FROM ops_invitation
+       WHERE test_kit_managed = true AND status != "completed" AND test_kit_purged_at = NONE AND idp_user_id != NONE);`,
     { now: nowParam },
   )) as unknown as ExpiredWorkspaceRow[];
 

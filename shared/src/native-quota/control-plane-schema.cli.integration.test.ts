@@ -251,8 +251,8 @@ const compiledRule = `{
       `, undefined, true);
       expect(unknown).toMatch(/must conform to|Found 'funnel\.write'/u);
 
-      // 重复执行最新迁移安全：不报错，既有行不被改写或删除。
-      expectSuccessful(await runSurrealCli(migrations.at(-1)!));
+      // 重复执行 041 安全：不报错，既有行不被改写或删除。
+      expectSuccessful(await runSurrealCli(migrations[40]!));
       const rows = await runSurrealCli(
         "SELECT count() AS total FROM platform_operator_capability GROUP ALL;",
       );
@@ -280,7 +280,7 @@ describe("_system native quota schema against local SurrealDB", () => {
         };
       `));
 
-      expect(await applyPendingMigrations(migrations)).toBe(47);
+      expect(await applyPendingMigrations(migrations)).toBe(48);
       expectSuccessful(await runSurrealCli("ALTER DATABASE COMPATIBILITY 4;"));
       const existingWorkspace = await runSurrealCli(
         "SELECT id, status FROM ONLY workspace:existing;",

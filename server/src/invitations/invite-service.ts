@@ -8,6 +8,7 @@ import type { EnsureUserResult, HttpIdpAdminClient, IdpAdminClientSource } from 
 import { IdpAdminError } from "./idp-admin-client";
 import type { InviteAuditStore, InviteAuditRow, InviteOutcome } from "./invite-store";
 import { retryAtomicConflict } from "../db/atomic-conflict-retry";
+import { runningTestKitProvisions } from "../test-kit/provision-state";
 
 export class InviteError extends Error {
   constructor(
@@ -108,12 +109,6 @@ function requestDigest(input: CreateOpsInvitation): string {
 }
 
 const TIMED = "timed" as const;
-export const TEST_KIT_STALE_MS = 15 * 60_000;
-const runningTestKitProvisions = new Set<string>();
-
-export function isTestKitProvisionRunning(key: string): boolean {
-  return runningTestKitProvisions.has(key);
-}
 
 /** IdP 邀请 token 有效期（ma_hono provision/reissue 恒定 24h）。 */
 const ACTIVATION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
