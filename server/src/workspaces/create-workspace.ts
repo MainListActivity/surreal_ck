@@ -687,7 +687,7 @@ function createSurrealControlPlane(
     },
 
     async markStage(input) {
-      await systemDb.query(
+      await runProvisioningTransaction(systemDb,
         `
           BEGIN;
           IF $activateTrial {
