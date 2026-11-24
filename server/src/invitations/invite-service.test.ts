@@ -132,6 +132,7 @@ class MemStore implements InviteAuditStore {
 type Call = { name: string; detail?: unknown };
 
 function makeService(overrides: {
+  idp?: HttpIdpAdminClient;
   idpResult?: EnsureUserResult | Error | null;
   reissueResult?: { user: { id: string; email: string; displayName: string; status: string }; activationUrl: string | null } | Error;
   createResult?: CreateWorkspaceResult;
@@ -146,7 +147,7 @@ function makeService(overrides: {
 } = {}) {
   const calls: Call[] = [];
   const store = overrides.store ?? new MemStore();
-  const idp = async () => overrides.idpResult === null
+  const idp = async () => overrides.idp ?? (overrides.idpResult === null
     ? null
     : {
         ensureUser: async () => {
@@ -168,7 +169,7 @@ function makeService(overrides: {
           if (r instanceof Error) throw r;
           return r;
         },
-      } as unknown as HttpIdpAdminClient;
+      } as unknown as HttpIdpAdminClient);
   const service = new InviteService({
     idp,
     syncWindowMs: overrides.syncWindowMs,
@@ -384,6 +385,36 @@ describe("G2 InviteService", () => {
     const collect = await service.collect("invite-test-key-001");
     expect(collect?.activationUrl).toBeNull();
     expect(collect?.deliveredAt).not.toBeNull();
+  });
+
+  test("运营建号在同步窗结束后返回，首签链接仍可收取一次", async () => {
+    const started = Promise.withResolvers<void>();
+    const reply = Promise.withResolvers<Response>();
+    const idp = new HttpIdpAdminClient({
+      baseUrl: "https://idp.example.test", provisionToken: "fixture", tenantSlug: "ck",
+    }, (async (_url, init) => {
+      if (init?.method !== "POST") {
+        return Response.json({ tenants: [{ id: "t-1", slug: "ck" }] });
+      }
+      expect(init.signal).toBeUndefined();
+      started.resolve();
+      return reply.promise;
+    }) as typeof fetch);
+    const { service } = makeService({ idp, syncWindowMs: 1 });
+    const pending = service.provision(ACTOR, input());
+    await started.promise;
+    expect(await pending).toMatchObject({ status: "processing", delivery: { activationUrl: null } });
+    const activationUrl = "https://idp.example.test/activate?token=fixture";
+    reply.resolve(Response.json({
+      user: { id: "user-1", email: input().email, status: "provisioned" },
+      activation_url: activationUrl,
+    }, { status: 201 }));
+    for (let i = 0; i < 100; i += 1) {
+      if ((await service.get(input().idempotencyKey))?.status === "completed") break;
+      await Bun.sleep(1);
+    }
+    expect(await service.collect(input().idempotencyKey)).toMatchObject({ activationUrl });
+    expect(await service.collect(input().idempotencyKey)).toMatchObject({ activationUrl: null });
   });
 
   test("僵死 processing（上轮断连）→ 同参重发续跑并完成；读回首签 URL 一并下发", async () => {
