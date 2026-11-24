@@ -162,7 +162,11 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
         const tick = async (sweep: (deps: TestSubjectReaperDeps) => Promise<unknown>) => {
           try {
             await sweep({
-              systemDb: await getRootDatabaseSession("_system"),
+              systemDb: {
+                async query(sql, params) {
+                  return (await getRootDatabaseSession("_system")).query(sql, params);
+                },
+              },
               dropDatabase: async (dbName) => {
                 await getRootConnection().query(`REMOVE DATABASE IF EXISTS ${dbName};`);
               },

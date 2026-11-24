@@ -565,7 +565,11 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
           return user ? { id: user.id } : null;
         },
         reaperDeps: async () => ({
-          systemDb: await getRootDatabaseSession("_system"),
+          systemDb: {
+            async query(sql, params) {
+              return (await getRootDatabaseSession("_system")).query(sql, params);
+            },
+          },
           dropDatabase: async (dbName) => { await getRootConnection().query(`REMOVE DATABASE IF EXISTS ${dbName};`); },
           cancelIdpProvision: createIdpProvisionCancellation(idpAdminSource),
           now: () => new Date(),

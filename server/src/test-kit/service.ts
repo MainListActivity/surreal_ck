@@ -18,7 +18,7 @@
 
 import { DateTime, StringRecordId } from "surrealdb";
 import { createOpsInvitationSchema, type CreateOpsInvitation } from "@surreal-ck/shared";
-import type { InviteResult, InviteService } from "../invitations/invite-service";
+import { TEST_KIT_STALE_MS, type InviteResult, type InviteService } from "../invitations/invite-service";
 import { InviteError } from "../invitations/invite-service";
 import type { MemberManager } from "../workspaces/member-manager";
 import { findTestSubject, isExpired, type Queryable } from "../test-subjects/store";
@@ -40,8 +40,6 @@ export type TestKitActor = Readonly<{ subject: string; kind?: string; capabiliti
 export const TEST_KIT_TTL_DAYS = 30;
 export const TEST_KIT_AI_AMOUNT = 100;
 const DAY_MS = 86_400_000;
-/** processing 超过该时长视为执行中断（远大于代办开通的同步窗与续跑阈值）。 */
-export const TEST_KIT_STALE_MS = 15 * 60_000;
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/u;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u;
 const KEY_PREFIX = "test-kit:";
@@ -134,9 +132,10 @@ export class TestKitService {
     return `test-kit:${agentSubject}`;
   }
 
-  private async systemDb(): Promise<Queryable> {
-    const db = await this.deps.getSystemDb();
-    return { query: (sql, params) => retryAtomicConflict(() => db.query(sql, params)) };
+  private systemDb(): Queryable {
+    return {
+      query: (sql, params) => retryAtomicConflict(async () => (await this.deps.getSystemDb()).query(sql, params)),
+    };
   }
 
   rules(actor: TestKitActor) {
@@ -161,7 +160,7 @@ export class TestKitService {
       throw new TestKitError("email_not_allowed", `邮箱不在测试物料允许范围内（须整串匹配 ${this.deps.emailPattern}）`);
     }
     const key = inviteKey(email);
-    const db = await this.systemDb();
+    const db = this.systemDb();
     const existing = await this.inviteRow(db, key);
     if (existing) return this.report(actor, db, this.own(actor, existing));
 
@@ -228,7 +227,7 @@ export class TestKitService {
   async status(actor: TestKitActor, args: Record<string, unknown>) {
     this.authorize(actor);
     const email = str(args, "email")!.toLowerCase();
-    const db = await this.systemDb();
+    const db = this.systemDb();
     const row = await this.inviteRow(db, inviteKey(email));
     if (!row) throw new TestKitError("not_found", "本 agent 没有该邮箱的开通记录");
     return this.report(actor, db, this.own(actor, row));
@@ -236,7 +235,7 @@ export class TestKitService {
 
   async list(actor: TestKitActor) {
     this.authorize(actor);
-    const db = await this.systemDb();
+    const db = this.systemDb();
     await this.reconcile(actor, db);
     const subjects = rows(await db.query(
       `SELECT subject, email, expires_at FROM test_subject WHERE origin = $origin ORDER BY expires_at;`,
@@ -307,7 +306,7 @@ export class TestKitService {
     if (args.confirm !== `purge ${subject}`) {
       throw new TestKitError("confirmation_required", `不可逆：整库删除该账号自己拥有的 workspace。确认请在 confirm 原样填写「purge ${subject}」`);
     }
-    const db = await this.systemDb();
+    const db = this.systemDb();
     const pending = rows(await db.query(
       `SELECT id FROM ops_invitation WHERE idp_user_id = $subject AND operator_subject = $agent
        AND test_kit_managed = true AND status != "completed" AND test_kit_purged_at = NONE LIMIT 1;`,
@@ -372,7 +371,7 @@ export class TestKitService {
   }
 
   private stale(row: InviteRow): boolean {
-    return row.status === "processing" && this.now().getTime() - row.createdAtMs > TEST_KIT_STALE_MS;
+    return !row.managed && row.status === "processing" && this.now().getTime() - row.createdAtMs > TEST_KIT_STALE_MS;
   }
 
   private async inviteRow(db: Queryable, key: string): Promise<InviteRow | null> {
@@ -392,6 +391,7 @@ export class TestKitService {
   private async report(actor: TestKitActor, db: Queryable, row: InviteRow) {
     if (row.status === "failed" && row.managed) return this.reportManagedFailure(row);
     if (row.purged) throw new TestKitError("purged", "该邮箱的测试账号已清理，不能复用；换一个新别名");
+    if (row.managed && row.status === "processing") return this.processing(row.email);
     if (row.adopted || this.stale(row)) return this.adopt(actor, db, row);
     const result = await this.deps.invites.get(row.key);
     if (!result) throw new TestKitError("not_found", "开通记录不存在");
@@ -500,7 +500,7 @@ export class TestKitService {
     )).map(String));
     for (const row of candidates) {
       // 已登记的正常行跳过；收养过的行每次都过一遍，以标记后台执行迟到建出的 workspace。
-      if (row.managed && row.status === "failed") continue;
+      if (row.managed && row.status !== "completed") continue;
       if (known.has(row.email.toLowerCase()) && !row.adopted) continue;
       if (row.status === "processing" && !this.stale(row)) continue;
       await (async () => {
@@ -523,7 +523,7 @@ export class TestKitService {
 
   private async pendingRows(db: Queryable, actor: TestKitActor): Promise<InviteRow[]> {
     const rows = await this.myInviteRows(db, actor, `(status = "processing" OR (status = "failed" AND test_kit_managed = true))`);
-    return rows.filter((row) => row.status === "failed" || (!row.adopted && !this.stale(row)));
+    return rows.filter((row) => row.managed || (!row.adopted && !this.stale(row)));
   }
 
   private async register(actor: TestKitActor, db: Queryable, subject: string, email: string, expiresAt: Date): Promise<void> {

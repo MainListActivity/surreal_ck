@@ -12,6 +12,7 @@ import { DateTime, Surreal, jsonify } from "surrealdb";
 import { createNativeMeetingBatchRunner, sweepNativeMeetingWorkspaces } from "../db/native-meeting-gc";
 import { InviteService } from "../invitations/invite-service";
 import { SurrealInviteAuditStore } from "../invitations/invite-store";
+import { stableSha256 } from "../quota/canonical";
 import type { Queryable } from "../test-subjects/store";
 import { purgeTestWorkspace, runFailedTestKitInvitationReaper } from "../test-subjects/reaper";
 import { TestKitService, type TestKitActor, type TestKitDeps } from "./service";
@@ -102,7 +103,7 @@ function inviteService(opts: { syncWindowMs?: number; staleProcessingMs?: number
   });
 }
 
-function kit(invites: TestKitDeps["invites"] = inviteService()) {
+function kit(invites: TestKitDeps["invites"] = inviteService(), getSystemDb: TestKitDeps["getSystemDb"] = async () => queryClient()) {
   return new TestKitService({
     invites,
     members: {
@@ -115,7 +116,7 @@ function kit(invites: TestKitDeps["invites"] = inviteService()) {
         return { kind: "added" };
       },
     },
-    getSystemDb: async () => queryClient(),
+    getSystemDb,
     idpFindUser: async (email) => { const u = await fakeIdp.findUserByEmail(email); return u ? { id: u.id } : null; },
     reaperDeps: async () => ({
       systemDb: queryClient(),
@@ -222,12 +223,13 @@ describe("test kit on real fork SurrealDB with the real invite service", () => {
     expect(await q(`SELECT * FROM ops_invitation WHERE email = "kit+b@example.com";`)).toHaveLength(1);
   });
 
-  localTest("中断：首轮建出用户后进程死掉，超过阈值后 status 收养——登记本行建的用户交给 reaper，邮箱作废", async () => {
+  localTest("旧版开通中断：超过阈值后 status 收养已建出的用户", async () => {
     assignBehaviour = "hang";
     const first = await kit(inviteService({ syncWindowMs: 50 })).provision(AGENT, provisionArgs("stuck")) as Record<string, unknown>;
     expect(first.status).toBe("processing");
     expect((await kit().list(AGENT)).inFlight.map((r) => r.email)).toEqual(["kit+stuck@example.com"]);
     expect((await q(`SELECT VALUE idp_user_id FROM ops_invitation WHERE email = "kit+stuck@example.com";`))[0]).toBe("sub-stuck");
+    await db!.query(`UPDATE ops_invitation SET test_kit_managed = NONE WHERE email = "kit+stuck@example.com";`);
 
     assignBehaviour = "ok";
     clockOffset = 2 * DAY;
@@ -241,7 +243,7 @@ describe("test kit on real fork SurrealDB with the real invite service", () => {
     expect((await kit().list(AGENT)).inFlight).toEqual([]);
   });
 
-  localTest("收养后后台执行迟到完成：对外仍是 failed、不发链接，迟到建出的 workspace 照样进入到期清理", async () => {
+  localTest("仍在运行的开通不因超过阈值而被清理，可以正常完成", async () => {
     let release: () => void = () => {};
     assignBehaviour = "ok";
     const slow = inviteService({ syncWindowMs: 50 });
@@ -253,20 +255,47 @@ describe("test kit on real fork SurrealDB with the real invite service", () => {
     expect((await kit(slow).provision(AGENT, provisionArgs("late")) as Record<string, unknown>).status).toBe("processing");
 
     clockOffset = 2 * DAY;
-    expect((await kit().status(AGENT, { email: "kit+late@example.com" }) as Record<string, unknown>).status).toBe("failed");
-    expect((await subjectRow("sub-late"))?.origin).toBe("test-kit:agent-arch");
+    await runFailedTestKitInvitationReaper({
+      systemDb: queryClient(),
+      dropDatabase: async () => { throw new Error("fixture cleanup must not run"); },
+      cancelIdpProvision: fakeIdp.cancelProvision,
+      now: () => new Date(Date.now() + clockOffset),
+    });
+    expect(await kit().status(AGENT, { email: "kit+late@example.com" })).toMatchObject({ status: "processing", activationUrl: null });
+    expect(await subjectRow("sub-late")).toBeUndefined();
 
     release();
     for (let i = 0; i < 50 && (await q(`SELECT VALUE status FROM ops_invitation WHERE email = "kit+late@example.com";`))[0] !== "completed"; i += 1) await Bun.sleep(50);
     const after = await kit().status(AGENT, { email: "kit+late@example.com" }) as Record<string, unknown>;
-    expect(after).toMatchObject({ status: "failed", activationUrl: null });
+    expect(after).toMatchObject({ status: "completed", activationUrl: "https://auth.example/activate/sub-late" });
     expect((await q(`SELECT test_expires_at FROM workspace WHERE slug = "kit-late";`))[0]?.test_expires_at).toBeTruthy();
+  });
+
+  localTest("进程重启遗留的过期处理中记录由 reaper 撤销，即使 IdP 用户 ID 未写回", async () => {
+    const email = "kit+interrupted@example.com";
+    const token = crypto.randomUUID();
+    const key = `test-kit:${stableSha256(email).slice(0, 32)}`;
+    const store = new SurrealInviteAuditStore(async () => queryClient() as never);
+    await store.claim({
+      recordId: `ops_invitation:${stableSha256(key).slice(0, 40)}`,
+      idempotencyKey: key, operatorSubject: AGENT.subject, authorizedCapability: "subscription.manage",
+      email, displayName: "Interrupted", workspaceSlug: "interrupted", workspaceName: "Interrupted",
+      planKey: "trial", reason: "fixture", requestDigest: stableSha256("interrupted"), testKitCancellationToken: token,
+    });
+    await fakeIdp.ensureUser({ email, displayName: "Interrupted", cancellationToken: token });
+    expect(await kit().status(AGENT, { email })).toMatchObject({ status: "processing", activationUrl: null });
+    await runFailedTestKitInvitationReaper({
+      systemDb: queryClient(), dropDatabase: async () => { throw new Error("no workspace to remove"); },
+      cancelIdpProvision: fakeIdp.cancelProvision, now: () => new Date(Date.now() + DAY), log: () => {},
+    });
+    expect(await fakeIdp.findUserByEmail(email)).toBeNull();
+    expect(await kit().status(AGENT, { email })).toMatchObject({ status: "failed", activationUrl: null });
   });
 
   localTest("收养绝不按邮箱认领：本行没建出用户（未记 idp_user_id）时，之后别人建的同邮箱用户不会被登记", async () => {
     assignBehaviour = "hang";
     await kit(inviteService({ syncWindowMs: 50 })).provision(AGENT, provisionArgs("ghost"));
-    await db!.query(`UPDATE ops_invitation SET idp_user_id = NONE WHERE email = "kit+ghost@example.com";`);
+    await db!.query(`UPDATE ops_invitation SET idp_user_id = NONE, test_kit_managed = NONE WHERE email = "kit+ghost@example.com";`);
     idpUsers.set("kit+ghost@example.com", { id: "real-person", email: "kit+ghost@example.com", displayName: "x", status: "active" });
     assignBehaviour = "ok";
     clockOffset = 2 * DAY;
@@ -292,8 +321,23 @@ describe("test kit on real fork SurrealDB with the real invite service", () => {
 
   localTest("建出用户后失败：自动清理后才返回 failed，邮箱作废", async () => {
     assignBehaviour = "fail";
-    const out = await kit().provision(AGENT, provisionArgs("broken")) as Record<string, unknown>;
-    expect(out.status).toBe("failed");
+    const invites = inviteService();
+    let unavailable = false;
+    const svc = kit({
+      async provision(...args) {
+        const result = await invites.provision(...args);
+        unavailable = true;
+        return result;
+      },
+      get: invites.get.bind(invites),
+      collect: invites.collect.bind(invites),
+    }, async () => {
+      if (unavailable) throw new Error("fixture read unavailable");
+      return queryClient();
+    });
+    expect(await svc.provision(AGENT, provisionArgs("broken"))).toMatchObject({ status: "processing", activationUrl: null });
+    unavailable = false;
+    expect(await svc.status(AGENT, { email: "kit+broken@example.com" })).toMatchObject({ status: "failed", activationUrl: null });
     expect(await subjectRow("sub-broken")).toBeUndefined();
     expect(await fakeIdp.findUserByEmail("kit+broken@example.com")).toBeNull();
     expect(await q(`SELECT id FROM workspace WHERE slug = "kit-broken";`)).toEqual([]);

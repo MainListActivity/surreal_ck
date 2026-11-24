@@ -48,7 +48,7 @@ async function schemas(db: Surreal) {
     query: async (sql: string, params?: Record<string, unknown>) => db.query(sql, params).collect(),
   };
   const system = await ensureSystemSchema(client, { namespace: "main" });
-  expect(system.toVersion).toBe(50);
+  expect(system.toVersion).toBe(51);
   for (const database of ["platform_content", "ws_upgrade"]) {
     await db.query(`DEFINE DATABASE IF NOT EXISTS ${database};`);
     await db.use({ namespace: "main", database });

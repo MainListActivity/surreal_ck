@@ -108,6 +108,12 @@ function requestDigest(input: CreateOpsInvitation): string {
 }
 
 const TIMED = "timed" as const;
+export const TEST_KIT_STALE_MS = 15 * 60_000;
+const runningTestKitProvisions = new Set<string>();
+
+export function isTestKitProvisionRunning(key: string): boolean {
+  return runningTestKitProvisions.has(key);
+}
 
 /** IdP 邀请 token 有效期（ma_hono provision/reissue 恒定 24h）。 */
 const ACTIVATION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
@@ -223,16 +229,20 @@ export class InviteService {
     replayed: boolean,
     cancellationToken?: string,
   ): Promise<InviteResult> {
+    if (cancellationToken) runningTestKitProvisions.add(input.idempotencyKey);
     const task = this.execute(actor, input, recordId, workspaceName, expiresAtMs, idp, cancellationToken)
-      .catch(async (error: unknown) => {
+      .catch(async (error: unknown): Promise<typeof TIMED> => {
         const code = error instanceof InviteError ? error.code
           : error instanceof IdpAdminError ? error.code
             : "invite-internal-error";
         const message = error instanceof Error ? error.message : String(error);
         await this.deps.store.fail(recordId, code, message).catch(() => undefined);
+        if (cancellationToken) return TIMED;
         throw error instanceof InviteError || error instanceof IdpAdminError
           ? new InviteError(code, message)
           : error;
+      }).finally(() => {
+        if (cancellationToken) runningTestKitProvisions.delete(input.idempotencyKey);
       });
     const raced = await Promise.race([task, sleep(this.syncWindowMs).then(() => TIMED)]);
     if (raced === TIMED) {

@@ -5,6 +5,7 @@
 import { DateTime, StringRecordId } from "surrealdb";
 import type { Queryable } from "./store";
 import { retryAtomicConflict } from "../db/atomic-conflict-retry";
+import { isTestKitProvisionRunning, TEST_KIT_STALE_MS } from "../invitations/invite-service";
 
 type Log = (event: string, fields: Record<string, unknown>) => void;
 
@@ -326,13 +327,29 @@ export async function purgeFailedTestKitInvitation(deps: TestSubjectReaperDeps, 
 
 export async function runFailedTestKitInvitationReaper(deps: TestSubjectReaperDeps): Promise<void> {
   const log = deps.log ?? defaultLog;
-  const failedInvites = firstArray(await retryAtomicConflict(() => deps.systemDb.query(
-    `SELECT idempotency_key FROM ops_invitation
-     WHERE test_kit_managed = true AND status = "failed" AND test_kit_purged_at = NONE;`,
-  )));
-  for (const row of failedInvites) {
+  const stale = new DateTime(new Date((deps.now?.() ?? new Date()).getTime() - TEST_KIT_STALE_MS));
+  const query: Queryable["query"] = (sql, params) => retryAtomicConflict(() => deps.systemDb.query(sql, params));
+  const pending = firstArray(await query(
+    `SELECT id, idempotency_key, status FROM ops_invitation
+     WHERE test_kit_managed = true AND test_kit_purged_at = NONE
+       AND (status = "failed" OR (status = "processing" AND processing_since < $stale));`,
+    { stale },
+  ));
+  for (const row of pending) {
     try {
-      if (!await purgeFailedTestKitInvitation(deps, String(row.idempotency_key))) {
+      const key = String(row.idempotency_key);
+      if (row.status === "processing") {
+        // 开通与清理共用单个 origin 进程；不能清理仍在执行的慢请求。
+        if (isTestKitProvisionRunning(key)) continue;
+        const updated = firstArray(await query(
+          `UPDATE $id SET status = "failed", completed_at = time::now(),
+            error_code = "invite-interrupted", activation_url = NONE
+           WHERE status = "processing" AND processing_since < $stale;`,
+          { id: new StringRecordId(String(row.id)), stale },
+        ));
+        if (!updated.length) continue;
+      }
+      if (!await purgeFailedTestKitInvitation(deps, key)) {
         log("test_kit.cleanup_deferred", {});
       }
     } catch {
@@ -376,7 +393,7 @@ export async function runTestSubjectReaper(
   const expiredSubjects = firstArray(await deps.systemDb.query(
     `SELECT subject FROM test_subject WHERE expires_at <= $now
      AND subject NOT IN (SELECT VALUE idp_user_id FROM ops_invitation
-       WHERE test_kit_managed = true AND status = "failed" AND test_kit_purged_at = NONE AND idp_user_id != NONE);`,
+       WHERE test_kit_managed = true AND status != "completed" AND test_kit_purged_at = NONE AND idp_user_id != NONE);`,
     { now: nowParam },
   ));
 
