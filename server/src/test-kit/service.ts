@@ -19,7 +19,7 @@
 import { DateTime, StringRecordId } from "surrealdb";
 import { createOpsInvitationSchema, type CreateOpsInvitation } from "@surreal-ck/shared";
 import type { InviteResult, InviteService } from "../invitations/invite-service";
-import { TEST_KIT_STALE_MS } from "./provision-state";
+import { TEST_KIT_KEY_PREFIX, TEST_KIT_STALE_MS, testKitInviteKey } from "./provision-state";
 import { InviteError } from "../invitations/invite-service";
 import type { MemberManager } from "../workspaces/member-manager";
 import { findTestSubject, isExpired, type Queryable } from "../test-subjects/store";
@@ -27,7 +27,6 @@ import { computeTestSubjectPreflight, lookupSubjectsByEmail } from "../test-subj
 import { purgeFailedTestKitInvitation, purgeTestSubject, purgeTestWorkspace, type TestSubjectReaperDeps } from "../test-subjects/reaper";
 import { isAtomicConflict, retryAtomicConflict } from "../db/atomic-conflict-retry";
 import { dateTimeTimestamp } from "../db/surreal-values";
-import { stableSha256 } from "../quota/canonical";
 
 export class TestKitError extends Error {
   constructor(readonly code: string, message: string) {
@@ -43,7 +42,6 @@ export const TEST_KIT_AI_AMOUNT = 100;
 const DAY_MS = 86_400_000;
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/u;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u;
-const KEY_PREFIX = "test-kit:";
 
 export type TestKitDeps = Readonly<{
   invites: Pick<InviteService, "provision" | "get" | "collect">;
@@ -109,11 +107,6 @@ function toInviteRow(row: Record<string, unknown>): InviteRow {
   };
 }
 
-/** 幂等键只由邮箱派生（不含 agent），同一邮箱无论谁开通都收敛到同一行。 */
-function inviteKey(email: string): string {
-  return `${KEY_PREFIX}${stableSha256(email.trim().toLowerCase()).slice(0, 32)}`;
-}
-
 export class TestKitService {
   private readonly now: () => Date;
   private readonly maxActive: number;
@@ -160,7 +153,7 @@ export class TestKitService {
     if (!EMAIL_RE.test(email) || !emailRe.test(email)) {
       throw new TestKitError("email_not_allowed", `邮箱不在测试物料允许范围内（须整串匹配 ${this.deps.emailPattern}）`);
     }
-    const key = inviteKey(email);
+    const key = testKitInviteKey(email);
     const db = this.systemDb();
     const existing = await this.inviteRow(db, key);
     if (existing) return this.report(actor, db, this.own(actor, existing));
@@ -229,7 +222,7 @@ export class TestKitService {
     this.authorize(actor);
     const email = str(args, "email")!.toLowerCase();
     const db = this.systemDb();
-    const row = await this.inviteRow(db, inviteKey(email));
+    const row = await this.inviteRow(db, testKitInviteKey(email));
     if (!row) throw new TestKitError("not_found", "本 agent 没有该邮箱的开通记录");
     return this.report(actor, db, this.own(actor, row));
   }
@@ -337,7 +330,7 @@ export class TestKitService {
       await db.query(
         `UPDATE ops_invitation SET test_kit_purged_at = time::now() WHERE idempotency_key = $key
          AND (test_kit_managed = NONE OR test_kit_managed = false OR status = "completed");`,
-        { key: inviteKey(row.email) },
+        { key: testKitInviteKey(row.email) },
       );
     }
     const deps = await this.deps.reaperDeps();
@@ -384,7 +377,7 @@ export class TestKitService {
     return rows(await db.query(
       `SELECT ${INVITE_ROW_FIELDS} FROM ops_invitation
        WHERE operator_subject = $agent AND string::starts_with(idempotency_key, $prefix) AND test_kit_purged_at = NONE AND ${where};`,
-      { agent: actor.subject, prefix: KEY_PREFIX },
+      { agent: actor.subject, prefix: TEST_KIT_KEY_PREFIX },
     )).map(toInviteRow);
   }
 

@@ -449,36 +449,37 @@ function createSurrealControlPlane(
             ? "provider"
             : input.sourceKind;
 
-      // 唯一键 upsert 可独立重放；订阅和明细仍原子提交，缩短配额争用窗口。
-      let billingAccount: StringRecordId;
-      if (input.trial) {
-        billingAccount = new StringRecordId(input.trial.billingAccountId);
-      } else {
-        const account = firstRow(await runProvisioningTransaction(systemDb,
-          `INSERT INTO billing_account {
-            account_key: $accountKey, name: $accountName, kind: "personal", status: "active"
-          } ON DUPLICATE KEY UPDATE name = $accountName, status = "active";`,
-          { accountKey, accountName: input.email || input.ownerSubject },
-        ));
-        if (!account?.id) throw new Error("provisioning billing account is missing");
-        billingAccount = new StringRecordId(String(account.id));
-        await runProvisioningTransaction(systemDb,
-          `INSERT INTO billing_account_member {
-            billing_account: $billingAccount, subject: $subject, role: "owner", status: "active"
-          } ON DUPLICATE KEY UPDATE role = "owner", status = "active";`,
-          { billingAccount, subject: input.ownerSubject },
-        );
-      }
-
       await runProvisioningTransaction(systemDb,
         `
           BEGIN TRANSACTION;
+
+          LET $billing = IF $billingAccount != NONE {
+            SELECT * FROM ONLY $billingAccount
+          } ELSE { (
+            INSERT INTO billing_account {
+              account_key: $accountKey,
+              name: $accountName,
+              kind: "personal",
+              status: "active"
+            }
+            ON DUPLICATE KEY UPDATE
+              name = $accountName,
+              status = "active"
+          )[0] };
+
+          IF $billingAccount = NONE { INSERT INTO billing_account_member {
+            billing_account: $billing.id,
+            subject: $subject,
+            role: "owner",
+            status: "active"
+          }
+          ON DUPLICATE KEY UPDATE role = "owner", status = "active"; };
 
           LET $subscription = CREATE ONLY type::record(
             "quota_subscription",
             $subscriptionKey
           ) CONTENT {
-            billing_account: $billingAccount,
+            billing_account: $billing.id,
             source: $subscriptionSource,
             status: $subscriptionStatus,
             revision: 1,
@@ -506,8 +507,11 @@ function createSurrealControlPlane(
           COMMIT TRANSACTION;
         `,
         {
-          billingAccount,
+          billingAccount: toSurrealNone(input.trial ? new StringRecordId(input.trial.billingAccountId) : null),
           productRevision: toSurrealNone(input.trial ? new StringRecordId(input.trial.productRevisionId) : null),
+          accountKey,
+          accountName: input.email || input.ownerSubject,
+          subject: input.ownerSubject,
           subscriptionSource,
           subscriptionStatus: input.sourceKind === "trial" ? "trialing" : "active",
           trialStart:

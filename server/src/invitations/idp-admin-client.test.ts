@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { HttpIdpAdminClient } from "./idp-admin-client";
 
-type Req = { url: string; method: string; body?: unknown; auth?: string | null };
+type Req = { url: string; method: string; body?: unknown; auth?: string | null; signal?: AbortSignal | null };
 
 function fakeFetch(handlers: Record<string, (req: Req) => { status: number; body: unknown }>) {
   const log: Req[] = [];
@@ -12,6 +12,7 @@ function fakeFetch(handlers: Record<string, (req: Req) => { status: number; body
       method: init?.method ?? "GET",
       body: init?.body ? JSON.parse(String(init.body)) : undefined,
       auth: new Headers(init?.headers).get("authorization"),
+      signal: init?.signal,
     };
     log.push(req);
     const key = `${req.method} ${req.url}`;
@@ -58,6 +59,7 @@ describe("G2 HttpIdpAdminClient (provision token)", () => {
     ]);
     expect(log.every((r) => r.url !== "/admin/login")).toBe(true);
     expect(log.every((r) => r.auth === "Bearer provision-token-fixture")).toBe(true);
+    expect(log.every((r) => r.signal instanceof AbortSignal)).toBe(true);
     expect(JSON.stringify(log)).not.toContain("admin@");
     expect(JSON.stringify(log)).not.toContain("password");
   });

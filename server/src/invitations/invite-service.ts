@@ -8,7 +8,7 @@ import type { EnsureUserResult, HttpIdpAdminClient, IdpAdminClientSource } from 
 import { IdpAdminError } from "./idp-admin-client";
 import type { InviteAuditStore, InviteAuditRow, InviteOutcome } from "./invite-store";
 import { retryAtomicConflict } from "../db/atomic-conflict-retry";
-import { runningTestKitProvisions } from "../test-kit/provision-state";
+import { runningTestKitProvisions, TEST_KIT_KEY_PREFIX, testKitInviteKey } from "../test-kit/provision-state";
 
 export class InviteError extends Error {
   constructor(
@@ -156,7 +156,9 @@ export class InviteService {
   }
 
   async provision(actor: InviteActor, input: CreateOpsInvitation, options?: { testKit: true }): Promise<InviteResult> {
-    if (Boolean(options?.testKit) !== input.idempotencyKey.startsWith("test-kit:")) {
+    if (options?.testKit
+      ? input.idempotencyKey !== testKitInviteKey(input.email)
+      : input.idempotencyKey.startsWith(TEST_KIT_KEY_PREFIX)) {
       throw new InviteError("invite-idempotency-key-reserved", "test-kit: 幂等键仅供测试工具使用");
     }
     const idp = await this.deps.idp();
@@ -424,9 +426,9 @@ export class InviteService {
    * processing → 返回空供继续轮询；failed → 附错误信息；重复收取 → 空 URL。
    */
   async collect(idempotencyKey: string, options?: { testKit: true }): Promise<InviteCollect | null> {
-    if (Boolean(options?.testKit) !== idempotencyKey.startsWith("test-kit:")) return null;
     const row = await this.deps.store.byKey(idempotencyKey);
     if (!row) return null;
+    if (Boolean(options?.testKit) !== (idempotencyKey === testKitInviteKey(row.email))) return null;
     const res = await this.deps.store.collectActivationUrl(row.id);
     return {
       idempotencyKey,
@@ -447,9 +449,9 @@ export class InviteService {
    * 只会把已交付的活链打死。收取后过期的重发属真实重签发，正常铸新链。
    */
   async resend(actor: InviteActor, idempotencyKey: string): Promise<InviteResult | null> {
-    if (idempotencyKey.startsWith("test-kit:")) return null;
     const row = await this.deps.store.byKey(idempotencyKey);
     if (!row) return null;
+    if (idempotencyKey === testKitInviteKey(row.email)) return null;
     if (row.status === "processing") {
       throw new InviteError("invite-resend-while-processing", "开通仍在进行：待其完成后才可重签发激活链接");
     }

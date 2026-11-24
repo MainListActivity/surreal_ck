@@ -5,6 +5,7 @@ import type { EnsureUserResult } from "./idp-admin-client";
 import { HttpIdpAdminClient } from "./idp-admin-client";
 import type { InviteAuditRow, InviteAuditStore, InviteClaimInsert, InviteOutcome, WorkspaceIndexRow } from "./invite-store";
 import { InviteService, type InviteActor } from "./invite-service";
+import { testKitInviteKey } from "../test-kit/provision-state";
 
 const ACTOR: InviteActor = { subject: "ops-subject", capabilities: ["subscription.manage", "quota.read"] };
 
@@ -520,6 +521,22 @@ describe("G2 InviteService", () => {
     const collected = await service.collect("invite-test-key-001");
     expect(collected?.activationUrl).toContain("token=RESENT-SECRET");
     expect((await service.collect("invite-test-key-001"))?.activationUrl).toBeNull();
+  });
+
+  test("运营交付拒绝测试物料的规范键，兼容历史运营自定义键", async () => {
+    const store = new MemStore();
+    const { service } = makeService({ store });
+    const kit = testKitInviteKey(input().email);
+    store.rows.set(kit, completedRow({ idempotencyKey: kit }));
+    store.storedUrls.set("ops_invitation:x", "https://o.maplayer.top/activate-account?token=KIT");
+    expect(await service.resend(ACTOR, kit)).toBeNull();
+    expect(await service.collect(kit)).toBeNull();
+    expect((await service.collect(kit, { testKit: true }))?.activationUrl).toContain("token=KIT");
+    const historical = "test-kit:legacy-manual-invite";
+    store.rows.set(historical, completedRow({ id: "ops_invitation:legacy", idempotencyKey: historical }));
+    expect(await service.collect(historical, { testKit: true })).toBeNull();
+    expect((await service.resend(ACTOR, historical))?.delivery.pendingCollect).toBe(true);
+    expect((await service.collect(historical))?.activationUrl).toContain("token=RESENT-SECRET");
   });
 
   test("resend 重放去重：未收取链接或 24h 有效期内不再铸新链", async () => {

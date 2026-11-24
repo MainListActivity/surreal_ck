@@ -36,6 +36,7 @@ export class IdpAdminError extends Error {
 }
 
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
+const IDP_ADMIN_TIMEOUT_MS = 30_000;
 
 const normalizeEmail = (email: string) => email.trim().toLowerCase();
 
@@ -71,7 +72,11 @@ export class HttpIdpAdminClient {
     const headers = new Headers(init?.headers);
     headers.set("authorization", `Bearer ${this.config.provisionToken}`);
     if (init?.body && !headers.has("content-type")) headers.set("content-type", "application/json");
-    return this.fetchImpl(`${this.config.baseUrl}${path}`, { ...init, headers });
+    return this.fetchImpl(`${this.config.baseUrl}${path}`, {
+      ...init,
+      headers,
+      signal: AbortSignal.timeout(IDP_ADMIN_TIMEOUT_MS),
+    });
   }
 
   private async resolveTenantId(): Promise<string> {
