@@ -148,10 +148,12 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
     };
   }
 
-  async bindProductRevision(itemId: string, productPlanRevisionId: string): Promise<void> {
-    await this.atomicWrite(`UPDATE $item SET product_plan_revision = $revision, revision += 1;`, {
+  async bindProductRevision(itemId: string, productPlanRevisionId: string): Promise<boolean> {
+    const updated = await this.atomicWrite(`UPDATE $item SET product_plan_revision = $revision, revision += 1
+      WHERE status = "active" AND active_workspace != NONE RETURN AFTER;`, {
       item: new StringRecordId(itemId), revision: new StringRecordId(productPlanRevisionId),
     });
+    return first(updated) !== null;
   }
 
   async productRevision(id: string): Promise<ProductRevisionBody | null> {

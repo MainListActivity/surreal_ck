@@ -28,7 +28,12 @@ class MemoryStore implements ProductEntitlementStore {
   async membership(subject: string, workspaceId: string) { return this.members.has(`${subject}:${workspaceId}`) ? "admin" as const : null; }
   async activeItem(workspaceId: string) { return this.items.get(workspaceId) ?? null; }
   async bindProductRevision(itemId: string, productPlanRevisionId: string) {
-    for (const [workspaceId, item] of this.items) if (item.itemId === itemId) this.items.set(workspaceId, { ...item, productPlanRevisionId });
+    for (const [workspaceId, item] of this.items) {
+      if (item.itemId !== itemId || item.status !== "active") continue;
+      this.items.set(workspaceId, { ...item, productPlanRevisionId });
+      return true;
+    }
+    return false;
   }
   async productRevision(id: string) { return this.revisions.get(id) ?? null; }
   async resourceTemplateExists(id: string) { return this.resources.has(id); }
@@ -575,6 +580,30 @@ describe("product entitlement", () => {
     failBind = false;
     await service.assign(operator, newer);
     expect(store.items.get("workspace:team")?.productPlanRevisionId).toBe(newerId);
+  });
+
+  test("绑定期间订阅项被替换时不报成功，同键重试只写当前项", async () => {
+    const store = new MemoryStore();
+    workspace(store);
+    const service = new ProductEntitlementService(store, () => new Date("2026-09-24T00:00:00.000Z"));
+    const revisionId = "product_plan_revision:fixture:1";
+    store.revisions.set(revisionId, {
+      id: revisionId, planKey: "fixture_plus", planName: "夹具律师 Plus", revision: 1,
+      collections: [], actions: [], aiActions: [], features: [],
+    });
+    const bind = store.bindProductRevision.bind(store);
+    const previous = store.items.get("workspace:team")!;
+    store.bindProductRevision = async (id, revision) => {
+      store.items.set("workspace:team", { ...previous, itemId: "quota_subscription_item:replacement" });
+      return bind(id, revision);
+    };
+    const input = assignment(revisionId);
+    await expect(service.assign(operator, input)).rejects.toMatchObject({ code: "conflict" });
+    expect(store.items.get("workspace:team")?.productPlanRevisionId).toBeNull();
+    expect(await store.currentSnapshot("workspace:team")).toBeNull();
+    store.bindProductRevision = bind;
+    await service.assign(operator, input);
+    expect(store.items.get("workspace:team")?.productPlanRevisionId).toBe(revisionId);
   });
 
   test("绑定失败后读取出的空快照仍允许同一幂等键补绑", async () => {
