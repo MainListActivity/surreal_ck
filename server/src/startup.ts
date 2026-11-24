@@ -1,6 +1,6 @@
 import { createApp } from "./app";
 import { env } from "./env";
-import { closeRootConnection, getRootConnection, getRootDatabaseSession, initRootConnection } from "./db/root-connection";
+import { closeRootConnection, getRootDatabaseSession, initRootConnection, removeRootWorkspaceDatabase } from "./db/root-connection";
 import { closeHealthProbe, initHealthProbe } from "./db/health-probe";
 import { ensureSystemSchema } from "./db/system-schema";
 import { ensurePlatformContentSchema } from "./content/schema";
@@ -167,9 +167,7 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
                   return (await getRootDatabaseSession("_system")).query(sql, params);
                 },
               },
-              dropDatabase: async (dbName) => {
-                await getRootConnection().query(`REMOVE DATABASE IF EXISTS ${dbName};`);
-              },
+              dropDatabase: removeRootWorkspaceDatabase,
               cancelIdpProvision,
             });
           } catch (cause) {

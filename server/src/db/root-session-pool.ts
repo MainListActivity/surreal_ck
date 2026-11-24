@@ -81,8 +81,13 @@ export function createRootSessionPool<TSession extends RootDatabaseSession>(
 
       const creating = (async () => {
         const session = await source.newSession();
-        await session.use({ namespace, database });
-        return session;
+        try {
+          await session.use({ namespace, database });
+          return session;
+        } catch (error) {
+          await session.closeSession().catch(() => undefined);
+          throw error;
+        }
       })();
 
       sessions.set(key, creating);

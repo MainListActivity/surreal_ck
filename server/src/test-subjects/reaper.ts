@@ -318,7 +318,6 @@ async function purgeFailedTestKitInvitationOnce(deps: TestSubjectReaperDeps, key
     const cleanupDeps = {
       ...deps,
       systemDb: db,
-      dropDatabase: (name: string) => retryAtomicConflict(() => deps.dropDatabase(name)),
     };
     for (const workspace of workspaces) {
       if (await purgeTestWorkspace(cleanupDeps, String(workspace.id)) !== "purged") return false;

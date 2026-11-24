@@ -19,7 +19,7 @@ function fakeFetch(handlers: Record<string, (req: Req) => { status: number; body
     const handler = handlers[key];
     if (!handler) return new Response(JSON.stringify({ error: "unmocked" }), { status: 500 });
     const { status, body } = handler(req);
-    return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    return new Response(status === 204 ? null : JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   };
   return { impl: impl as typeof fetch, log };
 }
@@ -59,9 +59,28 @@ describe("G2 HttpIdpAdminClient (provision token)", () => {
     ]);
     expect(log.every((r) => r.url !== "/admin/login")).toBe(true);
     expect(log.every((r) => r.auth === "Bearer provision-token-fixture")).toBe(true);
-    expect(log.every((r) => r.signal instanceof AbortSignal)).toBe(true);
+    expect(log.every((r) => r.signal == null)).toBe(true);
     expect(JSON.stringify(log)).not.toContain("admin@");
     expect(JSON.stringify(log)).not.toContain("password");
+  });
+
+  test("带撤销证明的建号与撤销分别限定等待时长", async () => {
+    const { impl, log } = fakeFetch(baseHandlers({
+      "POST /admin/tenants/t-1/users": () => ({
+        status: 201,
+        body: { user: { id: "u-1", email: "lawyer@example.com" }, cancellable: true },
+      }),
+      "POST /admin/tenants/t-1/users/cancel-provision": () => ({ status: 204, body: null }),
+    }));
+    const client = new HttpIdpAdminClient(CONFIG, impl);
+    const cancellationToken = crypto.randomUUID();
+    await client.ensureUser({ email: "lawyer@example.com", displayName: "测试", cancellationToken });
+    await client.cancelProvision(cancellationToken);
+    const [tenant, provision, cancel] = log;
+    expect(tenant?.signal).toBeInstanceOf(AbortSignal);
+    expect(provision?.signal).toBe(tenant?.signal);
+    expect(cancel?.signal).toBeInstanceOf(AbortSignal);
+    expect(cancel?.signal).not.toBe(provision?.signal);
   });
 
   test("409 → 列表按邮箱幂等复用，不重发激活链接", async () => {

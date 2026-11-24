@@ -75,13 +75,12 @@ export class HttpIdpAdminClient {
     return this.fetchImpl(`${this.config.baseUrl}${path}`, {
       ...init,
       headers,
-      signal: AbortSignal.timeout(IDP_ADMIN_TIMEOUT_MS),
     });
   }
 
-  private async resolveTenantId(): Promise<string> {
+  private async resolveTenantId(signal?: AbortSignal): Promise<string> {
     if (this.tenantId) return this.tenantId;
-    const res = await this.admin("/admin/tenants");
+    const res = await this.admin("/admin/tenants", { signal });
     const body = await res.json().catch(() => null) as
       | { tenants?: Array<{ id?: unknown; slug?: unknown }> }
       | null;
@@ -102,8 +101,12 @@ export class HttpIdpAdminClient {
   }
 
   async findUserByEmail(email: string): Promise<IdpUser | null> {
-    const tenantId = await this.resolveTenantId();
-    const res = await this.admin(`/admin/tenants/${tenantId}/users`);
+    return this.findUser(email, AbortSignal.timeout(IDP_ADMIN_TIMEOUT_MS));
+  }
+
+  private async findUser(email: string, signal?: AbortSignal): Promise<IdpUser | null> {
+    const tenantId = await this.resolveTenantId(signal);
+    const res = await this.admin(`/admin/tenants/${tenantId}/users`, { signal });
     const body = await res.json().catch(() => null) as { users?: unknown[] } | null;
     if (!res.ok || !Array.isArray(body?.users)) {
       throw new IdpAdminError("idp-admin-user-list-failed", `IdP 用户列表不可用（${res.status}）`, res.status);
@@ -117,9 +120,12 @@ export class HttpIdpAdminClient {
   }
 
   async ensureUser(input: { email: string; displayName: string; cancellationToken?: string }): Promise<EnsureUserResult> {
-    const tenantId = await this.resolveTenantId();
+    // 只有携带凭证的请求才能在响应丢失后安全撤销。
+    const signal = input.cancellationToken ? AbortSignal.timeout(IDP_ADMIN_TIMEOUT_MS) : undefined;
+    const tenantId = await this.resolveTenantId(signal);
     const res = await this.admin(`/admin/tenants/${tenantId}/users`, {
       method: "POST",
+      signal,
       body: JSON.stringify({
         email: input.email.trim(),
         display_name: input.displayName.trim(),
@@ -132,7 +138,7 @@ export class HttpIdpAdminClient {
       | { user?: unknown; activation_url?: unknown; error?: unknown; cancellable?: unknown }
       | null;
     if (res.status === 409) {
-      const existing = await this.findUserByEmail(input.email);
+      const existing = await this.findUser(input.email, signal);
       if (!existing) {
         throw new IdpAdminError("idp-admin-user-conflict-unresolved", "IdP 报邮箱冲突但按邮箱查无此人");
       }
@@ -158,9 +164,11 @@ export class HttpIdpAdminClient {
   }
 
   async cancelProvision(cancellationToken: string): Promise<void> {
-    const tenantId = await this.resolveTenantId();
+    const signal = AbortSignal.timeout(IDP_ADMIN_TIMEOUT_MS);
+    const tenantId = await this.resolveTenantId(signal);
     const res = await this.admin(`/admin/tenants/${tenantId}/users/cancel-provision`, {
       method: "POST",
+      signal,
       body: JSON.stringify({ cancellation_token: cancellationToken }),
     });
     if (res.status !== 204) {

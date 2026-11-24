@@ -53,7 +53,7 @@ import { createWorkspaceScopeModule, type WorkspaceScopeModule } from "./workspa
 import type { AppBindings } from "./hono-types";
 import type { MiddlewareHandler } from "hono";
 import { createQuotaRoutes, type QuotaReadPort } from "./routes/quota";
-import { getRootConnection, getRootDatabaseSession } from "./db/root-connection";
+import { getRootConnection, getRootDatabaseSession, removeRootWorkspaceDatabase } from "./db/root-connection";
 import { SurrealNativeQuotaClient } from "./db/native-quota/client";
 import { QuotaInfoCache } from "./quota/quota-info-cache";
 import { SurrealQuotaAuthorityReader } from "./quota/quota-authority-reader";
@@ -570,7 +570,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
               return (await getRootDatabaseSession("_system")).query(sql, params);
             },
           },
-          dropDatabase: async (dbName) => { await getRootConnection().query(`REMOVE DATABASE IF EXISTS ${dbName};`); },
+          dropDatabase: removeRootWorkspaceDatabase,
           cancelIdpProvision: createIdpProvisionCancellation(idpAdminSource),
           now: () => new Date(),
         }),

@@ -1,4 +1,5 @@
 import { DateTime, StringRecordId } from "surrealdb";
+import { retryAtomicConflict } from "../db/atomic-conflict-retry";
 import { getRootDatabaseSession } from "../db/root-connection";
 import { toIsoDateTimeString, toStringRecordId, toSurrealNone } from "../db/surreal-values";
 import { env } from "../env";
@@ -55,6 +56,11 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
 
   private async db(): Promise<Queryable> {
     return await this.getSession("_system", this.namespace);
+  }
+
+  private async atomicWrite(sql: string, params: Record<string, unknown>): Promise<unknown> {
+    const db = await this.db();
+    return retryAtomicConflict(() => db.query(sql, params));
   }
 
   async workspaceBySlug(slug: string): Promise<WorkspaceRef | null> {
@@ -143,7 +149,7 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
   }
 
   async bindProductRevision(itemId: string, productPlanRevisionId: string): Promise<void> {
-    await (await this.db()).query(`UPDATE $item SET product_plan_revision = $revision, revision += 1;`, {
+    await this.atomicWrite(`UPDATE $item SET product_plan_revision = $revision, revision += 1;`, {
       item: new StringRecordId(itemId), revision: new StringRecordId(productPlanRevisionId),
     });
   }
@@ -444,7 +450,7 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
 
   async insertSnapshot(row: SnapshotRecord): Promise<"ok" | "conflict"> {
     try {
-      await (await this.db()).query(`INSERT INTO workspace_product_entitlement {
+      await this.atomicWrite(`INSERT INTO workspace_product_entitlement {
         workspace: $workspace, revision: $revision, digest: $digest, summary: $summary, resolver_version: $resolverVersion,
         base_source_kind: $baseSourceKind, base_source_id: $baseSourceId, product_plan_revision: $productPlanRevision,
         product_plan_key: $productPlanKey, product_plan_name: $productPlanName, product_revision_number: $productRevisionNumber,
@@ -481,7 +487,8 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
     // 指针必须跟随当前绑定产品，而不是单调最大的快照 revision：
     // digest 命中旧快照的恢复指派（降级→恢复、grant 到期回退）需要回指到
     // 当前绑定产品的既有快照。单调保护只拦「目标产品不是当前绑定产品」的旧快照。
-    await (await this.db()).query(`
+    await this.atomicWrite(`
+      BEGIN TRANSACTION;
       LET $next = (SELECT revision, product_plan_revision FROM ONLY $snapshot);
       LET $current = (SELECT current_product_entitlement FROM ONLY $workspace);
       LET $linked = IF $current = NONE THEN NONE ELSE $current.current_product_entitlement END;
@@ -499,6 +506,7 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
            OR ($bound != NONE AND $next.product_plan_revision = $bound)) {
         UPDATE $workspace SET current_product_entitlement = $snapshot;
       };
+      COMMIT TRANSACTION;
     `, {
       workspace: new StringRecordId(workspaceId), snapshot: new StringRecordId(snapshotId),
     });
@@ -516,7 +524,7 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
 
   async insertAudit(row: AuditRecord & { actor: string; idempotencyKey: string; reason: string; workspaceId: string | null }): Promise<"ok" | "conflict"> {
     try {
-      await (await this.db()).query(`INSERT INTO product_entitlement_audit {
+      await this.atomicWrite(`INSERT INTO product_entitlement_audit {
         actor_subject: $actor, action: $action, workspace: $workspace, reason: $reason, idempotency_key: $idempotencyKey,
         request_digest: $requestDigest, entitlement: $entitlement, product_plan_revision: $productPlanRevision
       };`, {
@@ -533,7 +541,7 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
   }
 
   async attachAuditEntitlement(actor: string, idempotencyKey: string, entitlementId: string): Promise<"ok" | "conflict"> {
-    const updated = first(await (await this.db()).query(`UPDATE product_entitlement_audit SET entitlement = $entitlement
+    const updated = first(await this.atomicWrite(`UPDATE product_entitlement_audit SET entitlement = $entitlement
       WHERE actor_subject = $actor AND idempotency_key = $key AND entitlement = NONE RETURN AFTER;`, {
       actor, key: idempotencyKey, entitlement: new StringRecordId(entitlementId),
     }));

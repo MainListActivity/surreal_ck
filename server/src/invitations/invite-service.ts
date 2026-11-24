@@ -7,7 +7,6 @@ import type { AiAllowanceService } from "../ai-allowance/service";
 import type { EnsureUserResult, HttpIdpAdminClient, IdpAdminClientSource } from "./idp-admin-client";
 import { IdpAdminError } from "./idp-admin-client";
 import type { InviteAuditStore, InviteAuditRow, InviteOutcome } from "./invite-store";
-import { retryAtomicConflict } from "../db/atomic-conflict-retry";
 import { runningTestKitProvisions, TEST_KIT_KEY_PREFIX, testKitInviteKey } from "../test-kit/provision-state";
 
 export class InviteError extends Error {
@@ -341,8 +340,7 @@ export class InviteService {
     if (!productRevisionId) {
       throw new InviteError("invite-product-revision-missing", "未指定产品版本且无可用默认（pro_trial_configuration）");
     }
-    // 产品分配按自己的幂等键续跑；AI grant 是一笔事务，只在明确回滚时重试。
-    await retryAtomicConflict(() => this.deps.products.assign(
+    await this.deps.products.assign(
       { subject: actor.subject, capabilities: actor.capabilities },
       {
         workspaceSlug: input.workspaceSlug,
@@ -351,7 +349,7 @@ export class InviteService {
         reason: input.reason,
         idempotencyKey: `${input.idempotencyKey}:assign`,
       },
-    ));
+    );
 
     // 4) AI 额度桶：period_key=invite:<key> 查重防重放重复授额（中途失败重试场景）。
     const periodKey = `invite:${input.idempotencyKey}`;
@@ -359,7 +357,7 @@ export class InviteService {
     const existingBucket = balance.buckets.find((b) => b.period_key === periodKey);
     let bucketId: string | null = existingBucket ? String(existingBucket.id) : null;
     if (!existingBucket) {
-      const granted = await retryAtomicConflict(() => this.deps.allowance.grant({
+      const granted = await this.deps.allowance.grant({
         db: workspaceDb,
         kind: "compensation",
         amount: input.aiAllowance.amount,
@@ -369,7 +367,7 @@ export class InviteService {
         expiresAt: new Date(expiresAtMs),
         source: "ops-invite",
         operatorSubject: actor.subject,
-      }));
+      });
       bucketId = granted.bucket ? String(granted.bucket) : null;
     }
 

@@ -12,6 +12,7 @@ import { DateTime, Surreal, jsonify } from "surrealdb";
 import { createNativeMeetingBatchRunner, sweepNativeMeetingWorkspaces } from "../db/native-meeting-gc";
 import { InviteService } from "../invitations/invite-service";
 import { SurrealInviteAuditStore } from "../invitations/invite-store";
+import { SurrealProductEntitlementStore } from "../product-entitlement/store";
 import { stableSha256 } from "../quota/canonical";
 import type { Queryable } from "../test-subjects/store";
 import { purgeTestWorkspace, runFailedTestKitInvitationReaper } from "../test-subjects/reaper";
@@ -83,12 +84,25 @@ function inviteService(opts: { syncWindowMs?: number; staleProcessingMs?: number
       },
     } as never,
     products: {
-      async assign() {
+      async assign(actor, input) {
         if (assignBehaviour === "hang") return await new Promise<never>(() => {});
         if (assignBehaviour === "fail") throw new Error("entitlement backend down");
         if (assignBehaviour === "conflict") {
-          assignBehaviour = "ok";
-          throw { kind: "Quota", details: { code: "quota_conflict", retryable: true, details: {} } };
+          const store = new SurrealProductEntitlementStore(async () => ({
+            async query(sql, params) {
+              if (assignBehaviour === "conflict") {
+                assignBehaviour = "ok";
+                throw { kind: "Quota", details: { code: "quota_conflict", retryable: true, details: {} } };
+              }
+              return await db!.query(sql, params);
+            },
+          }));
+          const [workspace] = await q("SELECT id FROM workspace WHERE slug = $slug;", { slug: input.workspaceSlug });
+          expect(await store.insertAudit({
+            actor: actor.subject, action: "assign", idempotencyKey: input.idempotencyKey,
+            reason: input.reason, requestDigest: stableSha256(input.idempotencyKey),
+            workspaceId: String(workspace?.id), entitlementId: null, productPlanRevisionId: null,
+          })).toBe("ok");
         }
         return {} as never;
       },
@@ -315,6 +329,7 @@ describe("test kit on real fork SurrealDB with the real invite service", () => {
     const svc = kit();
     expect(await svc.provision(AGENT, provisionArgs("conflict"))).toMatchObject({ status: "completed", subject: "sub-conflict" });
     expect(await q(`SELECT id FROM workspace WHERE owner_subject = "sub-conflict";`)).toHaveLength(1);
+    expect(await q(`SELECT id FROM product_entitlement_audit WHERE workspace = (SELECT VALUE id FROM ONLY workspace WHERE owner_subject = "sub-conflict" LIMIT 1);`)).toHaveLength(1);
     expect(await svc.purge(AGENT, { subject: "sub-conflict", confirm: "purge sub-conflict" })).toMatchObject({ workspacesPurged: 1 });
     expect(await databases()).not.toContain("ws_kit_conflict");
   });
