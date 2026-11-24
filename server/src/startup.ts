@@ -182,14 +182,14 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
           try { await tick(runFailedTestKitInvitationReaper); } finally { cleaning = false; }
         };
         expire();
-        if (env.TEST_KIT_EMAIL_PATTERN) void cleanup();
+        void cleanup();
         const timer = setInterval(expire, intervalMs);
-        const cleanupTimer = env.TEST_KIT_EMAIL_PATTERN ? setInterval(() => { void cleanup(); }, 60_000) : null;
+        const cleanupTimer = setInterval(() => { void cleanup(); }, 60_000);
         return { stop: () => {
           if (stopped) return;
           stopped = true;
           clearInterval(timer);
-          if (cleanupTimer) clearInterval(cleanupTimer);
+          clearInterval(cleanupTimer);
         } };
       });
   const closeRoot = deps.closeRootConnection ?? closeRootConnection;

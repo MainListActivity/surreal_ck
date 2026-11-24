@@ -14,7 +14,7 @@ import { InviteService } from "../invitations/invite-service";
 import { SurrealInviteAuditStore } from "../invitations/invite-store";
 import type { Queryable } from "../test-subjects/store";
 import { purgeTestWorkspace, runFailedTestKitInvitationReaper } from "../test-subjects/reaper";
-import { TestKitService, type TestKitActor } from "./service";
+import { TestKitService, type TestKitActor, type TestKitDeps } from "./service";
 
 const RUN_INTEGRATION = process.env.RUN_LOCAL_SURREALDB_TEST_SUBJECT_TESTS === "1";
 const localTest = test.skipIf(!RUN_INTEGRATION);
@@ -102,7 +102,7 @@ function inviteService(opts: { syncWindowMs?: number; staleProcessingMs?: number
   });
 }
 
-function kit(invites = inviteService()) {
+function kit(invites: TestKitDeps["invites"] = inviteService()) {
   return new TestKitService({
     invites,
     members: {
@@ -204,7 +204,16 @@ describe("test kit on real fork SurrealDB with the real invite service", () => {
   });
 
   localTest("开通：登记 30 天测试主体、标记 workspace、一次性链接；同邮箱重复调用幂等", async () => {
-    const out = await kit().provision(AGENT, provisionArgs("b")) as Record<string, unknown>;
+    const invites = inviteService();
+    const out = await kit({
+      provision: invites.provision.bind(invites),
+      get: invites.get.bind(invites),
+      async collect(key, options) {
+        expect(await invites.collect(key)).toBeNull();
+        expect(await invites.resend({ subject: "operator", capabilities: ["subscription.manage"] }, key)).toBeNull();
+        return invites.collect(key, options);
+      },
+    }).provision(AGENT, provisionArgs("b"));
     expect(out).toMatchObject({ status: "completed", subject: "sub-b", activationUrl: "https://auth.example/activate/sub-b" });
     expect((await subjectRow("sub-b"))?.origin).toBe("test-kit:agent-arch");
     expect((await q(`SELECT test_origin FROM workspace WHERE slug = "kit-b";`))[0]?.test_origin).toBe("test-kit:agent-arch");
@@ -314,6 +323,7 @@ describe("test kit on real fork SurrealDB with the real invite service", () => {
     };
     await runFailedTestKitInvitationReaper({ ...deps, dropDatabase: async () => { throw new Error("fixture unavailable"); } });
     expect(await databases()).toContain("ws_kit_late_fail");
+    expect(await codeOf(svc.purge(AGENT, { subject: "sub-late-fail", confirm: "purge sub-late-fail" }))).toBe("cleanup_pending");
     await runFailedTestKitInvitationReaper({ ...deps, cancelIdpProvision: async () => { throw new Error("IdP unavailable"); } });
     expect(await fakeIdp.findUserByEmail("kit+late-fail@example.com")).not.toBeNull();
     expect((await svc.list(AGENT)).inFlight).toContainEqual(expect.objectContaining({ email: "kit+late-fail@example.com" }));

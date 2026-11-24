@@ -418,7 +418,8 @@ export class InviteService {
    * 一次性收取激活链接：仅 completed 且尚未收取才返回 URL，随即从行中清除。
    * processing → 返回空供继续轮询；failed → 附错误信息；重复收取 → 空 URL。
    */
-  async collect(idempotencyKey: string): Promise<InviteCollect | null> {
+  async collect(idempotencyKey: string, options?: { testKit: true }): Promise<InviteCollect | null> {
+    if (Boolean(options?.testKit) !== idempotencyKey.startsWith("test-kit:")) return null;
     const row = await this.deps.store.byKey(idempotencyKey);
     if (!row) return null;
     const res = await this.deps.store.collectActivationUrl(row.id);
@@ -441,6 +442,7 @@ export class InviteService {
    * 只会把已交付的活链打死。收取后过期的重发属真实重签发，正常铸新链。
    */
   async resend(actor: InviteActor, idempotencyKey: string): Promise<InviteResult | null> {
+    if (idempotencyKey.startsWith("test-kit:")) return null;
     const row = await this.deps.store.byKey(idempotencyKey);
     if (!row) return null;
     if (row.status === "processing") {

@@ -307,7 +307,13 @@ export class TestKitService {
     if (args.confirm !== `purge ${subject}`) {
       throw new TestKitError("confirmation_required", `不可逆：整库删除该账号自己拥有的 workspace。确认请在 confirm 原样填写「purge ${subject}」`);
     }
-    const db = await this.deps.getSystemDb();
+    const db = await this.systemDb();
+    const pending = rows(await db.query(
+      `SELECT id FROM ops_invitation WHERE idp_user_id = $subject AND operator_subject = $agent
+       AND test_kit_managed = true AND status != "completed" AND test_kit_purged_at = NONE LIMIT 1;`,
+      { subject, agent: actor.subject },
+    ))[0];
+    if (pending) throw new TestKitError("cleanup_pending", "开通仍在处理，失败产物会自动清理；请调用 test_kit_status");
     const row = await findTestSubject(db, subject);
     if (!row) {
       // 已清理过的账号：test_subject 行已删，开通行留着 test_kit_purged_at
@@ -328,7 +334,11 @@ export class TestKitService {
     }
     // 先打清理标记（purgeTestSubject 末尾也会打）：中途失败也不会被对账登记回来。
     if (row.email) {
-      await db.query(`UPDATE ops_invitation SET test_kit_purged_at = time::now() WHERE idempotency_key = $key;`, { key: inviteKey(row.email) });
+      await db.query(
+        `UPDATE ops_invitation SET test_kit_purged_at = time::now() WHERE idempotency_key = $key
+         AND (test_kit_managed = NONE OR test_kit_managed = false OR status = "completed");`,
+        { key: inviteKey(row.email) },
+      );
     }
     const deps = await this.deps.reaperDeps();
     // 只删该账号自己拥有的 workspace；它被加入的别人的测试 workspace 只摘成员索引（purgeTestSubject）。
@@ -392,12 +402,12 @@ export class TestKitService {
     try {
       const settled = await this.settle(actor, db, row, result, activationUrl);
       if (settled.status !== "completed" || settled.activationUrl) return settled;
-      const collected = await this.deps.invites.collect(row.key);
+      const collected = await this.deps.invites.collect(row.key, { testKit: true });
       return { ...settled, activationUrl: collected?.activationUrl ?? null };
     } catch (error) {
       if (isAtomicConflict(error)) return this.processing(row.email);
       if (result.status === "completed" && result.delivery?.pendingCollect && error instanceof TestKitError) {
-        const collected = await this.deps.invites.collect(row.key);
+        const collected = await this.deps.invites.collect(row.key, { testKit: true });
         if (collected?.activationUrl) return this.fallback(result, collected.activationUrl);
       }
       throw error;

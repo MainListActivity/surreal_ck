@@ -265,7 +265,7 @@ export async function purgeTestSubject(
     await deps.systemDb.query(
       `UPDATE ops_invitation SET test_kit_purged_at = time::now()
        WHERE string::starts_with(idempotency_key, "test-kit:") AND email = $email
-         AND (test_kit_managed = NONE OR test_kit_managed = false OR status != "failed") AND test_kit_purged_at = NONE;`,
+         AND (test_kit_managed = NONE OR test_kit_managed = false OR status = "completed") AND test_kit_purged_at = NONE;`,
       { email: own.email.toLowerCase() },
     );
   }
