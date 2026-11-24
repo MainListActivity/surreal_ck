@@ -54,9 +54,12 @@ healthy() {
       && grep -q '"status":"ok","surrealdb":"up"' <<<"$body"; then
       return 0
     fi
+    if ((remaining == 1)); then
+      return 1
+    fi
     remaining=$((deadline - SECONDS))
-    if ((remaining > 0)); then
-      sleep "$((remaining < 3 ? remaining : 3))"
+    if ((remaining > 1)); then
+      sleep "$((remaining <= 3 ? remaining - 1 : 3))"
     fi
   done
   return 1

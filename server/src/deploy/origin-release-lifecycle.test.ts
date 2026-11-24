@@ -639,6 +639,17 @@ describe("origin-release 生命周期（脚本级）", () => {
       expect(countPrefix(gateCalls(h), "systemctl:restart")).toBe(1);
     });
 
+    t("在截止前最后一秒就绪 → 最后一次探测通过，不回滚", async () => {
+      const h = makeHarness();
+      const id = "rel-ci-last-second";
+      stageRelease(h, id, { target: "explicit", filtered: true });
+      expect(launch(h, id, { extraEnv: { T_HEALTH_READY_AT: "239" } }).exitCode).toBe(0);
+      expect((await waitTerminal(h, id)).state).toBe("healthy");
+      expect(currentBasename(h)).toBe(id);
+      expect(gateCalls(h).filter((call) => call.startsWith("curl:")).at(-1)).toBe(`curl:${id}:239:1`);
+      expect(countPrefix(gateCalls(h), "systemctl:restart")).toBe(1);
+    });
+
     t("健康探测失败 → 回滚到 rel-old，env 恢复，日志不含增改值", async () => {
       const h = makeHarness();
       const id = "rel-ci-hbad";
@@ -651,8 +662,8 @@ describe("origin-release 生命周期（脚本级）", () => {
       expect(countPrefix(gateCalls(h), "systemctl:restart")).toBe(2);
       const probes = gateCalls(h).filter((call) => call.startsWith("curl:"));
       const lastForward = probes.filter((call) => call.startsWith("curl:rel-ci-hbad:")).at(-1);
-      expect(lastForward).toBe("curl:rel-ci-hbad:237:3");
-      expect(probes.at(-1)).toBe("curl:rel-old:240:5");
+      expect(lastForward).toBe(`curl:${id}:239:1`);
+      expect(probes.at(-1)).toBe("curl:rel-old:239:5");
       const log = run(h, ["--log", id]).stdout;
       expect(log).toContain("env: set REVIEW_FIXTURE");
       expect(log).not.toContain("after-value-7f3");
