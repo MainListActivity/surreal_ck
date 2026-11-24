@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { createServer } from "node:net";
-import { NotFoundError, QueryError, Surreal } from "surrealdb";
+import { NotFoundError, QueryError, StringRecordId, Surreal } from "surrealdb";
 import type { GrantContentCollection, SessionUser } from "@surreal-ck/shared";
 import { ensureSystemSchema } from "../db/system-schema";
 import { closeRootConnection, getRootConnection, getRootDatabaseSession, initRootConnection } from "../db/root-connection";
@@ -72,6 +72,21 @@ afterAll(async () => {
 
 describe("product entitlement surreal store", () => {
   localTest("权益指针在事务冲突和会话失效后完整重试", async () => {
+    const workspaceId = "workspace:session_fixture";
+    const snapshotId = "workspace_product_entitlement:session_fixture";
+    const fixture = await session();
+    await fixture.create(new StringRecordId(workspaceId)).content({
+      db_name: "ws_session_fixture", owner_subject: "lawyer", slug: "session-fixture",
+      name: "会话夹具", status: "active",
+    });
+    await fixture.create(new StringRecordId(snapshotId)).content({
+      workspace: new StringRecordId(workspaceId), revision: 1,
+      digest: "session-fixture", summary: "会话夹具", resolver_version: "fixture", base_source_kind: "none",
+      content_collections: [], content_actions: [], content_sources: [], ai_actions: [], features: [],
+      correlation_id: "fixture-session-retry",
+    });
+    const fixtureStore = new SurrealProductEntitlementStore(async () => fixture);
+    expect(await fixtureStore.currentSnapshot(workspaceId)).toBeNull();
     const previousEnv = env;
     overrideEnv({
       SURREAL_URL: `${endpoint}/rpc`,
@@ -117,8 +132,9 @@ describe("product entitlement surreal store", () => {
       });
       try {
         const store = new SurrealProductEntitlementStore();
-        await store.pointWorkspace("workspace:team", "workspace_product_entitlement:session_fixture");
+        await store.pointWorkspace(workspaceId, snapshotId);
         expect(missingSession).toBe(true);
+        expect((await fixtureStore.currentSnapshot(workspaceId))?.id).toBe(snapshotId);
       } finally {
         patchedFork.mockRestore();
       }
