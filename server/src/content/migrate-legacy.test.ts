@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { BoundExcluded, RecordId, RecordIdRange } from "surrealdb";
 import {
   assertLegacyContentMigrated,
   legacyContentMigrationCompleted,
@@ -52,10 +53,11 @@ describe("legacy content migration marker", () => {
 
 function copyDb(content: Record<string, unknown>, revision: bigint) {
   return {
-    async query(sql: string): Promise<unknown> {
+    async query(sql: string, params?: Record<string, unknown>): Promise<unknown> {
       if (sql === "INFO FOR DB;") return [{ tables: { content_version: "DEFINE TABLE content_version" } }];
-      if (sql.startsWith("SELECT id FROM content_version ")) return [[{ id: "content_version:fixture" }]];
-      if (sql.startsWith("SELECT * FROM content_version ")) {
+      if (sql === "SELECT VALUE count() FROM content_version GROUP ALL;") return [[1]];
+      if (sql.startsWith("SELECT * FROM $range ") && params?.range instanceof RecordIdRange &&
+        params.range.table.name === "content_version") {
         return [[{ id: "content_version:fixture", revision, content_kind_payload: content }]];
       }
       if (sql.includes("content_migration_state")) return [[{ source_database: "_system" }]];
@@ -65,6 +67,46 @@ function copyDb(content: Record<string, unknown>, revision: bigint) {
 }
 
 describe("legacy content startup verification", () => {
+  test("uses a key-only count and does not read record values when legacy tables are empty", async () => {
+    const queries: string[] = [];
+    const source = {
+      async query(sql: string) {
+        queries.push(sql);
+        return sql === "INFO FOR DB;" ? [{ tables: { ingestion_batch: "" } }] : [[]];
+      },
+    };
+    const target = { async query() { throw new Error("no legacy content"); } };
+    await assertLegacyContentMigrated(source, target);
+    expect(queries).toEqual(["INFO FOR DB;", "SELECT VALUE count() FROM ingestion_batch GROUP ALL;"]);
+  });
+
+  test("advances a bounded range using the typed last key and verifies later pages", async () => {
+    const records = Array.from({ length: 10 }, (_, i) => ({
+      id: new RecordId("ingestion_batch", i),
+      receipt: `row-${i}`,
+    }));
+    function db(contents: typeof records) {
+      return {
+        async query(sql: string, params?: Record<string, unknown>): Promise<unknown> {
+          if (sql === "INFO FOR DB;") return [{ tables: { ingestion_batch: "" } }];
+          if (sql === "SELECT VALUE count() FROM ingestion_batch GROUP ALL;") return [[10n]];
+          if (sql.includes("content_migration_state")) return [[{ source_database: "_system" }]];
+          expect(sql).toBe("SELECT * FROM $range LIMIT 8;");
+          const range = params?.range;
+          expect(range).toBeInstanceOf(RecordIdRange);
+          if (!(range instanceof RecordIdRange) || range.table.name !== "ingestion_batch") return [[]];
+          if (!range.begin) return [contents.slice(0, 8)];
+          expect(range.begin).toEqual(new BoundExcluded(7));
+          return [contents.slice(8)];
+        },
+      };
+    }
+    await expect(assertLegacyContentMigrated(db(records), db(records))).resolves.toBeUndefined();
+    const changed = records.map((row, i) => i === 9 ? { ...row, receipt: "changed" } : row);
+    await expect(assertLegacyContentMigrated(db(records), db(changed)))
+      .rejects.toThrow("content migration mismatch");
+  });
+
   test("accepts equal BigInts in migrated rows and nested payloads, ignoring field order and timestamps", async () => {
     const source = copyDb({ values: [{ amount: 9_007_199_254_740_993n }], label: "fixture", updated_at: "source" }, 1n);
     const target = copyDb({ label: "fixture", updated_at: "target", values: [{ amount: 9_007_199_254_740_993n }] }, 1n);
