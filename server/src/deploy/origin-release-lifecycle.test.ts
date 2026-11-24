@@ -49,15 +49,16 @@ curl() {
   local target
   target=$(readlink "\${ORIGIN_ROOT}/current" 2>/dev/null || true)
   target=\${target##*/}
+  echo "curl:$target:$SECONDS:$3" >>"$GATE_LOG"
   if [ -n "\${T_HEALTH_BAD_RELEASE:-}" ] && [ "$target" = "$T_HEALTH_BAD_RELEASE" ]; then return 22; fi
-  if [ -n "\${T_HEALTH_READY_AT:-}" ] && (( T_HEALTH_ELAPSED < T_HEALTH_READY_AT )); then return 7; fi
+  if [ -n "\${T_HEALTH_READY_AT:-}" ] && (( SECONDS < T_HEALTH_READY_AT )); then return 7; fi
   printf '%s' '{"status":"ok","surrealdb":"up"}'
 }
-T_HEALTH_ELAPSED=0
+unset SECONDS
+SECONDS=0
 sleep() {
   if [[ "$1" =~ ^[0-9]+$ ]]; then
     SECONDS=$((SECONDS + $1))
-    T_HEALTH_ELAPSED=$((T_HEALTH_ELAPSED + $1))
   fi
 }
 mv() {
@@ -648,6 +649,10 @@ describe("origin-release 生命周期（脚本级）", () => {
       expect(currentBasename(h)).toBe("rel-old");
       expect(readText(h.envFile)).toBe(BEFORE);
       expect(countPrefix(gateCalls(h), "systemctl:restart")).toBe(2);
+      const probes = gateCalls(h).filter((call) => call.startsWith("curl:"));
+      const lastForward = probes.filter((call) => call.startsWith("curl:rel-ci-hbad:")).at(-1);
+      expect(lastForward).toBe("curl:rel-ci-hbad:237:3");
+      expect(probes.at(-1)).toBe("curl:rel-old:240:5");
       const log = run(h, ["--log", id]).stdout;
       expect(log).toContain("env: set REVIEW_FIXTURE");
       expect(log).not.toContain("after-value-7f3");
