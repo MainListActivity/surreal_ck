@@ -118,22 +118,26 @@ describe("product entitlement surreal store", () => {
       };
       const patchedFork = spyOn(root, "forkSession").mockImplementationOnce(async () => {
         const db = await fork();
+        const query = db.query.bind(db);
         return Object.assign(db, {
           async query() {
             for (let i = 0; i < 21; i++) {
               await getRootDatabaseSession(`entitlement_pool_${i}`, "main");
             }
             patchedFork.mockImplementationOnce(forkClosedOnQuery);
-            const transaction = await db.beginTransaction();
-            try {
-              await transaction.select(workspace);
-              await fixture.update(workspace).merge({ name: "并发更新" });
-              await transaction.update(workspace).merge({ name: "冲突更新" });
-              await transaction.commit();
-            } finally {
-              await transaction.cancel().catch(() => {});
-            }
-            throw new Error("夹具未触发事务冲突");
+            const batch = `
+              BEGIN TRANSACTION;
+              UPDATE $workspace SET name = $name;
+              SLEEP 500ms;
+              COMMIT TRANSACTION;
+            `;
+            const results = await Promise.allSettled([
+              query(batch, { workspace, name: "并发更新" }),
+              fixture.query(batch, { workspace, name: "冲突更新" }),
+            ]);
+            const conflicts = results.filter((result) => result.status === "rejected");
+            expect(conflicts).toHaveLength(1);
+            throw conflicts[0]!.reason;
           },
         });
       });
