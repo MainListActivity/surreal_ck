@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { createServer } from "node:net";
-import { NotFoundError, QueryError, StringRecordId, Surreal } from "surrealdb";
+import { NotFoundError, StringRecordId, Surreal } from "surrealdb";
 import type { GrantContentCollection, SessionUser } from "@surreal-ck/shared";
 import { ensureSystemSchema } from "../db/system-schema";
 import { closeRootConnection, getRootConnection, getRootDatabaseSession, initRootConnection } from "../db/root-connection";
@@ -75,12 +75,13 @@ describe("product entitlement surreal store", () => {
     const workspaceId = "workspace:session_fixture";
     const snapshotId = "workspace_product_entitlement:session_fixture";
     const fixture = await session();
-    await fixture.create(new StringRecordId(workspaceId)).content({
+    const workspace = new StringRecordId(workspaceId);
+    await fixture.create(workspace).content({
       db_name: "ws_session_fixture", owner_subject: "lawyer", slug: "session-fixture",
       name: "会话夹具", status: "active",
     });
     await fixture.create(new StringRecordId(snapshotId)).content({
-      workspace: new StringRecordId(workspaceId), revision: 1,
+      workspace, revision: 1,
       digest: "session-fixture", summary: "会话夹具", resolver_version: "fixture", base_source_kind: "none",
       content_collections: [], content_actions: [], content_sources: [], ai_actions: [], features: [],
       correlation_id: "fixture-session-retry",
@@ -123,10 +124,16 @@ describe("product entitlement surreal store", () => {
               await getRootDatabaseSession(`entitlement_pool_${i}`, "main");
             }
             patchedFork.mockImplementationOnce(forkClosedOnQuery);
-            throw new QueryError({
-              kind: "Query",
-              message: "Cannot COMMIT: Transaction conflict: fixture. This transaction can be retried",
-            });
+            const transaction = await db.beginTransaction();
+            try {
+              await transaction.select(workspace);
+              await fixture.update(workspace).merge({ name: "并发更新" });
+              await transaction.update(workspace).merge({ name: "冲突更新" });
+              await transaction.commit();
+            } finally {
+              await transaction.cancel().catch(() => {});
+            }
+            throw new Error("夹具未触发事务冲突");
           },
         });
       });
