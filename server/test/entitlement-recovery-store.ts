@@ -34,7 +34,12 @@ export class EntitlementRecoveryStore implements ProductEntitlementStore {
   async membership(subject: string, workspaceId: string) { return this.members.get(`${subject}:${workspaceId}`) ?? null; }
   async activeItem(workspaceId: string) { return this.items.get(workspaceId) ?? null; }
   async bindProductRevision(itemId: string, productPlanRevisionId: string) {
-    for (const [workspaceId, item] of this.items) if (item.itemId === itemId) this.items.set(workspaceId, { ...item, productPlanRevisionId });
+    for (const [workspaceId, item] of this.items) {
+      if (item.itemId !== itemId || item.status !== "active") continue;
+      this.items.set(workspaceId, { ...item, productPlanRevisionId });
+      return true;
+    }
+    return false;
   }
   async productRevision(id: string) { return this.revisions.get(id) ?? null; }
   async resourceTemplateExists(id: string) { return this.resources.has(id); }
