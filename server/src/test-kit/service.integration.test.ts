@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DateTime, Surreal, jsonify } from "surrealdb";
 
+import { createNativeMeetingBatchRunner, sweepNativeMeetingWorkspaces } from "../db/native-meeting-gc";
 import { InviteService } from "../invitations/invite-service";
 import { SurrealInviteAuditStore } from "../invitations/invite-store";
 import type { Queryable } from "../test-subjects/store";
@@ -371,6 +372,45 @@ describe("test kit on real fork SurrealDB with the real invite service", () => {
     await runTestSubjectReaper({ systemDb: queryClient(), dropDatabase: async (n) => { await db!.query(`REMOVE DATABASE IF EXISTS ${n};`); }, log: () => {} });
     expect(await databases()).not.toContain("ws_kit_quiet_late");
     expect(await q(`SELECT * FROM workspace WHERE slug = "kit-quiet-late";`)).toEqual([]);
+  });
+
+  localTest("清理已被会议清扫列出的测试库后，迟到的清扫不会重建它", async () => {
+    const service = kit();
+    await service.provision(AGENT, provisionArgs("meeting-gc-race"));
+    const database = "ws_kit_meeting_gc_race";
+    const sweep = await db!.forkSession();
+    const fixture = await db!.forkSession();
+    const runBatch = createNativeMeetingBatchRunner(endpoint, () => sweep.accessToken);
+    try {
+      await fixture.use({ namespace: "main", database });
+      await fixture.query(`
+        DEFINE TABLE schema_version SCHEMALESS;
+        CREATE schema_version:current SET version = 64;
+        DEFINE FUNCTION fn::meeting_gc() { CREATE meeting_gc_probe:ran; RETURN false; };
+      `);
+      expect(await runBatch("main", database)).toBe(false);
+      expect((await fixture.query<unknown[]>("SELECT * FROM meeting_gc_probe:ran;"))[0]).toHaveLength(1);
+      await fixture.closeSession();
+
+      const failures: string[] = [];
+      await sweepNativeMeetingWorkspaces({
+        use: (scope) => sweep.use(scope),
+        async query(sql) {
+          const list = await sweep.query<[string[]]>(sql);
+          expect(list[0]).toContain(database);
+          const result = await service.purge(AGENT, { subject: "sub-meeting-gc-race", confirm: "purge sub-meeting-gc-race" });
+          expect(result).toMatchObject({ workspacesPurged: 1, workspacesSkipped: 0 });
+          expect(await databases()).not.toContain(database);
+          return list;
+        },
+      }, "main", (namespace, name) => name === database ? runBatch(namespace, name) : Promise.resolve(false),
+      (name) => failures.push(name));
+      expect(failures).toEqual([database]);
+      expect(await databases()).not.toContain(database);
+    } finally {
+      await sweep.closeSession();
+      if (fixture.isValid) await fixture.closeSession();
+    }
   });
 
   localTest("开通中计入上限；已清理与他人账号不计入", async () => {
