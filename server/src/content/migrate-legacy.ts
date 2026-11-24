@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { DateTime, RecordId, StringRecordId } from "surrealdb";
+import { BoundExcluded, DateTime, RecordId, RecordIdRange, StringRecordId } from "surrealdb";
 
 export const CONTENT_MIGRATION_TABLES = [
   "content_source",
@@ -90,11 +90,20 @@ function assertSame(source: Row, target: Row, table: string): void {
 }
 
 async function allRows(db: Queryable, table: string): Promise<Row[]> {
+  const pageSize = 8;
   const output: Row[] = [];
-  for (let offset = 0; ; offset += 100) {
-    const page = rows(await db.query(`SELECT * FROM ${table} ORDER BY id ASC LIMIT 100 START $offset;`, { offset }));
+  let range = new RecordIdRange(table, undefined, undefined);
+  for (;;) {
+    const page = rows(await db.query(`SELECT * FROM $range LIMIT ${pageSize};`, { range }));
     output.push(...page);
-    if (page.length < 100) return output;
+    if (page.length < pageSize) return output;
+    const last = page.at(-1)?.id;
+    if (!(last instanceof RecordId) || last.table.name !== table) {
+      throw new Error(`invalid pagination cursor for ${table}`);
+    }
+    const next = new RecordIdRange(table, new BoundExcluded(last.id), undefined);
+    if (next.equals(range)) throw new Error(`pagination did not advance for ${table}`);
+    range = next;
   }
 }
 
@@ -207,11 +216,23 @@ export async function assertLegacyContentMigrated(source: Queryable, target: Que
   const metadata = Array.isArray(info) ? info[0] : undefined;
   const defined = metadata && typeof metadata === "object" ? Reflect.get(metadata, "tables") : undefined;
   if (!defined || typeof defined !== "object") throw new Error("cannot inspect legacy database tables");
-  const tables = CONTENT_MIGRATION_TABLES.filter((table) => Object.hasOwn(defined, table));
-  const checks = await Promise.all(tables.map((table) =>
-    source.query(`SELECT id FROM ${table} LIMIT 1;`),
-  ));
-  if (checks.every((result) => rows(result).length === 0)) return;
+  let hasLegacyRecords = false;
+  for (const table of CONTENT_MIGRATION_TABLES) {
+    if (!Object.hasOwn(defined, table)) continue;
+    const result = await source.query(`SELECT VALUE count() FROM ${table} GROUP ALL;`);
+    if (!Array.isArray(result) || !Array.isArray(result[0]) || result[0].length > 1) {
+      throw new Error(`cannot count legacy records in ${table}`);
+    }
+    const count: unknown = result[0].length === 0 ? 0 : result[0][0];
+    if (!((typeof count === "number" && Number.isSafeInteger(count)) || typeof count === "bigint") || count < 0) {
+      throw new Error(`invalid legacy record count in ${table}`);
+    }
+    if (count > 0) {
+      hasLegacyRecords = true;
+      break;
+    }
+  }
+  if (!hasLegacyRecords) return;
   const marker = rows(await target.query("SELECT * FROM content_migration_state:legacy;"))[0];
   if (!marker || marker.source_database !== "_system") {
     throw new Error("legacy platform content exists in _system; run the frozen-write migration before switching the publisher");

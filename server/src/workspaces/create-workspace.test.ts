@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createWorkspaceCreator,
+  runProvisioningTransaction,
   type CreateWorkspaceClient,
   type CreateWorkspaceSessionFactory,
 } from "./create-workspace";
@@ -310,6 +311,43 @@ function baseInput(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
+
+describe("workspace provisioning transactions", () => {
+  test("replays the entire transaction after a structured quota conflict", async () => {
+    const sql = "BEGIN TRANSACTION; CREATE workspace; COMMIT TRANSACTION;";
+    const params = { subject: "fixture" };
+    let attempts = 0;
+    const db = {
+      async query(statement: string, bindings?: Record<string, unknown>) {
+        expect(statement).toBe(sql);
+        expect(bindings).toBe(params);
+        if (++attempts === 1) {
+          throw { kind: "Quota", details: { code: "quota_conflict", retryable: true, details: {} } };
+        }
+        return ["committed"];
+      },
+    };
+    expect(await runProvisioningTransaction(db, sql, params)).toEqual(["committed"]);
+    expect(attempts).toBe(2);
+  });
+
+  test("does not retry an ambiguous commit or a nonretryable quota error", async () => {
+    for (const error of [
+      new Error("connection closed during commit"),
+      { kind: "Quota", details: { code: "quota_conflict", retryable: false, details: {} } },
+    ]) {
+      let attempts = 0;
+      const result = runProvisioningTransaction({
+        async query() {
+          attempts += 1;
+          throw error;
+        },
+      }, "BEGIN TRANSACTION; COMMIT TRANSACTION;", {});
+      expect(await result.catch((cause: unknown) => cause)).toBe(error);
+      expect(attempts).toBe(1);
+    }
+  });
+});
 
 describe("createWorkspace lifecycle", () => {
   test("requires an explicit resource source", async () => {

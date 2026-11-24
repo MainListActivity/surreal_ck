@@ -10,8 +10,8 @@ import {
   LEGACY_QUOTA_CLEANUP_MIGRATION_VERSION,
   selectContinuousEligibleMigrations,
 } from "@surreal-ck/shared/workspace-migration-manifest";
-import { NATIVE_QUOTA_EXPECTED_CONTRACT } from "@surreal-ck/shared/native-quota";
-import { DateTime, StringRecordId } from "surrealdb";
+import { extractNativeQuotaError, NATIVE_QUOTA_EXPECTED_CONTRACT } from "@surreal-ck/shared/native-quota";
+import { DateTime, isRetryableConflict, StringRecordId } from "surrealdb";
 import { env } from "../env";
 import { withRootDatabaseSessions } from "../db/root-connection";
 import { toSurrealNone, toIsoDateTimeString } from "../db/surreal-values";
@@ -108,6 +108,25 @@ export type CreateWorkspaceCreatorOptions = {
 
 const SYSTEM_DATABASE = "_system";
 const MAX_DB_NAME_ATTEMPTS = 5;
+const MAX_PROVISIONING_TRANSACTION_ATTEMPTS = 8;
+
+export async function runProvisioningTransaction(
+  db: CreateWorkspaceClient,
+  sql: string,
+  params: Record<string, unknown>,
+): Promise<unknown> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await db.query(sql, params);
+    } catch (error) {
+      const quota = extractNativeQuotaError(error);
+      const retryable = isRetryableConflict(error)
+        || (quota?.code === "quota_conflict" && quota.retryable);
+      if (!retryable || attempt >= MAX_PROVISIONING_TRANSACTION_ATTEMPTS) throw error;
+      await Bun.sleep(Math.min(500, 10 * 2 ** (attempt - 1)) * (0.5 + Math.random()));
+    }
+  }
+}
 
 function defaultGenerateId(): string {
   return crypto.randomUUID().replace(/-/g, "").slice(0, 12);
@@ -441,7 +460,7 @@ function createSurrealControlPlane(
             ? "provider"
             : input.sourceKind;
 
-      await systemDb.query(
+      await runProvisioningTransaction(systemDb,
         `
           BEGIN TRANSACTION;
 
@@ -573,7 +592,7 @@ function createSurrealControlPlane(
         );
       }
 
-      await systemDb.query(
+      await runProvisioningTransaction(systemDb,
         `
           BEGIN TRANSACTION;
 
