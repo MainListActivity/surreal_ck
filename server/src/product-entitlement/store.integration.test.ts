@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { createServer } from "node:net";
-import { QueryError, Surreal } from "surrealdb";
+import { NotFoundError, QueryError, Surreal } from "surrealdb";
 import type { GrantContentCollection, SessionUser } from "@surreal-ck/shared";
 import { ensureSystemSchema } from "../db/system-schema";
 import { closeRootConnection, getRootConnection, getRootDatabaseSession, initRootConnection } from "../db/root-connection";
@@ -71,7 +71,7 @@ afterAll(async () => {
 });
 
 describe("product entitlement surreal store", () => {
-  localTest("权益指针遇到冲突时不受共享会话淘汰影响", async () => {
+  localTest("权益指针在事务冲突和会话失效后完整重试", async () => {
     const previousEnv = env;
     overrideEnv({
       SURREAL_URL: `${endpoint}/rpc`,
@@ -83,28 +83,42 @@ describe("product entitlement surreal store", () => {
       await initRootConnection();
       const root = getRootConnection();
       const fork = root.forkSession.bind(root);
-      let attempts = 0;
-      const patchedFork = spyOn(root, "forkSession").mockImplementationOnce(async () => {
+      let missingSession = false;
+      const forkClosedOnQuery = async () => {
         const db = await fork();
         const query = db.query.bind(db);
-        db.query = ((sql: string, params?: Record<string, unknown>) => {
-          if (++attempts > 1) return query(sql, params);
-          return (async () => {
+        const close = db.closeSession.bind(db);
+        return Object.assign(db, {
+          async query(sql: string, params?: Record<string, unknown>) {
+            await close();
+            try {
+              return await query(sql, params);
+            } catch (error) {
+              missingSession = error instanceof NotFoundError && error.details?.kind === "Session";
+              throw error;
+            }
+          },
+        });
+      };
+      const patchedFork = spyOn(root, "forkSession").mockImplementationOnce(async () => {
+        const db = await fork();
+        return Object.assign(db, {
+          async query() {
             for (let i = 0; i < 21; i++) {
               await getRootDatabaseSession(`entitlement_pool_${i}`, "main");
             }
+            patchedFork.mockImplementationOnce(forkClosedOnQuery);
             throw new QueryError({
               kind: "Query",
               message: "Cannot COMMIT: Transaction conflict: fixture. This transaction can be retried",
             });
-          })() as unknown as ReturnType<typeof query>;
-        }) as typeof db.query;
-        return db;
+          },
+        });
       });
       try {
         const store = new SurrealProductEntitlementStore();
         await store.pointWorkspace("workspace:team", "workspace_product_entitlement:session_fixture");
-        expect(attempts).toBe(2);
+        expect(missingSession).toBe(true);
       } finally {
         patchedFork.mockRestore();
       }

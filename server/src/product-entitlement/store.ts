@@ -1,4 +1,4 @@
-import { DateTime, StringRecordId } from "surrealdb";
+import { DateTime, NotFoundError, StringRecordId } from "surrealdb";
 import { retryAtomicConflict } from "../db/atomic-conflict-retry";
 import { getRootDatabaseSession, withRootDatabaseSessions } from "../db/root-connection";
 import { toIsoDateTimeString, toStringRecordId, toSurrealNone } from "../db/surreal-values";
@@ -59,12 +59,18 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
   }
 
   private async atomicWrite(sql: string, params: Record<string, unknown>): Promise<unknown> {
-    const write = async (openSession: SessionFactory) => {
-      const db = await openSession("_system", this.namespace);
+    if (this.getSession) {
+      const db = await this.db();
       return retryAtomicConflict(() => db.query(sql, params));
-    };
-    // 重试退避期间，别的工作区流量可能淘汰共享池中的会话。
-    return this.getSession ? write(this.getSession) : withRootDatabaseSessions(write);
+    }
+    // 每次重试都用不受共享池淘汰影响的会话；会话不存在时 RPC 尚未执行事务。
+    return retryAtomicConflict(
+      () => withRootDatabaseSessions(async (openSession) => {
+        const db = await openSession("_system", this.namespace);
+        return await db.query(sql, params);
+      }),
+      (error) => error instanceof NotFoundError && error.details?.kind === "Session",
+    );
   }
 
   async workspaceBySlug(slug: string): Promise<WorkspaceRef | null> {
