@@ -108,7 +108,7 @@ export type CreateWorkspaceCreatorOptions = {
 
 const SYSTEM_DATABASE = "_system";
 const MAX_DB_NAME_ATTEMPTS = 5;
-const MAX_PROVISIONING_TRANSACTION_ATTEMPTS = 8;
+const MAX_PROVISIONING_TRANSACTION_ATTEMPTS = 24;
 
 export async function runProvisioningTransaction(
   db: CreateWorkspaceClient,

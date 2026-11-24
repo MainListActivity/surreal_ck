@@ -321,15 +321,15 @@ describe("workspace provisioning transactions", () => {
       async query(statement: string, bindings?: Record<string, unknown>) {
         expect(statement).toBe(sql);
         expect(bindings).toBe(params);
-        if (++attempts === 1) {
+        if (++attempts <= 8) {
           throw { kind: "Quota", details: { code: "quota_conflict", retryable: true, details: {} } };
         }
         return ["committed"];
       },
     };
     expect(await runProvisioningTransaction(db, sql, params)).toEqual(["committed"]);
-    expect(attempts).toBe(2);
-  });
+    expect(attempts).toBe(9);
+  }, 10_000);
 
   test("does not retry an ambiguous commit or a nonretryable quota error", async () => {
     for (const error of [
