@@ -433,16 +433,6 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
     return asNumber(row?.revision);
   }
 
-  async newestSnapshotRevision(workspaceId: string, productPlanRevisionId: string): Promise<number | null> {
-    const row = first(await (await this.db()).query(`SELECT revision FROM workspace_product_entitlement
-      WHERE workspace = $workspace AND product_plan_revision = $product
-      ORDER BY revision DESC LIMIT 1;`, {
-      workspace: new StringRecordId(workspaceId),
-      product: new StringRecordId(productPlanRevisionId),
-    }));
-    return asNumber(row?.revision);
-  }
-
   async snapshotByDigest(workspaceId: string, digest: string): Promise<SnapshotRecord | null> {
     return await this.mapSnapshot(first(await (await this.db()).query(`SELECT * FROM workspace_product_entitlement
       WHERE workspace = $workspace AND digest = $digest LIMIT 1;`, {
@@ -521,6 +511,7 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
     return {
       action: row.action as AuditRecord["action"], requestDigest: row.request_digest,
       entitlementId: idOf(row.entitlement), productPlanRevisionId: idOf(row.product_plan_revision),
+      assignmentItemId: idOf(row.assignment_item) ?? undefined,
     };
   }
 
@@ -528,12 +519,14 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
     try {
       await this.atomicWrite(`INSERT INTO product_entitlement_audit {
         actor_subject: $actor, action: $action, workspace: $workspace, reason: $reason, idempotency_key: $idempotencyKey,
-        request_digest: $requestDigest, entitlement: $entitlement, product_plan_revision: $productPlanRevision
+        request_digest: $requestDigest, entitlement: $entitlement, product_plan_revision: $productPlanRevision,
+        assignment_item: $assignmentItem
       };`, {
         actor: row.actor, action: row.action, reason: row.reason, idempotencyKey: row.idempotencyKey, requestDigest: row.requestDigest,
         workspace: row.workspaceId ? new StringRecordId(row.workspaceId) : undefined,
         entitlement: row.entitlementId ? new StringRecordId(row.entitlementId) : undefined,
         productPlanRevision: row.productPlanRevisionId ? new StringRecordId(row.productPlanRevisionId) : undefined,
+        assignmentItem: row.assignmentItemId ? new StringRecordId(row.assignmentItemId) : undefined,
       });
       return "ok";
     } catch (error) {

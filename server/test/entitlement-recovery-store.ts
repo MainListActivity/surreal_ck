@@ -101,10 +101,6 @@ export class EntitlementRecoveryStore implements ProductEntitlementStore {
   async snapshotByDigest(workspaceId: string, digest: string) {
     return this.snapshots.find((item) => item.workspaceId === workspaceId && item.digest === digest) ?? null;
   }
-  async newestSnapshotRevision(workspaceId: string, productPlanRevisionId: string) {
-    const revisions = this.snapshots.filter((item) => item.workspaceId === workspaceId && item.productPlanRevisionId === productPlanRevisionId).map((item) => item.revision);
-    return revisions.length === 0 ? null : Math.max(...revisions);
-  }
   async maxSnapshotRevision(workspaceId: string) {
     const revisions = this.snapshots.filter((item) => item.workspaceId === workspaceId).map((item) => item.revision);
     return revisions.length === 0 ? null : Math.max(...revisions);

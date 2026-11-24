@@ -97,8 +97,8 @@ describe("system schema seed", () => {
 
     expect(firstRun).toEqual({
       fromVersion: 3,
-      toVersion: 51,
-      appliedVersions: Array.from({ length: 48 }, (_, index) => index + 4),
+      toVersion: 52,
+      appliedVersions: Array.from({ length: 49 }, (_, index) => index + 4),
     });
     expect(db.queryCalls.some((call) => call.sql.includes("DEFINE TABLE IF NOT EXISTS platform_operator_temporary_grant "))).toBeTrue();
     expect(db.queryCalls.some((call) => call.sql.includes("DEFINE TABLE IF NOT EXISTS platform_operator_temporary_grant_request "))).toBeTrue();
@@ -139,13 +139,14 @@ describe("system schema seed", () => {
     expect(db.queryCalls.some((call) =>
       call.sql.includes("DEFINE TABLE IF NOT EXISTS content_grant_revocation ")
     )).toBeTrue();
+    expect(db.queryCalls.some((call) => call.sql.includes("DEFINE FIELD IF NOT EXISTS assignment_item "))).toBeTrue();
 
     const callsAfterFirstRun = db.queryCalls.length;
     const secondRun = await ensureSystemSchema(db, { namespace: "main" });
 
     expect(secondRun).toEqual({
-      fromVersion: 51,
-      toVersion: 51,
+      fromVersion: 52,
+      toVersion: 52,
       appliedVersions: [],
     });
     expect(db.queryCalls.slice(callsAfterFirstRun).map((call) => call.sql.trim())).toEqual([

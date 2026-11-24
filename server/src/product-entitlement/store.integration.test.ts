@@ -94,6 +94,10 @@ describe("product entitlement surreal store", () => {
     expect(assigned.ai.consumableAllowance).toBeNull();
     expect(assigned.baseSource.planKey).toBe("fixture_plus");
     expect(assigned.features).toEqual([{ key: "audit_export", enabled: true, limit: null }]);
+    expect(await store.auditByKey(operator.subject, "assign-fixture-001")).toMatchObject({
+      assignmentItemId: "quota_subscription_item:team",
+      entitlementId: expect.any(String),
+    });
     const repeated = await service.assign(operator, {
       workspaceSlug: "team", billingAccountKey: "acct-a", productPlanRevisionId: published.productPlanRevisionId,
       reason: "为夹具工作区开通", idempotencyKey: "assign-fixture-001",
