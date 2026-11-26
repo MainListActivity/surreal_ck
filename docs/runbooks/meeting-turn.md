@@ -11,11 +11,11 @@
    [Service]
    LoadCredential=turnserver.conf:/etc/coturn/turnserver.conf
    ExecStart=
-   ExecStart=/usr/bin/turnserver -c %d/turnserver.conf --pidfile=
+   ExecStart=/usr/bin/turnserver -c ${CREDENTIALS_DIRECTORY}/turnserver.conf --pidfile=
    ```
 
 3. 复用 Caddy 为 `data.maplayer.top` 管理的 TLS 证书。默认 Caddy systemd 数据目录在 `/var/lib/caddy/.local/share/caddy/certificates/`，签发者和路径以主机的 Caddy 存储配置为准。由 root 的证书复制步骤将完整证书链和匹配私钥安装到 `/etc/coturn/tls/fullchain.pem`、`/etc/coturn/tls/privkey.pem`，均为 `root:turnserver` 0640；将 `/etc/coturn` 和 TLS 子目录设为 `root:turnserver` 0750，使服务能读取 TLS 文件，但不能读取 0600 的源配置或密钥文件。先验证证书包含该域名、链有效且两者公钥对应，再替换目标文件。将相同复制和校验步骤接到**现有**证书续期流程，安排重启 coturn 使其重新读盘；不新增定时器，也不给 coturn 访问整个 Caddy 私钥目录的权限。
-4. 在最终配置中为每个经批准的公网 IPv4 地址或连续网段增加 `allowed-peer-ip=<IPv4>` 或 `allowed-peer-ip=<起始 IPv4>-<结束 IPv4>`。模板默认拒绝所有对端；coturn 中 allow 优先于 deny，因此每项都必须核对，不能与特殊用途地址、私网、回环、云元数据或主机自身地址重叠，不能用全网段代替。验收只允许获准测试网络的公网出口，对称 NAT 出口变更时按授权更新。没有获准的目的地址时不得上线宣称公网可用。
+4. 本机只有一个 IPv4 中继地址，`relay-ip` 绑定 VNIC 私网 IP，`external-ip` 只写公网 IP。coturn 4.5.2 的 `公网/私网` 写法会自动把私网 IP 加入对端允许列表，绕过拒绝规则。最终配置只为经批准的公网 IPv4 地址或连续网段增加 `allowed-peer-ip=<IPv4>` 或 `allowed-peer-ip=<起始 IPv4>-<结束 IPv4>`。模板默认拒绝所有对端；coturn 中 allow 优先于 deny，因此每项都必须核对，不能与特殊用途地址、私网、回环、云元数据或主机自身地址重叠，不能用全网段代替。验收只允许获准测试网络的公网出口，对称 NAT 出口变更时按授权更新。没有获准的目的地址时不得上线宣称公网可用。
 5. 配置 OCI NSG/安全列表和主机防火墙：允许获准客户端来源到 `3478/udp`、`3478/tcp`、`5349/tcp`，允许获准媒体对端来源到 `49160–49359/udp`。OCI 使用有状态规则，出口只允许获准的公网媒体对端（若 VNIC 仍有更宽的出口规则，用主机规则兜底）。不要开启 `5349/udp` 或中继 TCP。主机 iptables 规则按现有链插入到最终拒绝之前，保证不覆盖 SSH、HTTPS/WSS 和数据库规则；下例的 `CLIENT_CIDR`、`PEER_CIDR` 必须替换为获准 CIDR，每个批准网段分别应用：
 
    ```sh
