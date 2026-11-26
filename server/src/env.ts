@@ -18,6 +18,8 @@ const EnvSchema = z.object({
   TURN_URLS: iceUrls(/^turns?:(?:[a-zA-Z0-9.-]+|\[[0-9a-fA-F:.]+\])(?::\d+)?(?:\?transport=(?:udp|tcp))?$/u, "Expected a TURN URL"),
   STUN_URLS: iceUrls(/^stun:(?:[a-zA-Z0-9.-]+|\[[0-9a-fA-F:.]+\])(?::\d+)?$/u, "Expected a STUN URL"),
   TURN_CREDENTIAL_TTL_SECONDS: z.coerce.number().int().min(1).max(900).default(600),
+  MEETING_GUEST_ORIGIN: z.preprocess(value => value === "" ? undefined : value, z.string().url().optional()),
+  MEETING_GUEST_TRUST_PROXY: z.enum(["0", "1"]).default("0"),
 
   SURREAL_URL: z.string().min(1),
   SURREAL_NS: z.string().min(1).default("main"),

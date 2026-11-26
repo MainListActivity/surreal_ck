@@ -28,7 +28,7 @@ use surreal_ck_native_call::{
 };
 use surreal_ck_native_identity::{
     IdentityClient, Session, SurrealConfig,
-    meeting::{MeetingConnection, RoomStatus, Route},
+    meeting::{valid_v2_code, MeetingConnection, RoomStatus, Route},
 };
 use surreal_ck_native_signaling::{
     Error as SignalingError,
@@ -420,6 +420,7 @@ async fn run(
                 match command {
                     MeetingCommand::Create => match meeting.create().await {
                         Ok(()) => {
+                            tick = tokio::time::interval(TICK);
                             eprintln!("[meeting] create ok");
                             emit_snapshot(&meeting, &edges, &contacts, &out, epoch, generation, &media).await
                         }
@@ -433,6 +434,7 @@ async fn run(
                     }
                     MeetingCommand::Join { room_code } => match meeting.join(&room_code).await {
                         Ok(()) => {
+                            tick = tokio::time::interval(if valid_v2_code(&room_code) { Duration::from_secs(1) } else { TICK });
                             eprintln!("[meeting] join ok");
                             emit_snapshot(&meeting, &edges, &contacts, &out, epoch, generation, &media).await
                         }
@@ -782,7 +784,15 @@ async fn emit_snapshot(
                         .iter()
                         .find(|contact| contact.member_id == member.member)
                         .map(|contact| contact.name.clone())
-                        .unwrap_or_else(|| member.member.clone()),
+                        .unwrap_or_else(|| {
+                            if member.member.starts_with("guest:") {
+                                "访客".into()
+                            } else if member.member.starts_with("member:") {
+                                "工作区成员".into()
+                            } else {
+                                member.member.clone()
+                            }
+                        }),
                     join_id: member.join_id.clone(),
                     is_host: member.member == snapshot.room.host,
                     is_local,

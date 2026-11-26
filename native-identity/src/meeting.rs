@@ -70,6 +70,28 @@ mod tests {
         assert!(validate_post(changed, &r, "ws", true).is_err());
     }
     #[test]
+    fn external_principals_are_bound_to_v2() {
+        let member = format!("member:{}", hex());
+        let guest = format!("guest:{}", "b".repeat(64));
+        let code = format!("V2{}", hex().to_ascii_uppercase());
+        let snap: Snapshot = decode(json!({
+            "workspace": "ws", "room": {"id": hex(), "code": code, "host": member, "status": "open", "version": 1, "expires_unix": 2000},
+            "local_join": hex(), "members": [
+                {"member": member, "join_id": hex(), "lease_expires_unix": 1012},
+                {"member": guest, "join_id": "b".repeat(64), "lease_expires_unix": 1002}
+            ], "server_unix": 1000
+        })).unwrap();
+        assert!(snap.validate("ws", &member).is_err());
+        snap.validate_protocol("ws", &member, true).unwrap();
+        assert!(snap.validate_protocol("ws", &guest, true).is_err());
+        let mut v = row();
+        v["sender"] = json!(member);
+        v["recipient"] = json!(guest);
+        let sdp: SdpRow = decode(v).unwrap();
+        assert!(sdp.validate("ws").is_err());
+        sdp.validate_protocol("ws", true).unwrap();
+    }
+    #[test]
     fn snapshot_validation() {
         let v = json!({"workspace":"ws","room":{"id":hex(),"code":"ROOM1234","host":"user:a","status":"open","version":1,"expires_unix":2000},"local_join":hex(),"members":[{"member":"user:a","join_id":hex(),"lease_expires_unix":1090}],"server_unix":1000});
         let s: Snapshot = decode(v.clone()).unwrap();
@@ -248,6 +270,16 @@ pub fn valid_code(s: &str) -> bool {
         && s.bytes()
             .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
 }
+pub fn valid_v2_code(s: &str) -> bool {
+    s.strip_prefix("V2").is_some_and(|room| {
+        room.len() == 64 && room.bytes().all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(&b))
+    })
+}
+fn v2_principal(s: &str, guests: bool) -> bool {
+    s.strip_prefix("member:")
+        .or_else(|| if guests { s.strip_prefix("guest:") } else { None })
+        .is_some_and(valid_hex)
+}
 pub fn member_key(s: &str) -> Result<&str> {
     let key = s.strip_prefix("user:").ok_or(E::MeetingInput)?;
     if key.is_empty()
@@ -298,19 +330,28 @@ pub fn sdp_hash(s: &str, kind: &str) -> Result<String> {
 }
 impl Snapshot {
     pub fn validate(&self, db: &str, me: &str) -> Result<()> {
+        self.validate_protocol(db, me, false)
+    }
+    pub fn validate_protocol(&self, db: &str, me: &str, v2: bool) -> Result<()> {
         let mut members = HashSet::new();
         let mut joins = HashSet::new();
         if self.workspace != db
             || !valid_hex(&self.room.id)
-            || !valid_code(&self.room.code)
-            || member_key(&self.room.host).is_err()
+            || if v2 {
+                !valid_v2_code(&self.room.code)
+                    || self.room.code[2..].to_ascii_lowercase() != self.room.id
+                    || !v2_principal(&self.room.host, false)
+                    || !v2_principal(me, false)
+            } else {
+                !valid_code(&self.room.code) || member_key(&self.room.host).is_err()
+            }
             || self.members.len() > MAX_MEMBERS
             || (self.room.status == RoomStatus::Open && self.room.expires_unix <= self.server_unix)
         {
             return Err(E::MeetingBinding);
         }
         for m in &self.members {
-            if member_key(&m.member).is_err()
+            if (if v2 { !v2_principal(&m.member, true) } else { member_key(&m.member).is_err() })
                 || !valid_hex(&m.join_id)
                 || m.lease_expires_unix <= self.server_unix
                 || !members.insert(&m.member)
@@ -333,6 +374,9 @@ impl Snapshot {
 }
 impl SdpRow {
     pub fn validate(&self, db: &str) -> Result<()> {
+        self.validate_protocol(db, false)
+    }
+    pub fn validate_protocol(&self, db: &str, v2: bool) -> Result<()> {
         if self.workspace != db
             || ![
                 &self.room,
@@ -347,8 +391,11 @@ impl SdpRow {
             || self.sender == self.recipient
             || self.sender_join == self.recipient_join
             || self.attempt == 0
-            || member_key(&self.sender).is_err()
-            || member_key(&self.recipient).is_err()
+            || if v2 {
+                !v2_principal(&self.sender, true) || !v2_principal(&self.recipient, true)
+            } else {
+                member_key(&self.sender).is_err() || member_key(&self.recipient).is_err()
+            }
             || self.expires_unix <= self.server_unix
             || self.expires_unix - self.server_unix > MEETING_SDP_TTL
             || sdp_hash(&self.offer, "offer")? != self.offer_hash
@@ -367,6 +414,7 @@ impl SdpRow {
 pub trait MeetingRpc {
     fn database(&self) -> &str;
     fn member_id(&self) -> &str;
+    fn is_v2(&self) -> bool { false }
     async fn capability(&mut self) -> Result<()>;
     async fn create(&mut self, nonce: &str) -> Result<Snapshot>;
     async fn invite(&mut self, room: &str, recipients: &[String]) -> Result<InviteResult>;
@@ -389,6 +437,8 @@ pub struct MeetingConnection {
     request_id: u64,
     closed: bool,
     polls: [Option<Instant>; 4],
+    transport: crate::HttpsTransport,
+    v2_member: Option<String>,
 }
 redacted!(MeetingConnection);
 fn failure(s: &Value) -> E {
@@ -456,7 +506,10 @@ fn decode<T: serde::de::DeserializeOwned>(v: Value) -> Result<T> {
     serde_json::from_value(v).map_err(|_| E::MeetingBinding)
 }
 pub fn validate_post(got: SdpRow, sent: &SdpRow, db: &str, answer: bool) -> Result<SdpRow> {
-    got.validate(db)?;
+    validate_post_protocol(got, sent, db, answer, false)
+}
+pub fn validate_post_protocol(got: SdpRow, sent: &SdpRow, db: &str, answer: bool, v2: bool) -> Result<SdpRow> {
+    got.validate_protocol(db, v2)?;
     if got.workspace != sent.workspace
         || got.room != sent.room
         || got.sender != sent.sender
@@ -503,6 +556,8 @@ impl MeetingConnection {
             request_id: 2,
             closed: false,
             polls: [None; 4],
+            transport: client.transport.clone(),
+            v2_member: None,
         };
         let identity = c
             .run(
@@ -531,7 +586,7 @@ impl MeetingConnection {
         &self.database
     }
     pub fn member_id(&self) -> &str {
-        &self.member_id
+        self.v2_member.as_deref().unwrap_or(&self.member_id)
     }
     pub fn ensure_current(&self) -> Result<()> {
         self.session.ensure_current()?;
@@ -607,7 +662,7 @@ impl MeetingConnection {
     }
     fn snap(&self, v: Value) -> Result<Snapshot> {
         let s: Snapshot = decode(v)?;
-        s.validate(&self.database, &self.member_id)?;
+        s.validate_protocol(&self.database, self.member_id(), self.is_v2())?;
         Ok(s)
     }
     fn rows(&self, v: Value) -> Result<Vec<SdpRow>> {
@@ -616,9 +671,31 @@ impl MeetingConnection {
             return Err(E::MeetingBinding);
         }
         for r in &rows {
-            r.validate(&self.database)?;
+            r.validate_protocol(&self.database, self.is_v2())?;
         }
         Ok(rows)
+    }
+
+    async fn v2_command(&self, op: &str, mut vars: Value) -> Result<Value> {
+        self.session.ensure_current()?;
+        vars["op"] = Value::String(op.into());
+        let url = crate::transport::endpoint(&self.session.origin.api_base, "/api/meeting/v2/member");
+        let session = self.session.clone();
+        let transport = self.transport.clone();
+        let payload = vars.to_string();
+        let result = timeout(Duration::from_secs(2), tokio::task::spawn_blocking(move || {
+            transport.json(&url, session.access_token(), &payload)
+        })).await.map_err(|_| E::MeetingUnavailable)?
+            .map_err(|_| E::MeetingUnavailable)?;
+        let result = result.map_err(|error| match error {
+            E::Http(401 | 403 | 404) => E::MeetingNotFound,
+            E::Http(409) if op == "snapshot" || op == "renew" => E::MeetingExpired,
+            E::Http(409) => E::MeetingRetry,
+            E::Http(429) => E::MeetingRateLimited,
+            E::Http(503) => E::MeetingUnavailable,
+            other => other,
+        })?;
+        serde_json::from_slice(result.as_slice()).map_err(|_| E::MeetingBinding)
     }
 }
 impl MeetingRpc for MeetingConnection {
@@ -626,8 +703,9 @@ impl MeetingRpc for MeetingConnection {
         &self.database
     }
     fn member_id(&self) -> &str {
-        &self.member_id
+        MeetingConnection::member_id(self)
     }
+    fn is_v2(&self) -> bool { self.v2_member.is_some() }
     async fn capability(&mut self) -> Result<()> {
         let v = self
             .run(
@@ -645,6 +723,7 @@ impl MeetingRpc for MeetingConnection {
         if !valid_hex(nonce) {
             return Err(E::MeetingInput);
         }
+        self.v2_member = None;
         let v = self
             .run(
                 include_str!("../sql/meeting-create.surql"),
@@ -659,6 +738,7 @@ impl MeetingRpc for MeetingConnection {
         Ok(s)
     }
     async fn invite(&mut self, room: &str, recipients: &[String]) -> Result<InviteResult> {
+        if self.is_v2() { return Err(E::MeetingDenied); }
         if !valid_hex(room)
             || recipients.len() > 20
             || recipients.iter().collect::<HashSet<_>>().len() != recipients.len()
@@ -718,9 +798,29 @@ impl MeetingRpc for MeetingConnection {
         Ok(rows)
     }
     async fn join(&mut self, code: &str, join_id: &str) -> Result<Snapshot> {
-        if !valid_code(code) || !valid_hex(join_id) {
+        if !valid_hex(join_id) {
             return Err(E::MeetingInput);
         }
+        if valid_v2_code(code) {
+            let info = self.v2_command("capability", json!({})).await?;
+            let member = info.get("member").and_then(Value::as_str)
+                .filter(|m| v2_principal(m, false)).ok_or(E::MeetingBinding)?;
+            if info.get("version").and_then(Value::as_str) != Some("meeting_v2") {
+                return Err(E::MeetingUnavailable);
+            }
+            let value = self.v2_command("join", json!({"code":code,"join_id":join_id})).await?;
+            let s: Snapshot = decode(value)?;
+            s.validate_protocol(&self.database, member, true)?;
+            if s.local_join.as_deref() != Some(join_id) || s.room.code != code {
+                return Err(E::MeetingBinding);
+            }
+            self.v2_member = Some(member.to_owned());
+            return Ok(s);
+        }
+        if !valid_code(code) {
+            return Err(E::MeetingInput);
+        }
+        self.v2_member = None;
         let v = self
             .run(
                 include_str!("../sql/meeting-join.surql"),
@@ -736,6 +836,9 @@ impl MeetingRpc for MeetingConnection {
     }
     async fn snapshot(&mut self, room: &str, join_id: &str) -> Result<Snapshot> {
         self.bound(room, join_id)?;
+        if self.is_v2() {
+            return self.snap(self.v2_command("snapshot", json!({"room":room,"join_id":join_id})).await?);
+        }
         self.guard(1, 1)?;
         let v = self
             .run(
@@ -748,6 +851,9 @@ impl MeetingRpc for MeetingConnection {
     }
     async fn renew(&mut self, room: &str, join_id: &str) -> Result<Snapshot> {
         self.bound(room, join_id)?;
+        if self.is_v2() {
+            return self.snap(self.v2_command("renew", json!({"room":room,"join_id":join_id})).await?);
+        }
 
         let v = self
             .run(
@@ -760,6 +866,10 @@ impl MeetingRpc for MeetingConnection {
     }
     async fn leave(&mut self, room: &str, join_id: &str) -> Result<()> {
         self.bound(room, join_id)?;
+        if self.is_v2() {
+            self.v2_command("leave", json!({"room":room,"join_id":join_id})).await?;
+            return Ok(());
+        }
 
         let v = self
             .run(
@@ -775,6 +885,10 @@ impl MeetingRpc for MeetingConnection {
     }
     async fn end(&mut self, room: &str, join_id: &str) -> Result<()> {
         self.bound(room, join_id)?;
+        if self.is_v2() {
+            self.v2_command("end", json!({"room":room,"join_id":join_id})).await?;
+            return Ok(());
+        }
 
         let v = self
             .run(
@@ -790,6 +904,9 @@ impl MeetingRpc for MeetingConnection {
     }
     async fn poll_offers(&mut self, room: &str, join_id: &str) -> Result<Vec<SdpRow>> {
         self.bound(room, join_id)?;
+        if self.is_v2() {
+            return self.rows(self.v2_command("poll_offers", json!({"room":room,"join_id":join_id})).await?);
+        }
         self.guard(2, 1)?;
         let v = self
             .run(
@@ -802,6 +919,9 @@ impl MeetingRpc for MeetingConnection {
     }
     async fn poll_answers(&mut self, room: &str, join_id: &str) -> Result<Vec<SdpRow>> {
         self.bound(room, join_id)?;
+        if self.is_v2() {
+            return self.rows(self.v2_command("poll_answers", json!({"room":room,"join_id":join_id})).await?);
+        }
         self.guard(3, 1)?;
         let v = self
             .run(
@@ -813,22 +933,33 @@ impl MeetingRpc for MeetingConnection {
         self.rows(v)
     }
     async fn post_offer(&mut self, row: &SdpRow) -> Result<SdpRow> {
-        row.validate(&self.database)?;
-        if row.sender != self.member_id {
+        row.validate_protocol(&self.database, self.is_v2())?;
+        if row.sender != self.member_id() {
             return Err(E::MeetingBinding);
         }
         let vars = json!({"room":row.room,"join_id":row.sender_join,"peer_join_id":row.recipient_join,"attempt":row.attempt,"nonce":row.nonce,"route":row.route.as_str(),"offer":row.offer,"offer_hash":row.offer_hash});
+        if self.is_v2() {
+            let v = self.v2_command("post_offer", vars).await?;
+            return validate_post_protocol(decode(v)?, row, &self.database, false, true);
+        }
         let v = self
             .run(include_str!("../sql/meeting-post-offer.surql"), vars, true)
             .await?;
         validate_post(decode(v)?, row, &self.database, false)
     }
     async fn post_answer(&mut self, row: &SdpRow) -> Result<SdpRow> {
-        row.validate(&self.database)?;
-        if row.recipient != self.member_id || row.answer.is_none() {
+        row.validate_protocol(&self.database, self.is_v2())?;
+        if row.recipient != self.member_id() || row.answer.is_none() {
             return Err(E::MeetingBinding);
         }
         let vars = json!({"room":row.room,"join_id":row.recipient_join,"peer_join_id":row.sender_join,"attempt":row.attempt,"nonce":row.nonce,"offer_hash":row.offer_hash,"answer":row.answer,"answer_hash":row.answer_hash});
+        if self.is_v2() {
+            let mut vars = vars;
+            vars["route"] = json!(row.route.as_str());
+            vars["id"] = json!(row.id);
+            let v = self.v2_command("post_answer", vars).await?;
+            return validate_post_protocol(decode(v)?, row, &self.database, true, true);
+        }
         let v = self
             .run(include_str!("../sql/meeting-post-answer.surql"), vars, true)
             .await?;
