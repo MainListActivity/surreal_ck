@@ -1,6 +1,6 @@
 # 接下来要做
 
-更新时间：2026-11-17（核对基线：`origin/main` `46ca1eb`，实现代码与工单核对同 `.scratch/EXECUTION_PATH.md` 2026-11-16 版，基线 `7263024b`）
+更新时间：2026-11-25（核对基线：`origin/main` PR `#301`；延续 `2026-11-17` 纠偏索引并补齐种子律所反馈的协同会议与生产就绪主线）
 
 本文是仓库级的下一步工作索引。详细需求、验收条件和讨论记录仍放在 `.scratch/<feature>/issues/*.md`；这里只维护当前优先级、开工顺序和容易忘掉的跨主题风险。
 
@@ -8,47 +8,59 @@
 
 - 新的可执行事项优先写成 `.scratch/<feature-slug>/issues/<NN>-<slug>.md`。
 - issue 状态使用 `docs/agents/triage-labels.md` 中的五个状态：`needs-triage`、`needs-info`、`ready-for-agent`、`ready-for-human`、`wontfix`；完成后直接标为 `done`。
-- 本文只列"下一批要做"和"暂缓原因"，不要复制 issue 的完整验收清单。
-- 每次完成一个 issue 后，同步更新本文的"当前主线"和"下一批候选"。
-- 排期顺序以 [`.scratch/EXECUTION_PATH.md`](.scratch/EXECUTION_PATH.md) 为准，本文只做索引。
+- 本文只列“下一批要做”和“暂缓原因”，不要复制 issue 的完整验收清单。
+- 每次完成一个 issue 后，同步更新本文的“当前主线”和“下一批候选”。
+- 排期顺序以 [`.scratch/EXECUTION_PATH.md`](.scratch/EXECUTION_PATH.md) 及下列新主线 PRD 为准，本文只做索引。
 - 工单头 `Status: done` 只表示实现已记录完成，不等于验收勾齐全、更不等于生产验收；不得凭 `done` 推断生产结果，也不得据此重复派发实现。
+- **平台红线不变**：法律/破产词汇只留在 `workbook_template` 数据里，平台代码、数据库 schema、API 与系统提示不得出现法律硬编码。
 
-## 已经落地的底座（不再是待办）
+## 当前主线（种子律所交付双主线）
+
+根据种子律所真实反馈，律所除破产债权台账与外部协作者门户外，在日常保密办公及破产流程（债权人会议）中均刚需**保密协同与会议**（数据保密无法在公开的腾讯会议、飞书完成），且必须妥善覆盖**外部人员免下载客户端、免注册账号参会**等全部现实场景。同时需补齐生产容灾、端口安全与官网合规底线。
+
+### 主线 1 — 全场景保密协同与会议（`.scratch/meeting-and-collaboration/`）
+
+依据：[`.scratch/meeting-and-collaboration/PRD.md`](.scratch/meeting-and-collaboration/PRD.md)，共 12 张可独立验证工单，按 4 个波次推进：
+
+- **波次 1（架构锁盘 + 原生客户端改版 + 公网互通）**：
+  - `01-meeting-architecture-adr`（`ready-for-agent`）：全场景会议架构与外部参会安全 ADR（日常小会 P2P+托管TURN vs 外部正式大会私有 SFU、零注册/零 DB 凭证边界、隐私与录制红线）
+  - `02-native-client-ux-shell-v2`（`ready-for-agent`）：协同 APP 壳层与产品文案改版（v2 阶段一，去“验收工具感”、登录前置首屏）
+  - `03-native-client-chat-files-prejoin-v2`（`ready-for-agent`，依赖 `02`）：消息分组、显式文件卡片、会议首页、会前检查与防递归共享（v2 阶段二）
+  - `04-managed-turn-and-cross-network`（`ready-for-agent`，依赖 `01`）：托管短时 STUN/TURN 凭据签发与三账号跨网公网互通验收
+- **波次 2（免下载 Web 会议 + 日常外部访客）**：
+  - `05-web-meeting-client-and-interop`（`ready-for-agent`，依赖 `01`、`04`）：Web 浏览器会议端与原生协同 APP 互通（含微信内置浏览器引导）
+  - `06-external-guest-join-and-waiting-room`（`ready-for-agent`，依赖 `01`、`04`、`05`）：日常办公外部访客免下载免注册入会、等候室放行、踢出禁重入与零 DB 隔离
+- **波次 3（私有 SFU + 受控外部正式会议闭环）**：
+  - `07-sfu-private-media-plane`（`ready-for-agent`，依赖 `01`、`04`、`05`）：自托管私有 SFU 媒体平面（支撑 50–200 人大会、移动端纯音频省流与容量压测）
+  - `08-roster-verified-external-meeting`（`ready-for-agent`，依赖 `01`、`07`）：名册核验型外部正式会议（支撑债权人会议，批量签发个人链接/访问码、单活互踢、单人吊销，法律术语留模板包）
+  - `09-host-order-controls-and-hand-raise`（`ready-for-agent`，依赖 `07`、`08`）：主持人秩序强控（服务端强制全员静音禁自开、举手排队点名发言、锁定共享、结束全体会议）
+  - `10-meeting-attendance-voting-writeback`（`ready-for-agent`，依赖 `08`、`09`）：精确签到流水、会中表决与异议、个人回执 PDF 及原子幂等回写工作簿
+- **波次 4（正式签名分发 + 综合验收）**：
+  - `11-native-client-release-signing-pipeline`（`ready-for-human`，依赖 `02`、`03`、`04`）：macOS Developer ID 签名公证、生产更新信任根/feed、媒体供应链锁定与安全接收原生 CI
+  - `12-meeting-e2e-and-pilot-acceptance`（`ready-for-agent`，依赖 `03`、`05`、`06`、`09`、`10`、`11`）：全场景端到端压测验收与种子律所操作手册交付
+
+### 主线 2 — 种子律所生产就绪与商业收口（`.scratch/pilot-production-readiness/`，可与主线 1 并行）
+
+依据：[`.scratch/pilot-production-readiness/PRD.md`](.scratch/pilot-production-readiness/PRD.md)，共 6 张可独立验证工单：
+
+- `01-surrealdb-offsite-backup-and-restore`（`ready-for-agent`）：生产 SurrealDB 加密异地自动备份与隔离恢复演练
+- `02-vps-port-lockdown-and-retire-legacy`（`ready-for-human`）：VPS 通配暴露端口收口（Grafana/Prometheus/Exporter/TiKV/PD）与退役 `sck-company-mcp` 清理
+- `03-marketing-commercial-and-legal-compliance`（`ready-for-agent`，表单部分依赖 `04`）：官网补齐《隐私政策》《用户协议》、移除 fixture 提示、补保密协同与债权人会议卖点、接半自助试用申请
+- `04-public-portal-turnstile-and-rate-limit`（`ready-for-agent`）：外部协作者门户、外部会议入口与官网表单统一接入 Turnstile 与双层限流
+- `05-native-quota-rollout-decision-and-cutover`（`needs-info`，依赖 `01`）：请老板裁决 PR `#59` 冻结状态并按 runbook 完成原生配额生产切流
+- `06-legacy-done-tickets-production-evidence`（`ready-for-agent`）：补齐 VER-06 / VO-04 / VO-06 / claims-vertical / external-collaborator-portal（PR `#278`）生产验收证据与工单簿记纠偏
+
+## 已经落地的底座（不再派发实现）
 
 Web pivot 的五个需求簇（A 仓库重组、B Hono 骨架、C workspace-as-database、D1 Router workflow、D2 前端迁移）以及 D3 dashboard 迁移、运营迭代计划（OIP-01..18）、资源检索（RR-001..014）、工作区设置、个人中心、home 重设计全部 done。此外：
 
-- **订阅配额控制面**（`.scratch/native-resource-quota/`）：SCK-NQ-01..10 全部 done，SurrealDB fork 生产已于 2026-11-21 升级到 `sck-4.0.1-native-quota.1`（镜像 `e68a34a4`，rocksdb，依据维护运行 44890559131），compose 只接受 digest 固定的自有镜像。剩余的配额产品 rollout 运维动作，见下方"长线风险和预发布事项"。
-- **虚拟员工 runtime**（`.scratch/virtual-employee-runtime/`）：VER-01..06 全部 `Status: done`，实现与测试在 `main`（`server/ai/office/employee-runtime.ts`、`employee-trigger-runtime.ts`、`employee-supervisor.ts`、`server/src/routes/employees.ts` 及对应测试）。剩余为生产侧 QA 复验，见"下一批候选"。
-- **虚拟办公室**（`.scratch/virtual-office/`）：VO-01..06 全部 `Status: done`，实现在 `main`（`server/ai/office/project-manager.ts`、`server/src/routes/office.ts`、`shared/sql/workspace-template/031/041/044/045/046`、`web/src/screens/OfficeScreen.svelte` 等），ADR 见 `docs/adr/virtual-office.md`。剩余为验收与生产证据，见"下一批候选"。
-- **律师破产债权垂直簇**（`.scratch/claims-vertical/`）：01..06 工单头均 `Status: done`，实现已上 `main`（06 的修复可追溯至 PR #132）。生产部署复测无记录，见"下一批候选"。红线不变：法律词汇只留在 `workbook_template` 数据里，平台代码/schema/prompt 不得出现。
-- **shadcn 迁移**（`.scratch/shadcn-migration/`）：01..04 均 done（04 验收勾已齐）。
-- **server-skeleton**（`.scratch/server-skeleton/`）：WP-B-06 done（本地 podman 构建 + `/health` 有记录；Docker 运行时下的 `docker compose up` 复测仍缺，见"下一批候选"）。
-- **法律内容持续采集**（`.scratch/legal-content-acquisition/`，wayfinder 12 的实现拆分）：01..04 工单头 done；真实来源授权与持续采集未验证，不作为生产就绪。
-- **平台法律内容 MCP**（`.scratch/legal-content-mcp/`）：01..10 全部 done，包括 07-mcp-oauth；MCP 已部署在 `https://l.maplayer.top/api/ops/mcp`。10-codex-e2e 记录 2026-09-11 生产验收（DCR、PKCE、scope、refresh、重连与撤权，`--fixture --publish --full-lifecycle`，`ok=true`、0 failures）。剩余：运营侧 bootstrap 配置（OIDC subject 与内容 capability）当时未写入，现状未知，见"下一批候选"。
+- **订阅配额控制面**（`.scratch/native-resource-quota/`）：SCK-NQ-01..10 全部 done，SurrealDB fork 生产已于 2026-11-21 升级到 `sck-4.0.1-native-quota.1`（镜像 `e68a34a4`，rocksdb，依据维护运行 44890559131），compose 只接受 digest 固定的自有镜像。配额切流收口见主线 2 工单 `05`。
+- **虚拟员工 runtime & 虚拟办公室**（`.scratch/virtual-employee-runtime/`、`.scratch/virtual-office/`）：VER-01..06、VO-01..06 全部 `Status: done`，实现已上 `main`。生产验收证据补齐见主线 2 工单 `06`。
+- **律师破产债权垂直簇**（`.scratch/claims-vertical/`）：01..06 均 `Status: done`，实现已上 `main`。生产复测收口见主线 2 工单 `06`。
+- **外部协作者门户**（`.scratch/external-collaborator-portal/`）：主干已合入（PR `#275` 等），生产验收记录见开放 PR `#278` 及主线 2 工单 `06`。
+- **原生协同客户端与内部 P2P 会议底座**（`native-client/`、`native-call/`、`062-native-signaling.surql`、`069-native-meeting.surql`）：双人信令与工作区内部成员会议骨架已合入 `main`；UI v2 改版、托管 TURN、Web 互通、外部免安装参会与私有 SFU 见主线 1。
+- **shadcn 迁移 / server-skeleton / 法律内容 MCP / 法律内容持续采集**：实现工单均标 `done`（其中法律内容真实来源授权与持续采集未生产就绪，运营侧 bootstrap 现状需在主线 2 工单 `06` 核实）。
 - **AI 产品层**（`.scratch/agentic-ai-product/`）：全部 done / wontfix，作为语义参考保留。
-- **法律数据产品决策票**（`.scratch/legal-data-product-wayfinder/`）：01..12 工单头 done；均为决策/范围票，不代表已实现程序（12 自述采集程序未实现，正文仍 `in_progress`）。
-
-## 当前主线：无待派发实现工单
-
-VER、VO、legal-content-mcp、claims-vertical、shadcn-migration、server-skeleton、legal-content-acquisition 的实现均已上 `main`，没有可派的代码工单。当前工作是**证据收集、工单簿记与运维确认**，不是新实现。
-
-工单簿记遗留（仅在有授权的工单卫生改动里修，不在派发层面处理）：
-
-- 头 `Status: done` 但正文状态行仍 `ready-for-agent`：VER-01、VER-03、VO-01。
-- 头 `Label: ready-for-agent`：claims-vertical 01/02/05；legal-content-acquisition 02..04。
-- PRD 头仍 `ready-for-agent`：VER、VO、claims-vertical、legal-content-acquisition；legal-content-mcp PRD 头仍 `Status: open`。
-- 头 `done` 但验收勾未齐：VER-01/02/03（5/7/7）、VO-01/02/04（7/8/8）、claims-vertical 01/05/06（5/6/6）、shadcn-migration 01/02/03（6/7/6）、legal-content-acquisition 01/03（4/5）、legal-content-mcp 01..04（各 3）。
-
-## 下一批候选（证据 / QA / 运维确认，非实现）
-
-- **VER-06 生产 QA 复验**（ready-for-human）：按 `docs/runbooks/employee-runtime-observation.md` 用 `scripts/verify-employee-runtime.ts` 复验续约、重连、容量与长期运行；runbook 明确"运行成功不等于生产验收"，仓库内无运行记录。
-- **VO-04 验收证据**：8 个验收勾全空，需测试或浏览器运行证据后才能宣称花名册/活动页验收。
-- **VO-06 生产 onboarding**：代码与验收勾齐（`POST /api/workspaces/:slug/office/bootstrap`），但无生产运行记录。
-- **claims-vertical 01/05/06 验收证据**：06 的代码修复已在 `main`，但宣称的 `CLAIMSE2E` 收口运行与生产部署复测均无记录，生产状态未知。
-- **WP-B-06 Docker 复测**：ticket 留有 2026-05-21 复测要求（`docker compose up` + `/health`，需 Docker 运行时），CI 只跑 `docker build`，未跑 compose up。
-- **原生配额生产 rollout 状态确认**：见下方"长线风险"；未合并 PR #59 记录了 2026-09-29 冻结生产收口的决定（OPEN、不在 `main`），rollout 任何一步前须由负责人确认冻结是否生效。
-- **legal-content-mcp 运营侧 bootstrap 配置确认**：OIDC subject 与内容 capability 自 2026-09-11 记录以来状态未知，宣称运营侧就绪前须确认。
-- **wayfinder 真实来源授权与持续采集**：未验证；其范围票 12 明确采集程序未实现、定时任务未启用。
 
 ## 已 Cancelled / Superseded
 
@@ -56,55 +68,10 @@ VER、VO、legal-content-mcp、claims-vertical、shadcn-migration、server-skele
 - **Electrobun sidecar 窗口**：`AI-009` wontfix，Web 浏览器无 sidecar 概念。
 - 历史 issue 文本里的 pre-pivot 执行路径（`src/main/**`、renderer/main RPC、service JWT、NS-admin、后端业务 CRUD 代理、后端 LIVE 转发）一律不得复活。
 
-## 长线风险和预发布事项
+## 长线风险与后续事项
 
-这些不是当前主线，但上线前需要回看。
-
-### 原生配额生产 rollout
-
-- 优先级：High
-- 状态：代码与发布门就绪；生产执行状态**待确认**（未合并 PR #59 记录了冻结生产收口的决定，是否生效须由负责人确认；生产真实现状仓库内不可知）
-- 范围：按 `docs/runbooks/native-quota-release-cutover.md` 执行引擎维护窗、账本回填、分 cohort 晋级（synthetic → 1% → 10% → 50% → 剩余）、24h/48h 观察窗、产品切换，稳定 30 日后跑 `docs/runbooks/native-quota-legacy-migration.md` 的 delayed cleanup，并保留真实运行记录。
-
-### 中国法律数据合规
-
-- 优先级：P1 / pre-launch
-- 状态：Not started
-- 范围：法律案件数据是否属重要数据 / 国内数据中心选址 / 法务合同条款。建议单独立项 ADR + 法务咨询。
-
-### SurrealDB root 凭证管理
-
-- 优先级：High
-- 状态：Not started
-- 原因：后端唯一长期凭证，仅用于 `_system`、workspace lifecycle、schema migration、`employee_credential` 写入等维护路径，但泄露等于全部 workspace 可破。
-- 范围：环境变量管理 + 不写日志 + 文档化轮换流程；后续考虑短期 token 或密钥管理服务。
-
-### 文件上传磁盘满错误处理
-
-- 优先级：Medium
-- 状态：Not started
-- 范围：上传前检查可用磁盘空间，空间不足时返回明确错误并记录日志。
-
-### `GRAPH_TRAVERSE` 计算字段重算防抖
-
-- 优先级：Medium
-- 状态：Not started
-- 范围：批量收集 dirty 计算字段，在 500ms 静默期后统一重算。
-
-### 异地备份
-
-- 优先级：P2 / pre-launch
-- 状态：Not started
-- 范围：生产 SurrealDB 数据导出到 S3 / 第二主机，并验证恢复流程。
-
-### 表单防滥用
-
-- 优先级：P2 / pre-launch
-- 状态：Not started
-- 范围：服务端 Turnstile 校验，以及 nginx 或 Cloudflare 层限流。
-
-### 审计轨迹 UI
-
-- 优先级：P3 / post-MVP
-- 状态：Not started
-- 范围：在表格 UI 中提供 History 面板，按选中单元格或记录查看 mutation 轨迹。
+- **中国法律数据合规**（P1 / pre-launch，Not started）：法律案件数据出境、国内数据中心选址与法务合同条款，建议单独立项 ADR + 持牌法务咨询。
+- **SurrealDB root 凭证管理**（High，Not started）：文档化环境变量管理、禁打日志与轮换流程，后续评估短期 token / 密钥管理服务。
+- **文件上传磁盘满错误处理**（Medium，进行中：开放 PR `#259` / `task/13e35c74`）：上传前校验可用磁盘空间并返回显式错误。
+- **`GRAPH_TRAVERSE` 计算字段重算防抖**（Medium，Not started）：批量收集 dirty 计算字段，500ms 静默期后统一重算。
+- **审计轨迹 UI**（P3 / post-MVP，Not started）：表格 UI 中按单元格/记录查看 mutation 轨迹。
