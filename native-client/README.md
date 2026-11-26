@@ -45,6 +45,16 @@ cargo run --manifest-path native-client/Cargo.toml --features desktop
 
 Linux原生构建需要GTK >=4.14、GStreamer开发库和平台编译工具。desktop feature 只用于桌面binary；接入原生视频组件后，Linux测试也需要上述GTK开发库。NSH原生根App对Android可直接由NSH打包，无需desktop feature。
 
+Linux 名册大会通过独立实验 feature 接入私有 LiveKit SFU，不使用内部会议 Mesh。安装 Clang 21、libc++ 21 和 libc++abi 21 后构建：
+
+```sh
+CC=clang-21 CXX=clang++-21 LIBCLANG_PATH=/usr/lib/llvm-21/lib \
+  cargo build --locked --manifest-path native-client/Cargo.toml \
+  --features desktop,experimental-native-roster-sfu
+```
+
+在「会议 → 名册核验大会」粘贴邀请并核验，无需参会人账号。主持人先登录并明确选择管理员工作区。外部席位默认只听，获准后仍须在本机点击开麦。该 feature 不启用 Android 或其他平台的名册媒体。
+
 ```sh
 cd native-client
 nsh package --target android --abi arm64-v8a,x86_64
