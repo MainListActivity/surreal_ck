@@ -343,7 +343,9 @@ export class RosterMeetingService {
       if (meeting.room_id && this.media) {
         for (const row of old) await this.media.dropRoster(database, meeting.room_id, rosterSubject(row.id));
       }
-      return entries.map(({ name, pass, code }) => ({ name, pass, code }));
+      return entries.map(({ name, pass, code }) => ({
+        name, pass, code, checkLabel: meeting.check_field ? meeting.check_label || "名册校对" : undefined,
+      }));
     });
   }
 
@@ -451,7 +453,8 @@ export class RosterMeetingService {
       if (pass.lease_session && meeting.room_id) await this.media?.dropRoster(database, meeting.room_id, subject);
       this.limits.success(hash);
       const payload = Buffer.from(JSON.stringify({ slug, meeting: String(meeting.id), pass: String(pass.id), generation, session, exp } satisfies Cookie)).toString("base64url");
-      return { cookie: `${payload}.${signPayload(payload, pepper)}`, maxAge: Math.floor((exp - now) / 1000), state, title: meeting.title, name };
+      return { cookie: `${payload}.${signPayload(payload, pepper)}`, maxAge: Math.floor((exp - now) / 1000), state, title: meeting.title, name,
+        check_label: meeting.check_label };
     });
   }
 
@@ -493,7 +496,7 @@ export class RosterMeetingService {
   }
 
   session(raw: string | undefined) {
-    return this.withSession(raw, async ({ state, meeting, name }) => ({ state, title: meeting.title, name }));
+    return this.withSession(raw, async ({ state, meeting, name }) => ({ state, title: meeting.title, name, check_label: meeting.check_label }));
   }
 
   credentials(raw: string | undefined) {

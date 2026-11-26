@@ -127,11 +127,13 @@ export function createMeetingRosterRoutes(options: Options = {}) {
     if (c.req.header("origin") !== configuredOrigin(origin)) throw rosterDenied();
     await next();
   };
-  const csv = (c: Context<AppBindings>, site: string, entries: { name: string; code: string; pass: string }[]) => {
+  const csv = (c: Context<AppBindings>, site: string, entries: { name: string; code: string; pass: string; checkLabel?: string }[]) => {
     c.header("Content-Type", "text/csv; charset=utf-8");
     c.header("Content-Disposition", 'attachment; filename="roster-meeting-invitations.csv"');
-    return c.body("\uFEFF姓名,访问码,参会链接\r\n" + entries.map(({ name, code, pass }) =>
-      [name, code, `${site}/meeting/roster#pass=${encodeURIComponent(pass)}`].map(csvCell).join(",")).join("\r\n") + "\r\n");
+    return c.body("\uFEFF姓名,访问码,参会链接\r\n" + entries.map(({ name, code, pass, checkLabel }) => {
+      const hint = checkLabel ? `&check_label=${encodeURIComponent(checkLabel)}` : "";
+      return [name, code, `${site}/meeting/roster#pass=${encodeURIComponent(pass)}${hint}`].map(csvCell).join(",");
+    }).join("\r\n") + "\r\n");
   };
 
   app.use(publicPath + "/*", headers);
@@ -142,7 +144,7 @@ export function createMeetingRosterRoutes(options: Options = {}) {
     setCookie(c, cookieName, result.cookie, {
       path: publicPath, secure: true, httpOnly: true, sameSite: "Strict", maxAge: result.maxAge,
     });
-    return c.json({ state: result.state, title: result.title, name: result.name });
+    return c.json({ state: result.state, title: result.title, name: result.name, check_label: result.check_label });
   });
   app.get(publicPath + "/session", async (c) => c.json(await service.session(getCookie(c, cookieName))));
   app.post(publicPath + "/credentials", requireOrigin, async (c) => c.json(await service.credentials(getCookie(c, cookieName))));

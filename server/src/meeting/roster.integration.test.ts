@@ -105,7 +105,9 @@ test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等�
       expect(response.headers.get("Cache-Control")).toBe("no-store");
       const [, line] = (await response.text()).split("\r\n");
       const [name, code, link] = line!.split(",");
-      const pass = new URLSearchParams(new URL(link!).hash.slice(1)).get("pass")!;
+      const fragment = new URLSearchParams(new URL(link!).hash.slice(1));
+      const pass = fragment.get("pass")!;
+      expect(fragment.get("check_label")).toBe("名册校对");
       expect(code).toMatch(/^\d{6}$/);
       expect(pass).toMatch(/^fixture\./);
       return { name, code, pass };
