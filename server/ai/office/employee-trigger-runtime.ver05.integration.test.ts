@@ -224,8 +224,13 @@ describe("VER05 预算/链深闸门（真实 SurrealDB）", () => {
     });
 
     expect(await runtime.enqueue(delivery("k-parent", 0))).toMatchObject({ outcome: "completed" });
-    await Bun.sleep(50); // 级联行由同一窗口 drain
-    const rows = await triggerRows(fixture);
+    const deadline = performance.now() + 5_000;
+    let rows = await triggerRows(fixture);
+    while (performance.now() < deadline &&
+      !rows.some((row) => row.idempotency_key === "child-of:k-parent" && row.status === "completed")) {
+      await Bun.sleep(25);
+      rows = await triggerRows(fixture);
+    }
     const parent = rows.find((row) => row.idempotency_key === "k-parent");
     const child = rows.find((row) => row.idempotency_key === "child-of:k-parent");
     const grandchild = rows.find((row) => row.idempotency_key === "child-of:child-of:k-parent");
