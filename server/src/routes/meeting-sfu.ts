@@ -103,7 +103,7 @@ function validUntil(exp: unknown): number {
 
 const MAX_SIGNAL_FRAME = 256 * 1024;
 const signalParams = [
-  "access_token", "auto_subscribe", "reconnect", "sid", "sdk", "version", "protocol",
+  "auto_subscribe", "reconnect", "sid", "sdk", "version", "protocol",
   "device_model", "os", "os_version", "browser", "browser_version", "adaptive_stream",
   "reconnect_reason", "network",
 ];
@@ -155,11 +155,19 @@ export function createMeetingSfuRoutes({
     }
     const url = new URL(c.req.url);
     if (url.search.length > 8192) return c.text("Forbidden", 403);
-    const token = url.searchParams.get("access_token");
-    const lease = token && url.searchParams.getAll("access_token").length === 1
-      ? await sfu.authorizeSignal(token) : undefined;
+    const queryTokens = url.searchParams.getAll("access_token");
+    const authorization = c.req.header("authorization");
+    if (queryTokens.length > 1 || (authorization !== undefined && queryTokens.length !== 0)) {
+      return c.text("Forbidden", 403);
+    }
+    const token = authorization === undefined
+      ? queryTokens[0]
+      : /^Bearer ([A-Za-z0-9._-]{1,8192})$/iu.exec(authorization)?.[1];
+    if (!token) return c.text("Forbidden", 403);
+    const lease = await sfu.authorizeSignal(token);
     if (!lease) return c.text("Forbidden", 403);
     const target = new URL(c.req.path.endsWith("/validate") ? "/rtc/validate" : "/rtc", resolved.privateUrl);
+    target.searchParams.set("access_token", token);
     for (const name of signalParams) {
       const value = url.searchParams.get(name);
       if (value !== null) target.searchParams.set(name, value);

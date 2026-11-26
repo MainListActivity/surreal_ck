@@ -118,8 +118,12 @@ class SignalProbe {
   readonly messages: SignalResponse[] = [];
   readonly closed: Promise<void>;
 
-  constructor(grant: MeetingSfuCredentials) {
-    this.socket = new WebSocket(signalEndpoint(grant));
+  constructor(grant: MeetingSfuCredentials, native = false) {
+    const url = signalEndpoint(grant);
+    if (native) url.searchParams.delete("access_token");
+    this.socket = native
+      ? new WebSocket(url, { headers: { Authorization: `Bearer ${grant.token}` } })
+      : new WebSocket(url);
     this.socket.binaryType = "arraybuffer";
     this.socket.addEventListener("message", ({ data }) => {
       if (data instanceof ArrayBuffer) this.messages.push(SignalResponse.fromBinary(new Uint8Array(data)));
@@ -210,7 +214,7 @@ describe.skipIf(!binary)("Bun signal gate and real private LiveKit", () => {
     const room = await media.startRoster(actor, 4);
     const grant = await media.rosterCredentials(guest, room.id, "guest-lease");
     const otherGrant = await media.rosterCredentials(other, room.id, "other-lease");
-    const signal = new SignalProbe(grant);
+    const signal = new SignalProbe(grant, true);
     const otherSignal = new SignalProbe(otherGrant);
     try {
       expect(await signal.find("join")).toBeDefined();
@@ -293,6 +297,12 @@ describe.skipIf(!binary)("Bun signal gate and real private LiveKit", () => {
     const validation = signalEndpoint(listenerGrant, true);
     expect((await fetch(validation, { headers: { origin: appOrigin } })).headers.get("access-control-allow-origin")).toBe(appOrigin);
     expect((await fetch(validation, { headers: { origin: "https://other.example" } })).status).toBe(403);
+    const nativeHeaders = { Authorization: `Bearer ${listenerGrant.token}` };
+    expect((await fetch(validation, { headers: nativeHeaders })).status).toBe(403);
+    const nativeValidation = new URL(validation);
+    nativeValidation.searchParams.delete("access_token");
+    expect((await fetch(nativeValidation, { headers: nativeHeaders })).status).toBe(200);
+    expect((await fetch(nativeValidation, { headers: { Authorization: "Bearer invalid" } })).status).toBe(403);
     const forged = await new SignJWT({ video: { roomJoin: true, room: `ck-meeting-${id}`, canPublish: true } })
       .setIssuer(iss!).setSubject(sub!).setExpirationTime(exp!).setProtectedHeader({ alg: "HS256" })
       .sign(new TextEncoder().encode(randomBytes(32).toString("hex")));
