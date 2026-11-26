@@ -41,6 +41,11 @@ async function spawnSurreal() {
 }
 
 const NS = "test";
+const voteOptions = [
+  { key: "approve", label: "赞成" },
+  { key: "reject", label: "反对" },
+  { key: "abstain", label: "弃权" },
+];
 const opened: Surreal[] = [];
 
 function track<T extends Surreal>(db: T): T {
@@ -237,7 +242,12 @@ describe("CV-01 workbook_template 契约（真实 SurrealDB）", () => {
         {
           key: "creditor-meeting", label: "债权人会议", sheet_key: "creditors", display_key: "creditor_name",
           check_key: "identity_number", check_label: "证件号码后四位", check_mode: "suffix4",
-          admission: "waiting", concurrency: "replace",
+          admission: "waiting", concurrency: "replace", vote_weight_key: "voting_weight",
+          vote_agenda: [
+            { title: "核查债权表", options: voteOptions, allowChange: true },
+            { title: "通过债务人财产的管理方案", options: voteOptions, allowChange: true },
+            { title: "通过破产财产的变价方案", options: voteOptions, allowChange: false },
+          ],
         },
       ]]);
       expect(legacy).toEqual([undefined]);

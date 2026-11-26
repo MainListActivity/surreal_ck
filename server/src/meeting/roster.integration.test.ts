@@ -5,7 +5,7 @@ import { DateTime, Surreal } from "surrealdb";
 import { handleError } from "../middleware/error";
 import { createMeetingRosterRoutes } from "../routes/meeting-roster";
 import { RosterMeetingService } from "./roster";
-import type { SfuActor } from "./sfu";
+import type { RosterSfuEvent, SfuActor } from "./sfu";
 
 const binary = process.env.SURREAL_BINARY;
 const slug = "fixture";
@@ -36,16 +36,26 @@ test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等�
     const migrations = await loadTemplateScripts({ oidcJwksUrl: "https://fixture.invalid/jwks" });
     for (const migration of migrations) await root.query(migration.sql).collect();
     await root.query(`
+      UPDATE workspace_resource_quota:current SET plan = resource_quota_plan:max;
       CREATE workbook_template:fixture SET key = "fixture", label = "会议模板",
         roster_meeting_presets = [{ key: "entry", label: "核验入口", sheet_key: "roster", display_key: "name",
           check_key: "check", check_mode: "suffix4", admission: "waiting", concurrency: "reject" }];
       CREATE workbook:roster SET name = "名册", template = workbook_template:fixture;
       CREATE sheet:roster SET workbook = workbook:roster, label = "名册", table_name = "test_roster",
-        template_sheet_key = "roster", column_defs = [{ key: "name" }, { key: "check" }];
+        template_sheet_key = "roster", column_defs = [{ key: "name" }, { key: "check" }, { key: "weight", field_type: "decimal" }];
       DEFINE TABLE test_roster SCHEMALESS;
-      CREATE test_roster:first SET name = "=示例", check = "A1234";
-      CREATE test_roster:second SET name = "示例二", check = "A5678";
+      CREATE test_roster:first SET name = "=示例", check = "A1234", weight = 7.25dec;
+      CREATE test_roster:second SET name = "示例二", check = "A5678", weight = 11.5dec;
       CREATE test_roster:third SET name = "示例三", check = "A9101";
+      DEFINE TABLE ent_test_attendance SCHEMALESS;
+      DEFINE TABLE ent_test_votes SCHEMALESS;
+      CREATE sheet:attendance SET workbook = workbook:roster, label = "签到", table_name = "ent_test_attendance",
+        column_defs = [{ key: "meeting_id" }, { key: "subject_id" }, { key: "name" }, { key: "attended", field_type: "checkbox" },
+          { key: "duration_ms", field_type: "number" }, { key: "segments" }, { key: "timeline" }];
+      CREATE sheet:votes SET workbook = workbook:roster, label = "表决", table_name = "ent_test_votes",
+        column_defs = [{ key: "meeting_id" }, { key: "poll_id" }, { key: "title" }, { key: "version" },
+          { key: "option" }, { key: "label" }, { key: "count", field_type: "number" }, { key: "weight", field_type: "number" },
+          { key: "ballots" }];
       CREATE user:fixture SET email = "member@example.test", kind = "human", is_admin = false;
       DEFINE ACCESS member_record ON DATABASE TYPE RECORD SIGNIN (SELECT * FROM user:fixture) DURATION FOR SESSION 1h;
     `).collect();
@@ -55,6 +65,7 @@ test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等�
     let locked = false;
     let raises = 0;
     let transactions = 0;
+    let recordMediaEvent: ((event: RosterSfuEvent) => Promise<void>) | undefined;
     const service = new RosterMeetingService({
       resolveWorkspace: async (name) => name === slug ? { dbName: database } : null,
       getPepper: () => pepper,
@@ -67,6 +78,7 @@ test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等�
       },
       media: {
         maxSeats: 3,
+        setRosterEventSink(sink) { recordMediaEvent = sink; },
         async startRoster(_actor, seats) {
           const id = crypto.randomUUID();
           rooms.add(id);
@@ -125,9 +137,9 @@ test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等�
     }
     const verify = ({ pass, code }: { pass: string; code: string }, check = "1234", ip?: string) =>
       request(pub + "/verify", { body: { pass, code, check }, ip });
-    async function verified(res: Response, state: string) {
+    async function verified(res: Response, state: string, name = "=示例") {
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ state, title: "名册大会", name: "=示例" });
+      expect(await res.json()).toEqual({ state, title: "名册大会", name });
       const header = res.headers.get("Set-Cookie")!;
       for (const flag of ["Secure", "HttpOnly", "SameSite=Strict"]) expect(header).toContain(flag);
       return header.split(";")[0]!;
@@ -163,7 +175,7 @@ test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等�
     const duplicate = await request(room + "/passes", { body: { row_ids: ["test_roster:second", "test_roster:first"] } });
     expect(duplicate.status).toBe(409);
     const passes = async (roomPath: string) => (await (await request(roomPath + "/passes")).json() as {
-      passes: { id: string; generation: number; status: string; opened_at: string | null }[];
+      passes: { id: string; row_id: string; generation: number; status: string; opened_at: string | null }[];
     }).passes;
     expect(await passes(room)).toEqual([expect.objectContaining({ status: "active", opened_at: null })]);
     expect(JSON.stringify(await passes(room))).not.toMatch(/hash|fixture\./);
@@ -178,6 +190,45 @@ test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等�
     expect(start.status).toBe(201);
     expect(await start.json()).toMatchObject({ seats: 3 });
     const old = await verified(await verify(initial), "admitted");
+    const otherPass = await invitation(await request(room + "/passes", { body: { row_ids: ["test_roster:second"] } }));
+    const other = await verified(await verify(otherPass, "5678"), "admitted", "示例二");
+    const binding = { attendanceSheet: "sheet:attendance", voteSheet: "sheet:votes", weightField: "weight" };
+    expect((await request(room + "/archive-config", { method: "PUT", body: binding })).status).toBe(200);
+    const options = [{ key: "yes", label: "同意" }, { key: "no", label: "不同意" }];
+    const createPoll = async (allowChange: boolean, ms = 60_000) => {
+      const response = await request(room + "/polls", { body: {
+        title: "配置议题", deadline: new Date(Date.now() + ms).toISOString(), options, allowChange,
+      } });
+      expect(response.status).toBe(201);
+      return encodeURIComponent((await response.json() as { id: string }).id);
+    };
+    const poll = await createPoll(true);
+    const cast = (cookie: string, id: string, body: { option: string; note?: string; requestId?: string }) =>
+      request(pub + "/polls/" + id + "/vote", { cookie, body });
+    const receipt = (cookie: string, id: string) => request(pub + "/polls/" + id + "/receipt.pdf", { cookie });
+    expect((await receipt(other, poll)).status).toBe(404);
+    const firstVote = { option: "no", note: "本人书面异议", requestId: crypto.randomUUID() };
+    const [a, b] = await Promise.all([cast(old, poll, firstVote), cast(other, poll, { option: "yes", note: "他人说明" })]);
+    expect(a.status).toBe(200);
+    expect(b.status).toBe(200);
+    expect(await (await cast(old, poll, firstVote)).json()).toEqual(await a.json());
+    expect((await cast(old, poll, { option: "yes", note: "更正票", requestId: crypto.randomUUID() })).status).toBe(200);
+    expect(await (await cast(old, poll, firstVote)).json()).toMatchObject({ option: "no", note: firstVote.note });
+    expect(await (await request(room + "/polls")).json()).toMatchObject({ polls: [{ results: [
+      { key: "yes", count: 2, weight: 18.75 }, { key: "no", count: 0, weight: 0 },
+    ] }] });
+    expect(JSON.stringify(await (await request(pub + "/polls", { cookie: other })).json())).not.toMatch(/更正票|本人书面异议/);
+    const pdf = await receipt(other, poll);
+    expect(pdf.status).toBe(200);
+    expect(pdf.headers.get("Cache-Control")).toBe("no-store");
+    expect(pdf.headers.get("Content-Type")).toBe("application/pdf");
+    expect(new TextDecoder().decode((await pdf.bytes()).subarray(0, 5))).toBe("%PDF-");
+
+    const lockedPoll = await createPoll(false, 1200);
+    expect((await cast(old, lockedPoll, { option: "yes" })).status).toBe(200);
+    expect((await cast(old, lockedPoll, { option: "no" })).status).toBe(409);
+    await Bun.sleep(1250);
+    expect(await (await cast(other, lockedPoll, { option: "yes" })).json()).toMatchObject({ error: { code: "meeting-poll-closed" } });
     expect(await (await media(old)).json()).toMatchObject({ role: "listener", token: "fixture-media" });
     expect(calls[0]?.name).toBe("=示例");
     expect((await request(pub + "/raise-hand", { method: "POST", cookie: old })).status).toBe(204);
@@ -191,12 +242,13 @@ test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等�
     expect(await state(old)).toBe("replaced");
     expect((await media(old)).status).toBe(401);
     expect(drops[0]?.subject).toMatch(/^roster:roster_meeting_pass:/);
-    const [prior] = await passes(room);
+    expect((await receipt(old, poll)).status).toBe(401);
+    const prior = (await passes(room)).find((item) => item.id === drops[0]?.subject.slice("roster:".length));
     const replacement = await invitation(await request(room + "/passes/reissue", { body: { row_id: "test_roster:first" } }));
     expect(await state(next)).toBe("revoked");
     expect(await (await verify(initial)).json()).toEqual(error);
     const current = await verified(await verify(replacement), "admitted");
-    const pass = (await passes(room)).find((item) => item.status === "active")!;
+    const pass = (await passes(room)).find((item) => item.status === "active" && item.row_id === "test_roster:first")!;
     expect(pass.id).not.toBe(prior!.id);
     expect((await request(room + "/passes/" + encodeURIComponent(pass.id), { method: "DELETE" })).status).toBe(204);
     expect(await state(current)).toBe("revoked");
@@ -224,9 +276,66 @@ test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等�
 
     const lastPass = await invitation(await request(room + "/passes/reissue", { body: { row_id: "test_roster:first" } }));
     const lastSession = await verified(await verify(lastPass), "admitted");
+    expect(await (await request(pub + "/polls", { cookie: lastSession })).json()).toMatchObject({
+      polls: expect.arrayContaining([expect.objectContaining({ ballot: expect.objectContaining({ note: "更正票" }) })]),
+    });
+    const now = Date.now();
+    const id = decodeURIComponent(room.slice(admin.length + 1));
+    const [active] = await root.query<[{ pass: string; roomId: string }[]]>(`
+      SELECT <string>id AS pass, meeting.room_id AS roomId FROM roster_meeting_pass
+      WHERE meeting = type::record($id) AND roster_row = test_roster:first AND status = "active";
+    `, { id }).collect();
+    expect(recordMediaEvent).toBeDefined();
+    const presence = { workspace: database, roomId: active[0]!.roomId, pass: active[0]!.pass };
+    for (const segment of [3, 2, 1]) {
+      const at = now - 100 * segment;
+      const connection = String(segment);
+      const joined = { ...presence, kind: "joined" as const, at, connection, key: `join:${segment}` };
+      await recordMediaEvent!(joined);
+      await recordMediaEvent!(joined);
+      await recordMediaEvent!({ ...presence, kind: "left", at: at + 50, connection, key: `left:${segment}` });
+    }
+    await recordMediaEvent!({ ...presence, kind: "raised", at: now - 25, key: "raised:1" });
+    await root.query(`DEFINE QUOTA OVERWRITE ON DATABASE ${database} EXPECT GENERATION 3
+      RULE writeback_cap FOR RECORD MATCH EXACT ent_test_votes LIMIT 3;`).collect();
+    const beforeArchive = transactions;
+    const deniedArchive = await request(room + "/archive", { method: "POST" });
+    expect(deniedArchive.status).toBe(409);
+    expect(await deniedArchive.json()).toMatchObject({ error: { code: "meeting-archive-quota" } });
+    expect(transactions).toBe(beforeArchive);
+    expect(await root.query("SELECT * FROM ent_test_attendance; SELECT * FROM ent_test_votes;").collect()).toEqual([[], []]);
+    await root.query(`DEFINE QUOTA OVERWRITE ON DATABASE ${database} EXPECT GENERATION 4
+      RULE writeback_cap FOR RECORD MATCH EXACT ent_test_votes LIMIT 4;`).collect();
     expect((await request(room + "/end", { method: "POST" })).status).toBe(204);
+    for (let i = 0; i < 2; i++) expect(await (await request(room + "/archive", { method: "POST" })).json())
+      .toEqual({ attendanceSheet: binding.attendanceSheet, voteSheet: binding.voteSheet });
+    const [attendance, summary] = await root.query<[Array<{ subject_id: string; segments: string }>, unknown[]]>(
+      "SELECT * FROM ent_test_attendance ORDER BY subject_id; SELECT * FROM ent_test_votes;",
+    ).collect();
+    expect(attendance).toHaveLength(3);
+    expect(attendance).toEqual(expect.arrayContaining([
+      expect.objectContaining({ subject_id: "test_roster:first", attended: true, duration_ms: 150, name: "=示例" }),
+      expect.objectContaining({ subject_id: "test_roster:third", attended: false, duration_ms: 0, name: "示例三" }),
+    ]));
+    expect(JSON.parse(attendance[0]!.segments)).toHaveLength(3);
+    const [timeline] = await root.query<[string[]]>(
+      "SELECT VALUE timeline FROM ent_test_attendance WHERE subject_id = 'test_roster:first';",
+    ).collect();
+    const mediaKinds = JSON.parse(timeline[0]!) as { kind: string }[];
+    expect(mediaKinds.filter(({ kind }) => kind === "joined")).toHaveLength(3);
+    expect(mediaKinds.filter(({ kind }) => kind === "raised")).toHaveLength(1);
+    expect(summary).toHaveLength(4);
+    expect(JSON.stringify(summary)).toMatch(/本人书面异议/);
+    await expect(root.query("UPDATE roster_meeting_event SET actor = 'changed';").collect()).rejects.toThrow("readonly");
+    await expect(root.query("DELETE roster_meeting_event;").collect()).rejects.toThrow("append only");
+    await expect(root.query("DELETE roster_meeting_ballot;").collect()).rejects.toThrow("append only");
     expect(await state(lastSession)).toBe("revoked");
-    expect(await (await request(pub + "/session", { cookie: lastSession })).json()).toMatchObject({ ended: true });
+    expect(await (await request(pub + "/session", { cookie: lastSession })).json())
+      .toMatchObject({ ended: true, canReadReceipt: true });
+    expect((await receipt(lastSession, poll)).status).toBe(200);
+    expect((await (await request(pub + "/session", { cookie: old })).json() as { canReadReceipt?: boolean })
+      .canReadReceipt).toBeUndefined();
+    expect((await receipt(old, poll)).status).toBe(401);
     expect(await (await verify(lastPass)).json()).toEqual(error);
     expect(rooms.size).toBe(0);
 
@@ -240,7 +349,10 @@ test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等�
     expect(await (await verify(expiring, "1234", "192.0.2.8")).json()).toEqual(error);
     await member.connect(url, { namespace: "main", database });
     await member.signin({ namespace: "main", database, access: "member_record", variables: {} });
-    expect(await member.query("SELECT pass_hash, code_hash FROM roster_meeting_pass; SELECT * FROM roster_meeting;").collect()).toEqual([[], []]);
+    expect(await member.query(`
+      SELECT pass_hash, code_hash FROM roster_meeting_pass; SELECT * FROM roster_meeting;
+      SELECT * FROM roster_meeting_event; SELECT * FROM roster_meeting_ballot;
+    `).collect()).toEqual([[], [], [], []]);
     const [actions] = await root.query<[string[]]>("SELECT VALUE action FROM roster_meeting_audit;").collect();
     expect(actions).toEqual(expect.arrayContaining(["issued", "revoked", "verify_ok", "verify_failed", "replaced", "kicked", "rejected_concurrent"]));
   } finally {

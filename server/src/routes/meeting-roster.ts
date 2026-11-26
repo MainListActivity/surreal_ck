@@ -6,6 +6,9 @@ import { env } from "../env";
 import type { AppBindings } from "../hono-types";
 import { HttpError } from "../http-error";
 import { MAX_ROSTER_BATCH, rosterDenied, RosterMeetingService } from "../meeting/roster";
+import { archiveConfigSchema } from "../meeting/roster-archive";
+import { renderVoteReceipt } from "../meeting/roster-receipt-pdf";
+import { castVoteSchema, openPollSchema } from "../meeting/roster-votes";
 import { requireOidc } from "../middleware/oidc";
 
 const adminPath = "/api/workspaces/:slug/roster-meetings";
@@ -99,7 +102,7 @@ async function input<T>(c: Context<AppBindings>, schema: z.ZodType<T>, limit = 4
   return parsed.data;
 }
 
-function param(c: Context<AppBindings>, name: "slug" | "meeting" | "pass"): string {
+function param(c: Context<AppBindings>, name: "slug" | "meeting" | "pass" | "poll"): string {
   const value = c.req.param(name);
   if (!value) throw new HttpError(400, "meeting-roster-invalid", "名册会议参数无效");
   return value;
@@ -167,6 +170,17 @@ export function createMeetingRosterRoutes(options: Options = {}) {
     await service.raiseHand(getCookie(c, cookieName));
     return c.body(null, 204);
   });
+  app.get(publicPath + "/polls", async (c) => c.json({ polls: await service.polls(getCookie(c, cookieName)) }));
+  app.post(publicPath + "/polls/:poll/vote", requireOrigin, async (c) =>
+    c.json(await service.vote(getCookie(c, cookieName), param(c, "poll"), await input(c, castVoteSchema))));
+  app.get(publicPath + "/polls/:poll/receipt.pdf", async (c) => {
+    const pdf = await renderVoteReceipt(await service.voteReceipt(getCookie(c, cookieName), param(c, "poll")));
+    return c.body(new Uint8Array(pdf), 200, {
+      "Content-Type": "application/pdf",
+      "Content-Disposition": 'attachment; filename="meeting-vote-receipt.pdf"',
+      "X-Content-Type-Options": "nosniff",
+    });
+  });
 
   app.use(adminPath + "/:meeting/*", headers, oidc, admin);
   app.get(adminPath, headers, oidc, admin, async (c) => c.json({ meetings: await service.list(database(c)) }));
@@ -198,6 +212,16 @@ export function createMeetingRosterRoutes(options: Options = {}) {
   app.get(adminPath + "/:meeting/moderation", async (c) => c.json(await service.moderation(hostActor(c), param(c, "meeting"))));
   app.post(adminPath + "/:meeting/moderation", async (c) =>
     c.json(await service.moderation(hostActor(c), param(c, "meeting"), await input(c, moderationBody))));
+  app.get(adminPath + "/:meeting/polls", async (c) =>
+    c.json({ polls: await service.hostPolls(database(c), param(c, "meeting")) }));
+  app.post(adminPath + "/:meeting/polls", async (c) =>
+    c.json(await service.openPoll(hostActor(c), param(c, "meeting"), await input(c, openPollSchema, 8192)), 201));
+  app.get(adminPath + "/:meeting/archive-config", async (c) =>
+    c.json(await service.archiveConfig(database(c), param(c, "meeting"))));
+  app.put(adminPath + "/:meeting/archive-config", async (c) =>
+    c.json(await service.bindArchive(database(c), param(c, "meeting"), await input(c, archiveConfigSchema))));
+  app.post(adminPath + "/:meeting/archive", async (c) =>
+    c.json(await service.archive(hostActor(c), param(c, "meeting"))));
   app.get(adminPath + "/:meeting/waiting", async (c) => c.json({
     waiting: await service.waiting(database(c), param(c, "meeting")),
   }));

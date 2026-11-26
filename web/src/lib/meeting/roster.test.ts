@@ -32,3 +32,28 @@ test("终止状态和核验错误文案不会暴露原因", async () => {
   expect(rosterVerifyMessage(new RosterRequestError(429, ""))).toBe("尝试次数过多，请稍后再试");
   expect(rosterVerifyMessage(new RosterRequestError(401, "不应显示"))).toBe("无法验证参会凭证");
 });
+
+test("名册表决沿用 Cookie，并以 PDF 原样下载个人回执", async () => {
+  const seen: { path: unknown; init?: RequestInit }[] = [];
+  const ballot = { option: "no", note: "保留意见", at: "2026-11-26T00:00:00Z" };
+  const api = createPublicRosterApi(Object.assign(async (path: unknown, init?: RequestInit) => {
+    seen.push({ path, init });
+    if (init?.method === "POST") return Response.json(ballot);
+    if (String(path).endsWith(".pdf")) return new Response("%PDF", { headers: { "Content-Type": "application/pdf" } });
+    return Response.json({ polls: [] });
+  }, { preconnect: () => {} }));
+  const vote = { option: "no", note: "保留意见", requestId: "4fede346-5465-4e77-826a-c697f7b76638" };
+  expect(await api.polls()).toEqual([]);
+  expect(await api.vote("poll:a/b", vote)).toEqual(ballot);
+  const file = await api.receipt("poll:a/b");
+  expect(file.type).toBe("application/pdf");
+  expect(await file.text()).toBe("%PDF");
+  expect(seen.map(({ path, init }) => [path, init?.method])).toEqual([
+    ["/api/meeting/roster/polls", "GET"],
+    ["/api/meeting/roster/polls/poll%3Aa%2Fb/vote", "POST"],
+    ["/api/meeting/roster/polls/poll%3Aa%2Fb/receipt.pdf", "GET"],
+  ]);
+  expect(seen[1]?.init?.body).toBe(JSON.stringify(vote));
+  expect(seen[2]?.init?.credentials).toBe("include");
+  for (const { init } of seen) expect(new Headers(init?.headers).has("Authorization")).toBe(false);
+});

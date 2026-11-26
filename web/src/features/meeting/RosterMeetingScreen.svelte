@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import RosterMeetingPolls from "./RosterMeetingPolls.svelte";
   import { Room, RoomEvent, Track, type RemoteTrack, type RemoteTrackPublication } from "livekit-client";
   import { createPublicRosterApi, rosterExitMessage, rosterVerifyMessage, RosterRequestError, type RosterSession } from "../../lib/meeting/roster";
   import { selectedMeetingSubscriptions } from "../../lib/meeting/sfu";
@@ -277,6 +278,9 @@
     </form>
   {:else}
     <p>请打开主持人提供的专属参会链接。</p>
+  {/if}
+  {#if session && (session.ended ? session.canReadReceipt : session.state === "admitted" && !exit)}
+    <RosterMeetingPolls {api} ended={!!session.ended} />
   {/if}
   {#if error}<p role="alert">{error}</p>{/if}
 </main>
