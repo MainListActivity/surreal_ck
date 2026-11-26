@@ -20,6 +20,9 @@ export default {
     }
 
     const incoming = new URL(request.url);
+    if (incoming.pathname.startsWith("/api/meeting/sfu/signal/")) {
+      return jsonError(404, "meeting-signal-private-ingress");
+    }
     const origin = new URL(env.ORIGIN_BASE_URL);
     origin.pathname = `/__surreal_ck_hono${incoming.pathname}`;
     origin.search = incoming.search;

@@ -15,6 +15,8 @@
     VideoOff,
   } from "@lucide/svelte";
   import MediaTrackView from "./MediaTrackView.svelte";
+  import type PrivateMeetingView from "./PrivateMeeting.svelte";
+  import { selectMeetingTopology } from "@surreal-ck/shared/meeting-sfu";
   import { getSurreal } from "../../lib/surreal";
   import { loadMembers, type WorkspaceMember } from "../../lib/members-data";
   import {
@@ -71,6 +73,11 @@
   let inviteSelection = $state<string[]>([]);
   let inviteNotice = $state<string | null>(null);
   let copied = $state(false);
+  let expectedSeats = $state(4);
+  let sfuMaxSeats = $state(0);
+  let sfuInitialRoom = $state("");
+  let PrivateMeeting = $state<typeof PrivateMeetingView>();
+  let sfuOpen = $state(false);
 
   let controller: MeetingController | null = null;
   let unsubscribe: (() => void) | null = null;
@@ -106,8 +113,29 @@
     }
   }
 
+  async function openPrivateMeeting(): Promise<void> {
+    try {
+      PrivateMeeting ??= (await import("./PrivateMeeting.svelte")).default;
+      sfuOpen = true;
+    } catch {
+      lobbyError = "无法加载私有会议，请刷新后重试";
+    }
+  }
+
+  function planMeeting(): void {
+    if (selectMeetingTopology("daily", expectedSeats) === "sfu") {
+      void openPrivateMeeting();
+      return;
+    }
+    openPrejoin({ kind: "create" });
+  }
+
   onMount(() => {
     if (support.kind !== "supported") return;
+    sfuInitialRoom = new URLSearchParams(window.location.search).get("sfu") ?? "";
+    if (sfuInitialRoom) void openPrivateMeeting();
+    void import("../../lib/meeting/sfu").then(({ meetingSfuApi }) => meetingSfuApi.availability())
+      .then(({ enabled, maxSeats }) => { if (enabled) sfuMaxSeats = maxSeats; }).catch(() => undefined);
     void loadMembers(getSurreal()).then((rows) => (members = rows)).catch(() => undefined);
     void refreshInvitations();
     invitationTimer = setInterval(() => void refreshInvitations(), 10_000);
@@ -300,6 +328,8 @@
       <h2>当前浏览器无法参加会议</h2>
       <p>{support.reason}。请使用最新版 Chrome、Edge 或 Safari。</p>
     </div>
+  {:else if sfuOpen && PrivateMeeting}
+    <PrivateMeeting initialRoom={sfuInitialRoom} initialSeats={expectedSeats} maxSeats={sfuMaxSeats} onback={() => { sfuOpen = false; }} />
   {:else if stage === "lobby"}
     <header class="head">
       <h1>会议</h1>
@@ -309,7 +339,11 @@
       <div class="card">
         <h2>发起会议</h2>
         <p>创建会议后可邀请工作区成员，被邀请者凭会议号加入。</p>
-        <button class="primary" data-testid="meeting-create" onclick={() => openPrejoin({ kind: "create" })}>
+        {#if sfuMaxSeats > 0}
+          <label for="meeting-expected-count">预计参会人数</label>
+          <input id="meeting-expected-count" type="number" min="1" max={Math.max(4, sfuMaxSeats)} bind:value={expectedSeats} />
+        {/if}
+        <button class="primary" data-testid="meeting-create" onclick={planMeeting}>
           <Video size={16} />立即开会
         </button>
       </div>
@@ -340,6 +374,9 @@
         {/if}
       </div>
     </div>
+    {#if sfuMaxSeats > 0}
+      <button onclick={() => void openPrivateMeeting()}>创建或加入私有大会</button>
+    {/if}
     {#if lobbyError}<p class="error" role="alert">{lobbyError}</p>{/if}
   {:else if stage === "prejoin"}
     <header class="head">

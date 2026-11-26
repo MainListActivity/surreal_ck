@@ -1,0 +1,12 @@
+__SIGNAL_FQDN__ {
+	@signal {
+		method GET
+		path /api/meeting/sfu/signal/rtc /api/meeting/sfu/signal/rtc/validate
+	}
+	handle @signal {
+		reverse_proxy __BUN_PRIVATE_ADDR__
+	}
+	handle {
+		respond 404
+	}
+}

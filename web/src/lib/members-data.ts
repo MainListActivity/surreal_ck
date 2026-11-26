@@ -53,10 +53,14 @@ type MemberRow = {
   subject?: string | null;
 };
 
-export async function loadMembers(conn: SurrealConn): Promise<WorkspaceMember[]> {
-  const rows = await conn.query<MemberRow>(
+export function loadMemberRows(conn: SurrealConn): Promise<MemberRow[]> {
+  return conn.query<MemberRow>(
     "SELECT id, display_name, email, is_admin, subject FROM user WHERE kind = 'human' AND disabled_at = NONE",
   );
+}
+
+export async function loadMembers(conn: SurrealConn): Promise<WorkspaceMember[]> {
+  const rows = await loadMemberRows(conn);
   return rows.map((row) => ({
     id: row.id.toString(),
     displayName: row.display_name ?? null,
