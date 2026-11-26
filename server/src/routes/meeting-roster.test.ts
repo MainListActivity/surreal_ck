@@ -56,3 +56,19 @@ test("公开错误统一、校验 Origin；仅在配置后信任代理的来源�
   const trusted = fixture(pepper, true);
   for (let i = 0; i < 31; i++) expect((await verify(trusted, `unknown${i}`, `198.51.100.${i + 1}`)).status).toBe(401);
 });
+
+test("普通参会身份不能读取或调用任一主持管控接口", async () => {
+  const app = fixture(pepper);
+  const base = path + "/roster_meeting:a";
+  const headers = { access: "participant" };
+  expect((await app.request(base + "/moderation", { headers })).status).toBe(403);
+  for (const body of [
+    { action: "lock", locked: true }, { action: "focus", focus: "screen" },
+    { action: "allow", identity: crypto.randomUUID() }, { action: "withdraw", identity: crypto.randomUUID() }, { action: "mute-all" },
+  ]) {
+    expect((await app.request(base + "/moderation", { method: "POST", headers, body: JSON.stringify(body) })).status).toBe(403);
+  }
+  expect((await app.request(base + "/end", { method: "POST", headers })).status).toBe(403);
+  expect((await app.request(base + "/passes/roster_meeting_pass:a", { method: "DELETE", headers })).status).toBe(403);
+  expect((await app.request(guest + "/raise-hand", { method: "POST", headers: { origin: site } })).status).toBe(401);
+});

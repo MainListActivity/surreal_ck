@@ -32,7 +32,6 @@ import { createMeetingSfuRoutes, createPrivateMeetingSfu } from "./routes/meetin
 import { createMeetingRosterRoutes } from "./routes/meeting-roster";
 import { RosterMeetingService } from "./meeting/roster";
 import { createMeetingV2Routes } from "./routes/meeting-v2";
-import { createMeetingSfuRoutes } from "./routes/meeting-sfu";
 import { createWorkspaceRoutes } from "./routes/workspaces";
 import {
   createAuthRoutes,
@@ -475,7 +474,6 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     .route("/", createMeetingSfuRoutes({ workspaceScope, requireUser: options.requireUser, service: meetingSfu }))
     .route("/", createMeetingRosterRoutes({ requireUser: options.requireUser, service: new RosterMeetingService({ media: meetingSfu }) }))
     .route("/", createMeetingV2Routes({ workspaceScope, requireUser: options.requireUser }))
-    .route("/", createMeetingSfuRoutes({ workspaceScope, requireUser: options.requireUser }))
     .route("/", createInternalAiIdentityRoutes({ db: async () => getRootDatabaseSession("_system"), requireUser: options.requireUser?.() }))
     .route("/", createContentReaderRoutes({
       exchange: options.contentReaderExchange ?? createContentReaderExchangeHandler({ rolloutGates }),

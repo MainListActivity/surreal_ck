@@ -2,6 +2,7 @@ import type {
   MeetingSfuCredentials,
   MeetingSfuParticipant,
   MeetingSfuRoom,
+  RosterMeetingFocus,
 } from "@surreal-ck/shared";
 import type { Track } from "livekit-client";
 import { refresh } from "../auth";
@@ -17,6 +18,7 @@ export function selectedMeetingSubscriptions(
   publications: MeetingSubscription[],
   activeSpeakers: string[],
   policy: "desktop" | "mobile" | "audio",
+  focus?: RosterMeetingFocus,
 ): Set<string> {
   const host = publications.find((item) => item.host)?.identity;
   const audio = publications.filter((item) => item.source === "microphone");
@@ -24,6 +26,19 @@ export function selectedMeetingSubscriptions(
     ?? (audio.some((item) => item.identity === host) ? host : audio[0]?.identity);
   const selected = new Set(audio.filter((item) => policy === "desktop" || item.identity === speaker).map((item) => item.id));
   if (policy !== "audio") {
+    if (focus) {
+      const share = publications.find((item) => item.host && item.source === "screen_share");
+      const camera = publications.find((item) => item.host && item.source === "camera");
+      const video = focus === "speaker" ? camera : focus === "screen" ? share : share ?? camera;
+      if (video) {
+        selected.add(video.id);
+        if (video === share) {
+          const shareAudio = publications.find((item) => item.identity === share.identity && item.source === "screen_share_audio");
+          if (shareAudio) selected.add(shareAudio.id);
+        }
+      }
+      return selected;
+    }
     const shares = publications.filter((item) => item.source === "screen_share");
     const share = shares.find((item) => item.host) ?? shares.find((item) => item.identity === speaker) ?? shares[0];
     const camera = policy === "desktop" && publications.find(

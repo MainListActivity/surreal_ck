@@ -139,7 +139,7 @@ class SignalProbe {
   addTrack(source = TrackSource.CAMERA, type = TrackType.VIDEO) {
     this.socket.send(new SignalRequest({
       message: { case: "addTrack", value: {
-        cid: `probe-${source}`, name: "probe", type, source,
+        cid: crypto.randomUUID(), name: "probe", type, source,
       } },
     }).toBinary());
   }
@@ -199,6 +199,64 @@ describe.skipIf(!binary)("Bun signal gate and real private LiveKit", () => {
       }
     } finally {
       firstSignal.close();
+      await media.endRoster(actor.workspace, room.id);
+    }
+  }, 15_000);
+
+  test("真实 LiveKit：举手、仅麦克风授权、撤权、全员静音与结束", async () => {
+    const actor = { workspace: "workspace1", subject: "host", name: "主持人", workspaceAdmin: true, expiresAt: Date.now() + 60_000 };
+    const guest = { ...actor, subject: "roster:guest", name: "参会人甲", workspaceAdmin: false };
+    const other = { ...guest, subject: "roster:other", name: "参会人乙" };
+    const room = await media.startRoster(actor, 4);
+    const grant = await media.rosterCredentials(guest, room.id, "guest-lease");
+    const otherGrant = await media.rosterCredentials(other, room.id, "other-lease");
+    const signal = new SignalProbe(grant);
+    const otherSignal = new SignalProbe(otherGrant);
+    try {
+      expect(await signal.find("join")).toBeDefined();
+      expect(await otherSignal.find("join")).toBeDefined();
+      signal.addTrack(TrackSource.MICROPHONE, TrackType.AUDIO);
+      expect(await signal.find("trackPublished", 250)).toBeUndefined();
+      await media.raiseRosterHand(actor.workspace, room.id, other.subject, "other-lease");
+      await media.raiseRosterHand(actor.workspace, room.id, guest.subject, "guest-lease");
+      await media.raiseRosterHand(actor.workspace, room.id, other.subject, "other-lease");
+      const queued = media.rosterModeration(actor, room.id).participants;
+      expect(queued.map(({ name }) => name)).toEqual(["参会人乙", "参会人甲"]);
+      expect(queued.every(({ raisedAt }) => typeof raisedAt === "number")).toBe(true);
+      await expect(media.moderateRoster({ ...guest, workspaceAdmin: true }, room.id, { action: "mute-all" })).rejects.toMatchObject({ status: 403 });
+      await media.moderateRoster(actor, room.id, { action: "lock", locked: true });
+      await expect(media.rosterCredentials({ ...guest, subject: "roster:new" }, room.id, "new-lease")).rejects.toMatchObject({ status: 423 });
+      expect((await media.rosterCredentials(guest, room.id, "guest-lease")).role).toBe("listener");
+      const id = decodeJwt(grant.token).sub!;
+      await media.moderateRoster(actor, room.id, { action: "allow", identity: id });
+      signal.addTrack(TrackSource.SCREEN_SHARE);
+      signal.addTrack(TrackSource.MICROPHONE, TrackType.VIDEO);
+      expect(await signal.find("trackPublished", 250)).toBeUndefined();
+      signal.addTrack(TrackSource.MICROPHONE, TrackType.AUDIO);
+      expect(await signal.find("trackPublished")).toBeDefined();
+      signal.messages.length = 0;
+      const withdrawAt = performance.now();
+      await media.moderateRoster(actor, room.id, { action: "withdraw", identity: id });
+      signal.addTrack(TrackSource.MICROPHONE, TrackType.AUDIO);
+      expect(await signal.find("trackPublished", 250)).toBeUndefined();
+      expect(performance.now() - withdrawAt).toBeLessThan(2000);
+      await media.moderateRoster(actor, room.id, { action: "allow", identity: id });
+      await media.moderateRoster(actor, room.id, { action: "allow", identity: decodeJwt(otherGrant.token).sub! });
+      expect((await media.moderateRoster(actor, room.id, { action: "mute-all" })).participants.every((p) => !p.speaking)).toBe(true);
+      otherSignal.addTrack(TrackSource.MICROPHONE, TrackType.AUDIO);
+      expect(await otherSignal.find("trackPublished", 250)).toBeUndefined();
+      await media.moderateRoster(actor, room.id, { action: "focus", focus: "screen" });
+      expect(media.rosterFocus(actor.workspace, room.id)).toBe("screen");
+      const endAt = performance.now();
+      await media.endRoster(actor.workspace, room.id);
+      await Promise.race([Promise.all([signal.closed, otherSignal.closed]), Bun.sleep(3000)]);
+      expect(signal.socket.readyState).toBe(WebSocket.CLOSED);
+      expect(otherSignal.socket.readyState).toBe(WebSocket.CLOSED);
+      expect(performance.now() - endAt).toBeLessThan(3000);
+      expect(await media.authorizeSignal(grant.token)).toBeUndefined();
+    } finally {
+      signal.close();
+      otherSignal.close();
       await media.endRoster(actor.workspace, room.id);
     }
   }, 15_000);

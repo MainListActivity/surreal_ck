@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { RosterMeetingCommand, RosterMeetingModeration } from "@surreal-ck/shared";
   import { onMount } from "svelte";
   import { getSurreal } from "../../lib/surreal";
   import { createRosterAdminApi, type RosterMeeting, type RosterMeetingInput, type RosterPass, type RosterWaiting } from "../../lib/meeting/roster-admin";
@@ -17,6 +18,8 @@
   let meeting = $derived(meetings.find(({ id }) => id === meetingId));
   let passes = $state<RosterPass[]>([]);
   let waiting = $state<RosterWaiting[]>([]);
+  let moderation = $state<RosterMeetingModeration>();
+  let moderationRevision = 0;
   let rows = $state<{ id: string; name: string }[]>([]);
   let rowIds = $state<string[]>([]);
   let page = $state(0);
@@ -69,10 +72,26 @@
     if (!disposed && meetingId === target.id) { passes = nextPasses; waiting = nextWaiting; }
   }
 
+  async function refreshModeration(target: RosterMeeting) {
+    if (!target.room_id || target.status !== "open") return;
+    const revision = moderationRevision;
+    const next = await api.moderation(target.id).catch(() => undefined);
+    if (!disposed && meetingId === target.id && revision === moderationRevision) moderation = next;
+  }
+
+  function moderate(target: RosterMeeting, command: RosterMeetingCommand) {
+    return run(async () => {
+      moderationRevision++;
+      moderation = await api.moderate(target.id, command);
+    });
+  }
+
   async function select(target: RosterMeeting) {
     meetingId = target.id;
+    moderation = undefined;
+    moderationRevision++;
     passes = []; waiting = []; rows = []; rowIds = []; more = false; page = 0;
-    await Promise.all([refreshPasses(target), readRows(target, 0)]);
+    await Promise.all([refreshPasses(target), readRows(target, 0), refreshModeration(target)]);
   }
 
   async function create(event: SubmitEvent) {
@@ -122,7 +141,11 @@
       const target = meeting;
       if (target?.status === "open" && !busy) void refreshPasses(target).catch(() => undefined);
     }, 4000);
-    return () => { disposed = true; clearInterval(timer); };
+    const moderationTimer = setInterval(() => {
+      const target = meeting;
+      if (target?.room_id && !busy) void refreshModeration(target);
+    }, 1500);
+    return () => { disposed = true; clearInterval(timer); clearInterval(moderationTimer); };
   });
 </script>
 
@@ -182,15 +205,59 @@
           const room = await api.start(current.id);
           onhost(room.id);
           meetings = await api.list();
+          if (meeting) await refreshModeration(meeting);
         })}>启动媒体房间</button>
         <button disabled={busy} onclick={() => void run(async () => {
           if (!window.confirm("确定结束此名册会议？")) return;
+          moderationRevision++;
           await api.end(current.id);
           onend(current.room_id);
           meetings = await api.list();
           waiting = [];
-        })}>结束会议</button>
+          moderation = undefined;
+        })}>结束全体会议</button>
       </div>
+      {#if moderation}
+        {@const controls = moderation}
+        <h3>主持秩序控制</h3>
+        <div class="actions">
+          <button disabled={busy} aria-pressed={controls.locked}
+            onclick={() => void moderate(current, { action: "lock", locked: !controls.locked })}>
+            {controls.locked ? "解锁会议" : "锁定会议"}
+          </button>
+          <button disabled={busy} onclick={() => void moderate(current, { action: "mute-all" })}>全员静音</button>
+          <label>画面聚焦
+            <select disabled={busy} value={controls.focus} onchange={(event) => {
+              const focus = event.currentTarget.value;
+              if (focus === "auto" || focus === "speaker" || focus === "screen") void moderate(current, { action: "focus", focus });
+            }}>
+              <option value="auto">自动聚焦主持人共享</option>
+              <option value="speaker">锁定主讲画面</option>
+              <option value="screen">锁定共享画面</option>
+            </select>
+          </label>
+        </div>
+        <h4>举手队列与参会人</h4>
+        <ul>
+          {#each controls.participants as participant (participant.id)}
+            <li>
+              <span>{participant.name} · {participant.raisedAt !== undefined
+                ? `举手 ${new Date(participant.raisedAt).toLocaleTimeString()}` : participant.speaking ? "可发言" : "只听"}</span>
+              <button disabled={busy} onclick={() => void moderate(current, {
+                action: participant.speaking ? "withdraw" : "allow", identity: participant.id,
+              })}>{participant.speaking ? "收回发言权" : "允许发言"}</button>
+              <button disabled={busy} onclick={() => void run(async () => {
+                if (!window.confirm(`移出并吊销 ${participant.name} 的本场资格？`)) return;
+                moderationRevision++;
+                await api.revoke(current.id, participant.pass);
+                await Promise.all([refreshPasses(current), refreshModeration(current)]);
+              })}>移出并吊销本场资格</button>
+            </li>
+          {:else}
+            <li>暂无参会人。</li>
+          {/each}
+        </ul>
+      {/if}
       <h3>批量签发</h3>
       {#if rows.length === 0}<p>当前页面没有可选名册行。</p>{/if}
       <ul>
@@ -216,7 +283,7 @@
       <ul>
         {#each waiting as item (item.id)}
           <li>{item.name}
-            <button disabled={busy} onclick={() => void run(() => decide(current, item, "admit"))}>准入</button>
+            <button disabled={busy || moderation?.locked} onclick={() => void run(() => decide(current, item, "admit"))}>准入</button>
             <button disabled={busy} onclick={() => void run(() => decide(current, item, "reject"))}>拒绝</button>
           </li>
         {/each}

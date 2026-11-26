@@ -18,3 +18,16 @@ test("手机随发言人切换音频，仅保留一条共享画面", () => {
 test("纯音频模式不订阅摄像头或共享画面", () => {
   expect(selectedMeetingSubscriptions(publications, ["speaker"], "audio")).toEqual(new Set(["speaker-mic"]));
 });
+
+test("名册会议在桌面和手机均优先主持人共享，锁定后不随发言者跳转", () => {
+  const hostCamera = { id: "host-camera", identity: "host", host: true, source: Track.Source.Camera };
+  for (const policy of ["desktop", "mobile"] as const) {
+    const focused = [...publications, hostCamera];
+    const audio = policy === "desktop" ? ["host-mic", "speaker-mic"] : ["speaker-mic"];
+    expect(selectedMeetingSubscriptions(focused, ["speaker"], policy, "auto")).toEqual(new Set([...audio, "host-share"]));
+    expect(selectedMeetingSubscriptions(focused, ["speaker"], policy, "screen")).toEqual(new Set([...audio, "host-share"]));
+    expect(selectedMeetingSubscriptions(focused, ["speaker"], policy, "speaker")).toEqual(new Set([...audio, "host-camera"]));
+    expect(selectedMeetingSubscriptions(focused.filter((track) => track.id !== "host-share"), ["speaker"], policy, "screen"))
+      .toEqual(new Set(audio));
+  }
+});

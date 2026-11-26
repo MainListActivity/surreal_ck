@@ -1,3 +1,4 @@
+import { SignalRequest, TrackSource, TrackType } from "@livekit/protocol";
 import {
   MEETING_SFU_SIGNAL_PATH,
   PRIVATE_MEETING_MAX_SEATS,
@@ -25,6 +26,26 @@ const invitation = z.strictObject({
   subject: z.string().min(1).max(256),
   role: z.enum(["listener", "speaker"]),
 });
+
+function allowsRosterSignal(data: string | ArrayBufferLike): boolean {
+  try {
+    const { message } = typeof data === "string" ? SignalRequest.fromJsonString(data)
+      : SignalRequest.fromBinary(new Uint8Array(data));
+    if (message.case === "addTrack") {
+      return message.value.type === TrackType.AUDIO && message.value.source === TrackSource.MICROPHONE;
+    }
+    if (message.case === "offer" || message.case === "answer") {
+      return message.value.sdp.split(/\r?\nm=/u).slice(1).every((section) => {
+        if (!/^video\s+[^\s]+/iu.test(section) || /^video\s+0(?:[\s/]|$)/iu.test(section)) return true;
+        const directions = section.split(/\r?\n/u).filter((line) => /^a=(?:sendrecv|sendonly|recvonly|inactive)$/u.test(line));
+        return directions.length === 1 && (directions[0] === "a=recvonly" || directions[0] === "a=inactive");
+      });
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
 type Config = Pick<ServerEnv, "MEETING_SFU_PRIVATE_URL" | "MEETING_SFU_SIGNAL_URL" | "MEETING_SFU_KEY"
   | "MEETING_SFU_SECRET" | "MEETING_SFU_APP_ORIGIN" | "MEETING_SFU_MAX_SEATS" | "NODE_ENV">;
 type Options = {
@@ -241,7 +262,7 @@ export function createMeetingSfuRoutes({
           const size = typeof data === "string" ? data.length : data.byteLength;
           if (size > MAX_SIGNAL_FRAME || socket?.readyState !== WebSocket.OPEN || socket.bufferedAmount > MAX_SIGNAL_FRAME) {
             downstream.close(1008, "meeting-sfu-signal-limit");
-          } else {
+          } else if (!lease.microphoneOnly || allowsRosterSignal(data)) {
             socket.send(data);
           }
         },

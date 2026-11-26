@@ -1,10 +1,12 @@
-import type { MeetingSfuCredentials } from "@surreal-ck/shared";
+import type { MeetingSfuCredentials, RosterMeetingFocus } from "@surreal-ck/shared";
 
 export type RosterSession = {
   state: "waiting" | "admitted" | "replaced" | "kicked" | "revoked";
   title: string;
   name: string;
   check_label?: string;
+  focus?: RosterMeetingFocus;
+  ended?: boolean;
 };
 
 export class RosterRequestError extends Error {
@@ -23,6 +25,7 @@ export function rosterVerifyMessage(error: unknown): string {
   const status = error instanceof RosterRequestError ? error.status : undefined;
   if (status === 429) return "尝试次数过多，请稍后再试";
   if (status === 409) return "此参会凭证已有活动会话";
+  if (status === 423) return "会议已锁定，暂不接受新入场";
   if (status === 401) return "无法验证参会凭证";
   return "名册会议服务暂不可用，请稍后再试";
 }
@@ -52,5 +55,6 @@ export function createPublicRosterApi(fetcher?: typeof fetch) {
       request<RosterSession>("verify", "POST", { pass, code, check }),
     session: () => request<RosterSession>("session"),
     credentials: () => request<MeetingSfuCredentials>("credentials", "POST"),
+    raiseHand: () => rosterRequest("/api/meeting/roster/raise-hand", { method: "POST", fetcher }),
   };
 }

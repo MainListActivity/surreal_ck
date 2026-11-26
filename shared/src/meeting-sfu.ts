@@ -30,3 +30,15 @@ export type MeetingSfuParticipant = {
   role: MeetingSfuRole;
   revoked: boolean;
 };
+
+export type RosterMeetingFocus = "auto" | "speaker" | "screen";
+export type RosterMeetingModeration = {
+  locked: boolean;
+  focus: RosterMeetingFocus;
+  participants: { id: string; pass: string; name: string; raisedAt?: number; speaking: boolean }[];
+};
+export type RosterMeetingCommand =
+  | { action: "lock"; locked: boolean }
+  | { action: "focus"; focus: RosterMeetingFocus }
+  | { action: "allow" | "withdraw"; identity: string }
+  | { action: "mute-all" };
