@@ -3,7 +3,7 @@
   import Logo from "./Logo.svelte";
   import QuotaNotificationMenu from "./quota/QuotaNotificationMenu.svelte";
   import WorkspaceSwitcherPanel from "./WorkspaceSwitcherPanel.svelte";
-  import { Plus, House, Coins, Folder, Tag, Settings, Hash, Trash2, Search, BookOpen, Pin, Building2 } from "@lucide/svelte";
+  import { Plus, House, Coins, Folder, Tag, Settings, Hash, Trash2, Search, BookOpen, Pin, Building2, Video } from "@lucide/svelte";
   import { getCurrentUser, getCurrentWorkspace } from "../lib/workspace-store.svelte";
   import {
     canWriteSharedStructure as canWriteSharedStructureFn,
@@ -103,6 +103,9 @@
       </button>
       <button class:active={page === "office"} onclick={() => go("office")}>
         <Building2 size={16} />办公室
+      </button>
+      <button class:active={page === "meeting"} onclick={() => go("meeting")}>
+        <Video size={16} />会议
       </button>
       <button class:active={page === "docs"} onclick={() => go("docs")}>
         <Folder size={16} />我的文档
