@@ -2,7 +2,7 @@
   import type { RosterMeetingCommand, RosterMeetingModeration } from "@surreal-ck/shared";
   import { onMount } from "svelte";
   import { getSurreal } from "../../lib/surreal";
-  import { createRosterAdminApi, type RosterMeeting, type RosterMeetingInput, type RosterPass, type RosterWaiting } from "../../lib/meeting/roster-admin";
+  import { createRosterAdminApi, type EvidenceStatus, type RosterMeeting, type RosterMeetingInput, type RosterPass, type RosterWaiting } from "../../lib/meeting/roster-admin";
   import type { RosterWorkbookSheet } from "../../lib/meeting/roster-archive";
   import RosterMeetingRecords from "./RosterMeetingRecords.svelte";
 
@@ -38,6 +38,7 @@
   let busy = $state(false);
   let error = $state("");
   let notice = $state("");
+  let evidenceStatus = $state<{ meeting: string; status: EvidenceStatus }>();
   let disposed = false;
 
   async function run(action: () => Promise<unknown>) {
@@ -291,6 +292,32 @@
     {/if}
     {#key current.id}
       <RosterMeetingRecords {api} meeting={current} {sheets} />
+      {#if current.status === "closed" && current.room_id}
+        <h3>会议存证</h3>
+        <button disabled={busy} onclick={() => void run(async () => {
+          evidenceStatus = { meeting: current.id, status: await api.evidenceStatus(current.id) };
+        })}>检查可信根与备份期限</button>
+        <button disabled={busy} onclick={() => void run(async () => {
+          await api.finalizeEvidence(current.id);
+          notice = "已请求封存，请稍后检查可信根。";
+        })}>请求重新封存</button>
+        {#if evidenceStatus?.meeting === current.id}
+          <p>可信根 SHA-256：<code>{evidenceStatus.status.root}</code></p>
+          <p>保留期限：{evidenceStatus.status.retainUntil}</p>
+          {#if evidenceStatus.status.backupReminder}
+            <p role="alert">请立即下载并离线备份存证包；未归档证据不会自动删除。</p>
+          {/if}
+          <button disabled={busy} onclick={() => void run(async () => {
+            const blob = await api.downloadEvidence(current.id);
+            const link = document.createElement("a");
+            const url = URL.createObjectURL(blob);
+            link.href = url;
+            link.download = "meeting-evidence.tar";
+            link.click();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+          })}>下载存证包</button>
+        {/if}
+      {/if}
     {/key}
     <h3>参会凭证</h3>
     {#if !passes.length}<p>尚未签发凭证。</p>{/if}

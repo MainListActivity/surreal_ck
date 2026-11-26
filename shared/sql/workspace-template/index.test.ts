@@ -644,15 +644,27 @@ describe("workspace template scripts", () => {
     expect(scripts.find((script) => script.version === 70)?.name).toBe("070-meeting-v2.surql");
   });
 
-  test("071：名册会议在 V2 会议控制面后追加", async () => {
+  test("071：名册准入迁移追加到 V2 控制面", async () => {
     const scripts = await loadTemplateScripts();
     expect(scripts.find((script) => script.version === 71)?.name).toBe("071-roster-meeting.surql");
   });
 
   test("072：名册会议签到与表决回写迁移在名册会议后追加", async () => {
     const scripts = await loadTemplateScripts();
-    expect(WORKSPACE_TEMPLATE_VERSION).toBe(72);
-    expect(scripts.at(-1)?.name).toBe("072-roster-meeting-records.surql");
+    expect(scripts.filter(({ version }) => version >= 71 && version <= 73).map(({ name }) => name)).toEqual([
+      "071-roster-meeting.surql",
+      "072-roster-meeting-records.surql",
+      "073-meeting-evidence-projection.surql",
+    ]);
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(scripts.at(-1)?.version);
+  });
+
+  test("073：会议存证仅投影可信根且拒绝改删", async () => {
+    const migration = (await loadTemplateScripts()).find(({ version }) => version === 73);
+    expect(migration?.name).toBe("073-meeting-evidence-projection.surql");
+    expect(migration?.sql).toContain("SCHEMAFULL PERMISSIONS NONE");
+    expect(migration?.sql).toContain("TYPE bytes READONLY");
+    expect(migration?.sql).toContain('["UPDATE", "DELETE"]');
   });
 
   test("外部协作者门户 v2 的四个迁移按顺序追加", async () => {

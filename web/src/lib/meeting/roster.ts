@@ -11,6 +11,7 @@ export type RosterSession = {
   focus?: RosterMeetingFocus;
   ended?: boolean;
   canReadReceipt?: boolean;
+  recording?: boolean;
 };
 
 export class RosterRequestError extends Error {
@@ -60,7 +61,7 @@ export function createPublicRosterApi(fetcher?: typeof fetch) {
     verify: (pass: string, code: string, check?: string) =>
       request<RosterSession>("verify", "POST", { pass, code, check }),
     session: () => request<RosterSession>("session"),
-    credentials: () => request<MeetingSfuCredentials>("credentials", "POST"),
+    credentials: (consent = false) => request<MeetingSfuCredentials>("credentials", "POST", consent ? { consent } : undefined),
     raiseHand: () => rosterRequest(`${publicBase}/raise-hand`, { method: "POST", fetcher }),
     polls: async () => (await request<{ polls: RosterPoll[] }>("polls")).polls,
     vote: (poll: string, input: { option: string; note?: string; requestId?: string }) =>

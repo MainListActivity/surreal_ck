@@ -30,6 +30,8 @@ import { createSessionRoutes } from "./routes/session";
 import { createMeetingIceRoutes } from "./routes/meeting-ice";
 import { createMeetingSfuRoutes, createPrivateMeetingSfu } from "./routes/meeting-sfu";
 import { createMeetingRosterRoutes } from "./routes/meeting-roster";
+import { configuredMeetingEvidence } from "./meeting/evidence-archive";
+import { configuredTrackRecording } from "./meeting/evidence-recording";
 import { RosterMeetingService } from "./meeting/roster";
 import { createMeetingV2Routes } from "./routes/meeting-v2";
 import { createWorkspaceRoutes } from "./routes/workspaces";
@@ -458,7 +460,9 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     );
 
   const base = new Hono<AppBindings>();
-  const meetingSfu = createPrivateMeetingSfu();
+  const meetingEvidence = configuredMeetingEvidence();
+  const recording = configuredTrackRecording();
+  const meetingSfu = createPrivateMeetingSfu(env, recording?.start.bind(recording));
   base.use("*", requestLogger);
   base.onError(handleError);
 
@@ -472,7 +476,11 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     .route("/", createSessionRoutes(workspaceScope, idpTokenScopeAdapter, options.requireUser))
     .route("/", createMeetingIceRoutes({ workspaceScope, requireUser: options.requireUser }))
     .route("/", createMeetingSfuRoutes({ workspaceScope, requireUser: options.requireUser, service: meetingSfu }))
-    .route("/", createMeetingRosterRoutes({ requireUser: options.requireUser, service: new RosterMeetingService({ media: meetingSfu }) }))
+    .route("/", createMeetingRosterRoutes({
+      requireUser: options.requireUser, evidence: meetingEvidence,
+      service: new RosterMeetingService({ media: meetingSfu, evidence: meetingEvidence, recording,
+        requireEvidence: env.NODE_ENV === "production" }),
+    }))
     .route("/", createMeetingV2Routes({ workspaceScope, requireUser: options.requireUser }))
     .route("/", createInternalAiIdentityRoutes({ db: async () => getRootDatabaseSession("_system"), requireUser: options.requireUser?.() }))
     .route("/", createContentReaderRoutes({

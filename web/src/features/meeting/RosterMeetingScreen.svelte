@@ -15,6 +15,7 @@
   let exit = $state("");
   let busy = $state(false);
   let connected = $state(false);
+  let consent = $state(false);
   let audioOnly = $state(false);
   let needsAudio = $state(false);
   let canSpeak = $state(false);
@@ -136,7 +137,8 @@
   }
 
   async function join() {
-    const grant = await api.credentials();
+    if (session?.recording && !consent) return;
+    const grant = await api.credentials(consent);
     if (stopped || exit || !allowJoin) return;
     if (grant.role !== "listener") throw new Error("名册会议仅允许接收媒体");
     const current = new Room({ adaptiveStream: true, dynacast: true, reconnectPolicy: { nextRetryDelayInMs: () => null } });
@@ -182,7 +184,7 @@
       applySession(next);
       if (exit || next.state !== "admitted") return;
       if (!room && allowJoin) await join();
-      else if (room && Date.now() >= renewAt) updateLease((await api.credentials()).leaseExpiresAt);
+      else if (room && Date.now() >= renewAt) updateLease((await api.credentials(consent)).leaseExpiresAt);
     } catch (cause) {
       if (stopped || busy) return;
       if (cause instanceof RosterRequestError && cause.status === 401 && session) {
@@ -240,6 +242,13 @@
     <p role="alert">{exit}</p>
   {:else if session}
     <label>参会显示名 <input value={session.name} readonly /></label>
+    {#if session.recording && connected}
+      <p class="recording" role="status">● 存证录制中</p>
+    {/if}
+    {#if session.recording && !connected && !consent}
+      <p>本会议将录制音视频，并保留身份核验、入场、发言和表决记录，用于会议存证。</p>
+      <label><input type="checkbox" bind:checked={consent} onchange={() => void poll()} /> 我已知情并确认进入录制会议</label>
+    {/if}
     {#if session.state === "waiting"}
       <p role="status">正在等候主持人准入，请保持此页面打开。</p>
     {:else if connected}
@@ -265,6 +274,8 @@
         </button>
         <button onclick={() => { allowJoin = false; detach(); }}>离开</button>
       </div>
+    {:else if session.recording && !consent}
+      <p>请先确认存证录制告知。</p>
     {:else if allowJoin}
       <p role="status">已获准入，正在连接私有媒体…</p>
     {:else}
@@ -293,6 +304,7 @@
   button { justify-self: start; }
   .controls { display: flex; flex-wrap: wrap; gap: 0.75rem; }
   video { width: 100%; max-height: 65vh; background: #141414; }
+  .recording { position: sticky; top: 0; z-index: 1; margin: 0; padding: 0.5rem; background: #a40018; color: white; }
   [role="alert"] { color: var(--danger, #b22); }
   @media (pointer: coarse) { main { margin-block: 0; } button { min-height: 44px; } }
 </style>

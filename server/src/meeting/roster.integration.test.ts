@@ -5,6 +5,7 @@ import { SignJWT, exportJWK, generateKeyPair } from "jose";
 import { DateTime, RecordId, Surreal, Table } from "surrealdb";
 import { handleError } from "../middleware/error";
 import { createMeetingRosterRoutes } from "../routes/meeting-roster";
+import { MeetingEvidenceArchive } from "./evidence-archive";
 import { MeetingEvidenceLedger, verifyEvidenceArtifact } from "./evidence-ledger";
 import { EvidenceVault, deriveEvidenceWorkspaceKey } from "./evidence-vault";
 import { RosterMeetingService } from "./roster";
@@ -388,14 +389,15 @@ test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等�
     const exported = await owner.select<{ id: RecordId; ballots: string }>(new Table("ent_test_votes"));
     const projection = exported.find((row) => row.ballots.includes("本人书面异议"))!;
     const objects = new Map<string, Uint8Array>();
-    const ledger = new MeetingEvidenceLedger(new EvidenceVault({
+    const vault = new EvidenceVault({
       read: async (key) => objects.get(key) ?? null,
       create: async (key, content) => {
         if (objects.has(key)) return false;
         objects.set(key, content);
         return true;
       },
-    }, deriveEvidenceWorkspaceKey(crypto.getRandomValues(new Uint8Array(32)))));
+    }, deriveEvidenceWorkspaceKey(crypto.getRandomValues(new Uint8Array(32))));
+    const ledger = new MeetingEvidenceLedger(vault);
     const scope = { workspace: database, meeting: "fixture" };
     const rootHash = await ledger.seal(scope, new Date().toISOString(), null, new Map([
       ["votes.json", Buffer.from(projection.ballots)],
@@ -408,6 +410,41 @@ test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等�
     expect(tampered?.ballots).toContain("投影被修改");
     expect(() => verifyEvidenceArtifact(artifact, Buffer.from(tampered!.ballots))).toThrow("不匹配");
     expect(await ledger.readVerifiedArtifact(scope, artifact)).toEqual(Buffer.from(projection.ballots));
+    const archive = new MeetingEvidenceArchive(vault, "fixture archive key", 90,
+      async () => ({ query: (sql, vars) => root.query(sql, vars).collect() }));
+    const evidenceMeeting = `${room}:evidence`;
+    const evidenceStatus = await archive.seal(database, evidenceMeeting, new Date().toISOString(), {}, new Map());
+    expect(evidenceStatus.root).toMatch(/^[0-9a-f]{64}$/u);
+    const evidenceApp = new Hono().onError(handleError).route("/", createMeetingRosterRoutes({
+      service, evidence: archive, origin,
+      requireUser: () => async (c, next) => {
+        const [subject, db, ac] = (c.req.header("authorization") ?? "").split("|");
+        c.set("user", { subject: subject ?? "", rawToken: "", raw: { db, ac } });
+        await next();
+      },
+    }));
+    const evidencePath = `${admin}/${encodeURIComponent(evidenceMeeting)}/evidence`;
+    const grant = await evidenceApp.request(evidencePath + "/grant", {
+      method: "POST", headers: { authorization: `host|${database}|admin` },
+    });
+    expect(grant.status).toBe(200);
+    const { url: download } = await grant.json() as { url: string };
+    for (const authorization of ["", `member|${database}|participant`, "host|other_workspace|admin"]) {
+      expect((await evidenceApp.request(download, { headers: { authorization } })).status).toBe(403);
+    }
+    const downloaded = await evidenceApp.request(download, { headers: { authorization: `host|${database}|admin` } });
+    expect(downloaded.status).toBe(200);
+    expect(downloaded.headers.get("cache-control")).toBe("no-store");
+    expect(downloaded.headers.get("content-type")).toBe("application/x-tar");
+    const archives = new Table("meeting_evidence_archive");
+    expect(await member.update(archives).merge({ meeting: "changed" })).toEqual([]);
+    expect(await member.delete(archives)).toEqual([]);
+    for (const session of [owner, root]) {
+      await expect(Promise.resolve(session.update(archives).merge({ meeting: "changed" }))).rejects.toThrow("readonly");
+      await expect(Promise.resolve(session.delete(archives))).rejects.toThrow("append only");
+    }
+    await owner.query("REMOVE EVENT meeting_evidence_archive_immutable ON TABLE meeting_evidence_archive; DELETE meeting_evidence_archive;").collect();
+    await expect(archive.status(database, evidenceMeeting)).rejects.toMatchObject({ status: 409 });
     const [actions] = await root.query<[string[]]>("SELECT VALUE action FROM roster_meeting_audit;").collect();
     expect(actions).toEqual(expect.arrayContaining(["issued", "revoked", "verify_ok", "verify_failed", "replaced", "kicked", "rejected_concurrent"]));
   } finally {

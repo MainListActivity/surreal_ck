@@ -100,6 +100,11 @@ export class MeetingEvidenceLedger {
     return this.appendEntry(scope, event);
   }
 
+  async events(scope: EvidenceScope): Promise<EvidenceEvent[]> {
+    const { records } = await this.entries(scope);
+    return records.filter(({ event }) => event.kind !== "seal").map(({ event }) => event);
+  }
+
   private async immutable(scope: EvidenceScope, key: string, bytes: Buffer): Promise<void> {
     if (!(await this.vault.create(scope, key, bytes)) && !(await this.vault.read(scope, key))?.equals(bytes)) {
       throw new Error(`会议存证对象与已冻结版本不同: ${key}`);

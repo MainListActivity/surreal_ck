@@ -17,6 +17,7 @@ export type RosterPass = {
   lease_state?: "waiting" | "admitted" | "kicked"; generation: number;
 };
 export type RosterWaiting = { id: string; name: string; generation: number };
+export type EvidenceStatus = { root: string; sealedAt: string; retainUntil: string; backupReminder: boolean };
 
 export function createRosterAdminApi(slug: string, getToken: () => Promise<string | null> = refresh, fetcher?: typeof fetch) {
   const base = `/api/workspaces/${encodeURIComponent(slug)}/roster-meetings`;
@@ -45,6 +46,14 @@ export function createRosterAdminApi(slug: string, getToken: () => Promise<strin
     saveArchiveConfig: (id: string, input: RosterArchiveSheets & { weightField?: string }) =>
       request(`${meetingPath(id)}/archive-config`, "PUT", input),
     archive: (id: string) => json<RosterArchiveSheets>(`${meetingPath(id)}/archive`, "POST"),
+    evidenceStatus: (id: string) => json<EvidenceStatus>(`${meetingPath(id)}/evidence/status`),
+    finalizeEvidence: (id: string) => request(`${meetingPath(id)}/evidence/finalize`, "POST"),
+    downloadEvidence: async (id: string) => {
+      const path = `${meetingPath(id)}/evidence`;
+      const { url } = await json<{ url: string }>(`${path}/grant`, "POST");
+      if (!url.startsWith(`${base}${path}/download?`)) throw new Error("会议存证下载链接无效");
+      return (await request(url.slice(base.length))).blob();
+    },
     moderation: (id: string) => json<RosterMeetingModeration>(`${meetingPath(id)}/moderation`),
     moderate: (id: string, command: RosterMeetingCommand) =>
       json<RosterMeetingModeration>(`${meetingPath(id)}/moderation`, "POST", command),

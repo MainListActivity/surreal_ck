@@ -15,6 +15,8 @@
   let inputId = $state("");
   let seats = $state(10);
   let roomId = $state("");
+  let consentRoom = $state("");
+  let recording = $state(false);
   let role = $state<MeetingSfuRole>("listener");
   const canSpeak = $derived(role === "host" || role === "speaker");
   let status = $state<"idle" | "connected" | "reconnecting">("idle");
@@ -86,7 +88,7 @@
     if (!current || renewing) return;
     renewing = true;
     try {
-      const grant = await meetingSfuApi.credentials(roomId);
+      const grant = await meetingSfuApi.credentials(roomId, recording && consentRoom === roomId);
       if (current !== room) return;
       applyLease(grant);
       if (role === "host") await refreshAttendees();
@@ -102,7 +104,14 @@
   }
 
   async function enter(id: string, connectionAttempt = ++attempt, retry = false) {
-    const grant = await meetingSfuApi.credentials(id);
+    const controlled = await meetingSfuApi.recording(id);
+    if (destroyed || attempt !== connectionAttempt) return;
+    recording = controlled;
+    if (controlled && consentRoom !== id) {
+      roomId = id;
+      return;
+    }
+    const grant = await meetingSfuApi.credentials(id, controlled);
     if (destroyed || attempt !== connectionAttempt) return;
     const current = new Room({ adaptiveStream: true, dynacast: true });
     room = current;
@@ -255,6 +264,15 @@
     <button onclick={() => { disconnect(); onback(); }}>{rosterManaged ? "关闭主持席" : "返回普通会议"}</button>
   </header>
   {#if status === "idle"}
+    {#if recording && consentRoom !== roomId}
+      <p>本会议将录制音视频，并保留身份核验、入场、发言和表决记录，用于会议存证。</p>
+      <label><input type="checkbox" onchange={(event) => {
+        if (event.currentTarget.checked) {
+          consentRoom = roomId;
+          void run(() => enter(roomId));
+        }
+      }} /> 我已知情并确认进入录制会议</label>
+    {:else}
     {#if rosterManaged}
       <button disabled={busy} onclick={() => void run(() => enter(initialRoom))}>连接主持席</button>
     {:else}
@@ -274,7 +292,9 @@
       <button disabled={busy}>加入大会</button>
     </form>
     {/if}
+    {/if}
   {:else}
+    {#if recording}<p class="recording" role="status">● 存证录制中</p>{/if}
     <p aria-live="polite">{status === "reconnecting" ? "网络变化，正在自动重连…" : "已连接 · 私有媒体"}{role === "listener" ? " · 只听" : role === "cohost" ? " · 协办人（仅可共享屏幕）" : ""}</p>
     <div class="media">
       {#each tracks as track (track)}
@@ -360,6 +380,7 @@
 </div>
 
 <style>
+  .recording { position: sticky; top: 0; z-index: 1; margin: 0; padding: 0.5rem; background: #a40018; color: white; }
   .private-meeting { display: grid; gap: 1rem; padding: 1.25rem; border: 1px solid var(--border, #bbb); border-radius: 0.75rem; }
   header, form, .controls { display: flex; align-items: center; flex-wrap: wrap; gap: 0.75rem; }
   header { justify-content: space-between; }

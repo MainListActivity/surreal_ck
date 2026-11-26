@@ -31,6 +31,10 @@ const EnvSchema = z.object({
     z.string().min(32).optional(),
   ),
   MEETING_ROSTER_ORIGIN: z.preprocess((value) => value === "" ? undefined : value, z.url().optional()),
+  MEETING_EVIDENCE_DIR: z.preprocess((value) => value === "" ? undefined : value, z.string().startsWith("/").optional()),
+  MEETING_EVIDENCE_MASTER_KEY: z.preprocess((value) => value === "" ? undefined : value, z.string().regex(/^[0-9a-f]{64}$/iu).optional()),
+  MEETING_EVIDENCE_RETENTION_DAYS: z.preprocess((value) => value === "" ? undefined : value, z.coerce.number().int().min(31).max(3650).default(365)),
+  MEETING_EGRESS_SPOOL: z.preprocess((value) => value === "" ? undefined : value, z.string().startsWith("/").optional()),
 
   SURREAL_URL: z.string().min(1),
   SURREAL_NS: z.string().min(1).default("main"),
