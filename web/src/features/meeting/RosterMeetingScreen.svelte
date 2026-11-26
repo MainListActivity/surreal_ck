@@ -16,6 +16,10 @@
   let connected = $state(false);
   let audioOnly = $state(false);
   let needsAudio = $state(false);
+  let canSpeak = $state(false);
+  let raised = $state(false);
+  let mic = $state(false);
+  let micBusy = $state(false);
   let tracks = $state<RemoteTrack[]>([]);
   let room: Room | undefined;
   let stopped = false;
@@ -35,11 +39,12 @@
           continue;
         }
         publications.push(publication);
-        candidates.push({ id: publication.trackSid, identity: person.identity, source: publication.source, host: person.metadata === "host" });
+        candidates.push({ id: publication.trackSid, identity: person.identity, source: publication.source,
+          host: person.metadata === "host", cohost: person.metadata === "cohost" });
       }
     }
     const wanted = selectedMeetingSubscriptions(candidates, current.activeSpeakers.map((speaker) => speaker.identity),
-      audioOnly ? "audio" : mobile ? "mobile" : "desktop");
+      audioOnly ? "audio" : mobile ? "mobile" : "desktop", session?.focus ?? "auto");
     for (const publication of publications) {
       const subscribe = wanted.has(publication.trackSid);
       if (publication.isDesired !== subscribe) publication.setSubscribed(subscribe);
@@ -58,17 +63,69 @@
     tracks = [];
     connected = false;
     needsAudio = false;
+    canSpeak = raised = mic = false;
     void current?.disconnect(true).catch(() => undefined);
   }
 
   function applySession(next: RosterSession) {
+    const focusChanged = session?.focus !== next.focus;
     session = next;
-    const message = rosterExitMessage(next.state);
+    const message = next.ended ? "主持人已结束会议" : rosterExitMessage(next.state);
     if (message) {
       exit = message;
       error = "";
       allowJoin = false;
       detach();
+    } else if (focusChanged && room) reconcile(room);
+  }
+
+  async function stopMicrophone(current: Room) {
+    const local = current.localParticipant;
+    const track = local.getTrackPublication(Track.Source.Microphone)?.track;
+    if (track) {
+      track.stop();
+      await local.unpublishTrack(track);
+    }
+  }
+
+  function syncPermission(current: Room) {
+    if (room !== current) return;
+    const allowed = current.localParticipant.permissions?.canPublish === true;
+    if (canSpeak === allowed) return;
+    canSpeak = allowed;
+    raised = false;
+    if (!allowed) {
+      mic = false;
+      void stopMicrophone(current).catch(() => undefined);
+    }
+  }
+
+  async function toggleMic() {
+    const current = room;
+    if (!current || !canSpeak || micBusy) return;
+    micBusy = true;
+    error = "";
+    try {
+      if (mic) await stopMicrophone(current);
+      else await current.localParticipant.setMicrophoneEnabled(true);
+      if (room !== current || !canSpeak) await stopMicrophone(current);
+      else mic = current.localParticipant.isMicrophoneEnabled;
+    } catch {
+      if (room === current && canSpeak) error = "无法开启麦克风，请检查浏览器权限。";
+    } finally {
+      micBusy = false;
+    }
+  }
+
+  async function raiseHand() {
+    const current = room;
+    raised = true;
+    error = "";
+    try { await api.raiseHand(); }
+    catch (cause) {
+      if (room !== current) return;
+      raised = false;
+      error = cause instanceof Error ? cause.message : "举手失败，请重试。";
     }
   }
 
@@ -90,6 +147,9 @@
       current.on(event, () => reconcile(current));
     }
     current.on(RoomEvent.AudioPlaybackStatusChanged, () => { needsAudio = !current.canPlaybackAudio; });
+    current.on(RoomEvent.ParticipantPermissionsChanged, (_before, participant) => {
+      if (participant === current.localParticipant) syncPermission(current);
+    });
     current.on(RoomEvent.Disconnected, () => {
       if (room !== current) return;
       allowJoin = false;
@@ -108,6 +168,7 @@
     connected = true;
     error = "";
     needsAudio = !current.canPlaybackAudio;
+    syncPermission(current);
     reconcile(current);
   }
 
@@ -129,7 +190,7 @@
           if (retry instanceof RosterRequestError && retry.status === 401) applySession({ ...session, state: "revoked" });
         }
       } else if (session?.state === "admitted" && !room && allowJoin) {
-        error = "暂无法加入会议，正在等待媒体服务。";
+        error = cause instanceof RosterRequestError && cause.status === 423 ? cause.message : "暂无法加入会议，正在等待媒体服务。";
       }
       if (room && Date.now() >= leaseUntil) {
         allowJoin = false;
@@ -181,7 +242,7 @@
     {#if session.state === "waiting"}
       <p role="status">正在等候主持人准入，请保持此页面打开。</p>
     {:else if connected}
-      <p role="status">已连接 · 只听</p>
+      <p role="status">已连接 · {canSpeak ? "主持人已允许发言" : raised ? "已举手，等待主持人" : "只听"}</p>
       <div class="media">
         {#each tracks as track (track)}
           {#if track.kind === Track.Kind.Video}
@@ -192,6 +253,11 @@
         {/each}
       </div>
       <div class="controls">
+        {#if canSpeak}
+          <button disabled={micBusy} aria-pressed={mic} onclick={() => void toggleMic()}>{mic ? "关闭麦克风" : "打开麦克风"}</button>
+        {:else}
+          <button disabled={raised} onclick={() => void raiseHand()}>举手申请发言</button>
+        {/if}
         {#if needsAudio}<button onclick={() => void room?.startAudio().catch(() => undefined)}>开启声音</button>{/if}
         <button aria-pressed={audioOnly} onclick={() => { audioOnly = !audioOnly; if (room) reconcile(room); }}>
           {audioOnly ? "恢复视频接收" : "纯音频省流模式"}

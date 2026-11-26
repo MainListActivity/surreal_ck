@@ -1,3 +1,4 @@
+import { SignalRequest, TrackSource, TrackType } from "@livekit/protocol";
 import {
   MEETING_SFU_SIGNAL_PATH,
   PRIVATE_MEETING_MAX_SEATS,
@@ -23,8 +24,30 @@ const newRoom = z.strictObject({
 });
 const invitation = z.strictObject({
   subject: z.string().min(1).max(256),
-  role: z.enum(["listener", "speaker"]),
+  role: z.enum(["listener", "speaker", "cohost"]),
 });
+
+function allowsRosterSignal(data: string | ArrayBufferLike, screenOnly = false): boolean {
+  try {
+    const { message } = typeof data === "string" ? SignalRequest.fromJsonString(data)
+      : SignalRequest.fromBinary(new Uint8Array(data));
+    if (message.case === "addTrack") {
+      if (screenOnly) return message.value.type === TrackType.VIDEO && message.value.source === TrackSource.SCREEN_SHARE;
+      return message.value.type === TrackType.AUDIO && message.value.source === TrackSource.MICROPHONE;
+    }
+    if (message.case === "offer" || message.case === "answer") {
+      return message.value.sdp.split(/\r?\nm=/u).slice(1).every((section) => {
+        const media = screenOnly ? /^audio\s+/iu : /^video\s+/iu;
+        if (!media.test(section) || /^\w+\s+0(?:[\s/]|$)/iu.test(section)) return true;
+        const directions = section.split(/\r?\n/u).filter((line) => /^a=(?:sendrecv|sendonly|recvonly|inactive)$/u.test(line));
+        return directions.length === 1 && (directions[0] === "a=recvonly" || directions[0] === "a=inactive");
+      });
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
 type Config = Pick<ServerEnv, "MEETING_SFU_PRIVATE_URL" | "MEETING_SFU_SIGNAL_URL" | "MEETING_SFU_KEY"
   | "MEETING_SFU_SECRET" | "MEETING_SFU_APP_ORIGIN" | "MEETING_SFU_MAX_SEATS" | "NODE_ENV">;
 type Options = {
@@ -82,7 +105,7 @@ function validUntil(exp: unknown): number {
 
 const MAX_SIGNAL_FRAME = 256 * 1024;
 const signalParams = [
-  "access_token", "auto_subscribe", "reconnect", "sid", "sdk", "version", "protocol",
+  "auto_subscribe", "reconnect", "sid", "sdk", "version", "protocol",
   "device_model", "os", "os_version", "browser", "browser_version", "adaptive_stream",
   "reconnect_reason", "network",
 ];
@@ -134,11 +157,19 @@ export function createMeetingSfuRoutes({
     }
     const url = new URL(c.req.url);
     if (url.search.length > 8192) return c.text("Forbidden", 403);
-    const token = url.searchParams.get("access_token");
-    const lease = token && url.searchParams.getAll("access_token").length === 1
-      ? await sfu.authorizeSignal(token) : undefined;
+    const queryTokens = url.searchParams.getAll("access_token");
+    const authorization = c.req.header("authorization");
+    if (queryTokens.length > 1 || (authorization !== undefined && queryTokens.length !== 0)) {
+      return c.text("Forbidden", 403);
+    }
+    const token = authorization === undefined
+      ? queryTokens[0]
+      : /^Bearer ([A-Za-z0-9._-]{1,8192})$/iu.exec(authorization)?.[1];
+    if (!token) return c.text("Forbidden", 403);
+    const lease = await sfu.authorizeSignal(token);
     if (!lease) return c.text("Forbidden", 403);
     const target = new URL(c.req.path.endsWith("/validate") ? "/rtc/validate" : "/rtc", resolved.privateUrl);
+    target.searchParams.set("access_token", token);
     for (const name of signalParams) {
       const value = url.searchParams.get(name);
       if (value !== null) target.searchParams.set(name, value);
@@ -241,7 +272,7 @@ export function createMeetingSfuRoutes({
           const size = typeof data === "string" ? data.length : data.byteLength;
           if (size > MAX_SIGNAL_FRAME || socket?.readyState !== WebSocket.OPEN || socket.bufferedAmount > MAX_SIGNAL_FRAME) {
             downstream.close(1008, "meeting-sfu-signal-limit");
-          } else {
+          } else if (!(lease.microphoneOnly || lease.screenOnly) || allowsRosterSignal(data, lease.screenOnly)) {
             socket.send(data);
           }
         },

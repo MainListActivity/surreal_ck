@@ -3,6 +3,7 @@
 set -euo pipefail
 : "${ANDROID_HOME:?set existing Android SDK path}"
 ndk="${ANDROID_NDK_HOME:-$ANDROID_HOME/ndk/29.0.14206865}"
+export ANDROID_NDK_HOME="$ndk"
 case "$(uname -s)" in
   Linux) host=linux-x86_64 ;;
   Darwin) host=darwin-x86_64 ;;
@@ -15,6 +16,7 @@ python "$root/scripts/native-client/check-public-inputs.py" --platform android
 features=()
 if [[ "${ANDROID_NATIVE_MEDIA:-0}" == 1 ]]; then features+=(--features android-native-media); fi
 if [[ "${ANDROID_NATIVE_OAUTH:-0}" == 1 ]]; then features+=(--features android-native-oauth); fi
+if [[ "${ANDROID_ROSTER_SFU:-0}" == 1 ]]; then features+=(--features experimental-native-roster-sfu); fi
 if [[ "${ANDROID_ENTERPRISE_COLLABORATION:-0}" == 1 ]]; then
   [[ "${ANDROID_NATIVE_MEDIA:-0}" == 1 && "${ANDROID_NATIVE_OAUTH:-0}" == 1 ]] || { echo 'Enterprise preview requires explicit media and OAuth host packaging flags' >&2; exit 1; }
   features+=(--features enterprise-collaboration)
@@ -24,8 +26,13 @@ for target in aarch64-linux-android x86_64-linux-android; do
   normalized=${target//-/_}
   upper=$(printf '%s' "$normalized" | tr '[:lower:]' '[:upper:]')
   export "CC_$normalized=$bin/${target}28-clang"
+  export "CXX_$normalized=$bin/${target}28-clang++"
   export "AR_$normalized=$bin/llvm-ar"
   export "CARGO_TARGET_${upper}_LINKER=$bin/${target}28-clang"
+  if [[ "${ANDROID_ROSTER_SFU:-0}" == 1 ]]; then
+    export "ROSTER_ANDROID_LINKER=$bin/${target}28-clang"
+    export "CARGO_TARGET_${upper}_LINKER=$root/scripts/native-client/android-roster-link.py"
+  fi
   cargo build --manifest-path "$root/native-client/android-host/Cargo.toml" --locked --offline --target "$target" --release "${features[@]}"
   "$bin/llvm-readelf" --dyn-syms --wide "$CARGO_TARGET_DIR/$target/release/libnsh.so" | grep 'Java_top_maplayer_collaboration_update_UpdaterInitProvider_initialize'
 done

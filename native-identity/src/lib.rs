@@ -6,6 +6,7 @@ mod ice;
 mod loopback;
 pub mod meeting;
 mod members;
+pub mod roster;
 mod scope;
 mod signaling;
 mod transport;

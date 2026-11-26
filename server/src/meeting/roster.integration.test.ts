@@ -52,6 +52,8 @@ test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等�
     const drops: Array<{ room: string; subject: string }> = [];
     const rooms = new Set<string>();
     const calls: SfuActor[] = [];
+    let locked = false;
+    let raises = 0;
     let transactions = 0;
     const service = new RosterMeetingService({
       resolveWorkspace: async (name) => name === slug ? { dbName: database } : null,
@@ -71,6 +73,15 @@ test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等�
           return { id, seats, topology: "sfu", expiresAt: Date.now() + 60_000 };
         },
         hasRosterRoom: (_db, room) => rooms.has(room),
+        isRosterLocked: () => locked,
+        rosterFocus: () => "auto",
+        async raiseRosterHand() { raises++; },
+        rosterModeration: () => ({ locked, focus: "auto", participants: [] }),
+        async moderateRoster(_actor, _room, command) {
+          if (command.action === "lock") locked = command.locked;
+          return { locked, focus: "auto", participants: [] };
+        },
+        assertRosterHost() {},
         async endRoster(_db, room) { rooms.delete(room); },
         async dropRoster(_db, room, subject) { drops.push({ room, subject }); },
         async rosterCredentials(actor) {
@@ -169,6 +180,13 @@ test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等�
     const old = await verified(await verify(initial), "admitted");
     expect(await (await media(old)).json()).toMatchObject({ role: "listener", token: "fixture-media" });
     expect(calls[0]?.name).toBe("=示例");
+    expect((await request(pub + "/raise-hand", { method: "POST", cookie: old })).status).toBe(204);
+    expect(raises).toBe(1);
+    expect(await (await request(room + "/moderation", { body: { action: "lock", locked: true } })).json())
+      .toMatchObject({ locked: true });
+    expect((await verify(initial)).status).toBe(423);
+    expect(await state(old)).toBe("admitted");
+    expect((await request(room + "/moderation", { body: { action: "lock", locked: false } })).status).toBe(200);
     const next = await verified(await verify(initial), "admitted");
     expect(await state(old)).toBe("replaced");
     expect((await media(old)).status).toBe(401);
@@ -208,6 +226,7 @@ test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等�
     const lastSession = await verified(await verify(lastPass), "admitted");
     expect((await request(room + "/end", { method: "POST" })).status).toBe(204);
     expect(await state(lastSession)).toBe("revoked");
+    expect(await (await request(pub + "/session", { cookie: lastSession })).json()).toMatchObject({ ended: true });
     expect(await (await verify(lastPass)).json()).toEqual(error);
     expect(rooms.size).toBe(0);
 

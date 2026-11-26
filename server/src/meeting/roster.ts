@@ -1,5 +1,6 @@
 import { randomInt } from "node:crypto";
 import { DateTime, isRetryableConflict, RecordId, StringRecordId } from "surrealdb";
+import type { RosterMeetingCommand } from "@surreal-ck/shared";
 import { extractNativeQuotaError } from "@surreal-ck/shared/native-quota";
 import { isSafeSheetTableName } from "@surreal-ck/shared/resource-quota";
 import { z } from "zod";
@@ -10,7 +11,7 @@ import { dateTimeTimestamp, toIsoDateTimeString } from "../db/surreal-values";
 import { env } from "../env";
 import { HttpError } from "../http-error";
 import { generateToken, hashToken, safeTextEqual, signPayload, verifySignature } from "../secure-token";
-import type { PrivateMeetingSfu, SfuActor } from "./sfu";
+import { rosterRoomLocked, type PrivateMeetingSfu, type SfuActor } from "./sfu";
 
 const PASS_TABLE = "roster_meeting_pass";
 const MEETING_TABLE = "roster_meeting";
@@ -39,7 +40,8 @@ type Cookie = z.infer<typeof cookieSchema>;
 type Admission = z.infer<typeof admissionSchema>;
 type LeaseState = "waiting" | "admitted" | "kicked";
 type Query = { query(sql: string, vars?: Record<string, unknown>): Promise<unknown> };
-type Media = Pick<PrivateMeetingSfu, "maxSeats" | "startRoster" | "endRoster" | "hasRosterRoom" | "rosterCredentials" | "dropRoster">;
+type Media = Pick<PrivateMeetingSfu, "maxSeats" | "startRoster" | "endRoster" | "hasRosterRoom" | "rosterCredentials" | "dropRoster"
+  | "isRosterLocked" | "rosterFocus" | "raiseRosterHand" | "rosterModeration" | "moderateRoster" | "assertRosterHost">;
 type Deps = {
   getSession?: (db: string) => Promise<Query>;
   resolveWorkspace?: typeof resolveWorkspaceBySlug;
@@ -420,6 +422,7 @@ export class RosterMeetingService {
         || (meeting.check_field && (!expectedCheck || !safeTextEqual(expectedCheck, input.check?.trim() ?? "")))) {
         return this.failure(db, pass, hash, now);
       }
+      if (meeting.room_id && this.media?.isRosterLocked(database, meeting.room_id)) throw rosterRoomLocked();
       const current = Boolean(pass.lease_session && pass.lease_state !== "kicked" && dateTimeTimestamp(pass.lease_expires_at) > now);
       const subject = rosterSubject(pass.id);
       if (meeting.concurrency === "reject" && current) {
@@ -496,7 +499,11 @@ export class RosterMeetingService {
   }
 
   session(raw: string | undefined) {
-    return this.withSession(raw, async ({ state, meeting, name }) => ({ state, title: meeting.title, name, check_label: meeting.check_label }));
+    return this.withSession(raw, async ({ database, state, meeting, name }) => ({
+      state, title: meeting.title, name, check_label: meeting.check_label,
+      ended: meeting.status === "closed" ? true : undefined,
+      focus: state === "admitted" && meeting.room_id ? this.media?.rosterFocus(database, meeting.room_id) : undefined,
+    }));
   }
 
   credentials(raw: string | undefined) {
@@ -506,6 +513,25 @@ export class RosterMeetingService {
       return this.media.rosterCredentials({
         workspace: database, subject: rosterSubject(pass.id), name, expiresAt: dateTimeTimestamp(pass.lease_expires_at),
       }, meeting.room_id, pass.lease_session);
+    });
+  }
+
+  raiseHand(raw: string | undefined) {
+    return this.withSession(raw, async ({ database, meeting, pass, state }) => {
+      if (state !== "admitted" || !pass.lease_session) throw rosterDenied();
+      if (!meeting.room_id || !this.media) throw noRoom();
+      await this.media.raiseRosterHand(database, meeting.room_id, rosterSubject(pass.id), pass.lease_session);
+    });
+  }
+
+  moderation(actor: Actor, meetingId: string, command?: RosterMeetingCommand) {
+    this.assertEnabled();
+    return this.withWorkspace(actor.workspace, async () => {
+      const db = await this.getSession(actor.workspace);
+      const meeting = await this.requireMeeting(db, meetingId);
+      if (!this.open(meeting) || !meeting.room_id || !this.media) throw noRoom();
+      if (command) return this.media.moderateRoster(actor, meeting.room_id, command);
+      return this.media.rosterModeration(actor, meeting.room_id);
     });
   }
 
@@ -562,6 +588,7 @@ export class RosterMeetingService {
         || (action !== "kick" && (meeting.admission !== "waiting" || pass.lease_state !== "waiting"
           || dateTimeTimestamp(pass.lease_expires_at) <= now))) throw conflict();
       const admitting = action === "admit";
+      if (admitting && meeting.room_id && this.media?.isRosterLocked(database, meeting.room_id)) throw rosterRoomLocked();
       const deadline = Math.min(dateTimeTimestamp(pass.lease_verified_at) + SESSION_TTL, dateTimeTimestamp(pass.expires_at),
         dateTimeTimestamp(meeting.ends_at) || Infinity);
       try {
@@ -595,7 +622,7 @@ export class RosterMeetingService {
       const [count] = statement<{ total: number }>(await db.query(
         "SELECT count() AS total FROM type::table($table) GROUP ALL;", { table: sheet.table_name },
       ));
-      const room = await media.startRoster(actor, Math.min(media.maxSeats, (count?.total ?? 0) + 1),
+      const room = await media.startRoster(actor, Math.min(media.maxSeats, (count?.total ?? 0) + 2),
         dateTimeTimestamp(meeting.ends_at) || undefined);
       try {
         const rows = statement(await db.query(
@@ -611,11 +638,13 @@ export class RosterMeetingService {
     });
   }
 
-  end(database: string, meetingId: string) {
+  end(actor: Actor, meetingId: string) {
     this.assertEnabled();
+    const database = actor.workspace;
     return this.withWorkspace(database, async () => {
       const db = await this.getSession(database);
       const meeting = await this.requireMeeting(db, meetingId);
+      if (meeting.room_id && this.media?.hasRosterRoom(database, meeting.room_id)) this.media.assertRosterHost(actor, meeting.room_id);
       await db.query("UPDATE $id SET status = 'closed';", { id: meeting.id });
       if (meeting.room_id) await this.media?.endRoster(database, meeting.room_id);
     });

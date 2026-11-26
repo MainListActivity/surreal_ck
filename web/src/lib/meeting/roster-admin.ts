@@ -1,4 +1,4 @@
-import type { MeetingSfuRoom } from "@surreal-ck/shared";
+import type { MeetingSfuRoom, RosterMeetingCommand, RosterMeetingModeration } from "@surreal-ck/shared";
 import { refresh } from "../auth";
 import { RosterRequestError, rosterRequest } from "./roster";
 
@@ -37,6 +37,9 @@ export function createRosterAdminApi(slug: string, getToken: () => Promise<strin
     revoke: (id: string, pass: string) => request(passPath(id, pass), "DELETE"),
     start: (id: string) => json<MeetingSfuRoom>(`${meetingPath(id)}/start`, "POST"),
     end: (id: string) => request(`${meetingPath(id)}/end`, "POST"),
+    moderation: (id: string) => json<RosterMeetingModeration>(`${meetingPath(id)}/moderation`),
+    moderate: (id: string, command: RosterMeetingCommand) =>
+      json<RosterMeetingModeration>(`${meetingPath(id)}/moderation`, "POST", command),
     waiting: async (id: string) => (await json<{ waiting: RosterWaiting[] }>(`${meetingPath(id)}/waiting`)).waiting,
     decide: (id: string, pass: string, generation: number, action: "admit" | "reject" | "kick") =>
       request(`${passPath(id, pass)}/${action}`, "POST", { generation }),

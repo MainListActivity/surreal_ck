@@ -5,6 +5,9 @@ import {
   type MeetingSfuParticipant,
   type MeetingSfuRole,
   type MeetingSfuRoom,
+  type RosterMeetingCommand,
+  type RosterMeetingFocus,
+  type RosterMeetingModeration,
 } from "@surreal-ck/shared";
 import { jwtVerify } from "jose";
 import { AccessToken, RoomServiceClient, TrackSource, type VideoGrant } from "livekit-server-sdk";
@@ -22,6 +25,9 @@ type Room = MeetingSfuRoom & {
   host: string;
   closing: boolean;
   managed: boolean;
+  locked: boolean;
+  focus: RosterMeetingFocus;
+  nextHand: number;
   participants: Map<string, SfuParticipant>;
   bySubject: Map<string, SfuParticipant>;
 };
@@ -30,16 +36,21 @@ type SfuParticipant = MeetingSfuParticipant & {
   pendingRemoval: boolean;
   closeSignal?: () => void;
   externalSession?: string;
+  raisedAt?: number;
+  handOrder?: number;
+  speaking?: boolean;
+  entered?: boolean;
 };
 
 type Admin = Pick<RoomServiceClient, "createRoom" | "listRooms" | "deleteRoom" | "removeParticipant" | "updateParticipant">;
 type Config = { privateUrl: string; signalUrl: string; key: string; secret: string; maxSeats: number };
-export type SignalLease = { roomId: string; identity: string; publisher: boolean };
+export type SignalLease = { roomId: string; identity: string; publisher: boolean; microphoneOnly: boolean; screenOnly?: boolean };
 
 const denied = () => new HttpError(403, "meeting-sfu-denied", "没有权限进入或管理此大会");
 const full = () => new HttpError(409, "meeting-sfu-capacity", "私有会议容量已满，请减少预计人数或稍后重试");
 const unavailable = () => new HttpError(503, "meeting-sfu-unavailable", "私有会议服务暂不可用，请稍后重试");
 const expired = () => new HttpError(401, "meeting-sfu-session-expired", "登录会话已过期");
+export const rosterRoomLocked = () => new HttpError(423, "meeting-roster-locked", "会议已锁定，暂不接受新入场");
 
 function permissions(role: MeetingSfuRole) {
   return {
@@ -47,7 +58,7 @@ function permissions(role: MeetingSfuRole) {
     canPublish: role !== "listener",
     canPublishData: false,
     canUpdateOwnMetadata: false,
-    ...(role === "listener" ? {} : { canPublishSources: [
+    ...(role === "listener" ? {} : role === "cohost" ? { canPublishSources: [TrackSource.SCREEN_SHARE] } : { canPublishSources: [
       TrackSource.MICROPHONE, TrackSource.CAMERA, TrackSource.SCREEN_SHARE, TrackSource.SCREEN_SHARE_AUDIO,
     ] }),
   };
@@ -179,8 +190,8 @@ export class PrivateMeetingSfu {
       const id = randomUUID();
       const room: Room = {
         id, seats, topology: "sfu", workspace: actor.workspace, host: actor.subject,
-        expiresAt: Math.min(endsAt, this.now() + ROOM_SECONDS * 1000), closing: false, managed,
-        participants: new Map(), bySubject: new Map(),
+        expiresAt: Math.min(endsAt, this.now() + ROOM_SECONDS * 1000), closing: false, managed, locked: false, focus: "auto",
+        nextHand: 0, participants: new Map(), bySubject: new Map(),
       };
       this.addParticipant(room, actor.subject, actor.name, "host");
       // 先保留容量；若上游创建请求超时，后台删除可能已创建的房间后才释放。
@@ -219,7 +230,7 @@ export class PrivateMeetingSfu {
   invite(actor: SfuActor, roomId: string, subject: string, role: Exclude<MeetingSfuRole, "host">) {
     return this.serial(async () => {
       const room = this.access(actor, roomId, true);
-      if (room.managed) throw denied();
+      if (room.managed !== (role === "cohost") || (room.managed && (!actor.workspaceAdmin || subject.startsWith("roster:")))) throw denied();
       const existing = room.bySubject.get(subject);
       if (existing?.revoked || existing?.role === "host" || (existing && existing.role !== role)) throw denied();
       return participantView(existing ?? this.addParticipant(room, subject, "参会人", role));
@@ -236,7 +247,9 @@ export class PrivateMeetingSfu {
     return this.serial(async () => {
       const room = this.access(actor, roomId);
       const participant = room.bySubject.get(actor.subject);
-      if (!participant || participant.externalSession || (room.managed && !actor.workspaceAdmin)) throw denied();
+      if (!participant || participant.externalSession || (room.managed
+        && participant.role !== "cohost" && !actor.workspaceAdmin)) throw denied();
+      if (room.locked && participant.role === "cohost" && !participant.entered) throw rosterRoomLocked();
       return this.mintCredentials(room, participant, actor);
     });
   }
@@ -249,7 +262,8 @@ export class PrivateMeetingSfu {
     if (ttl < 1) throw expired();
     participant.name = actor.name;
     const jwt = new AccessToken(this.config.key, this.config.secret, {
-      identity: participant.id, name: participant.name, metadata: participant.role === "host" ? "host" : undefined, ttl,
+      identity: participant.id, name: participant.name,
+      metadata: participant.role === "host" || participant.role === "cohost" ? participant.role : undefined, ttl,
     });
     jwt.addGrant({ room: ROOM_PREFIX + room.id, roomJoin: true, ...permissions(participant.role) });
     const token = await jwt.toJwt();
@@ -262,12 +276,17 @@ export class PrivateMeetingSfu {
     return Boolean(room?.managed && room.workspace === workspace && !room.closing && room.expiresAt > this.now());
   }
 
+  isRosterLocked(workspace: string, roomId: string): boolean {
+    return this.hasRosterRoom(workspace, roomId) && this.rooms.get(roomId)?.locked === true;
+  }
+
   rosterCredentials(actor: SfuActor, roomId: string, session: string): Promise<MeetingSfuCredentials> {
     return this.serial(async () => {
       const room = this.access(actor, roomId);
       if (!room.managed) throw denied();
       let participant = room.bySubject.get(actor.subject);
       if (participant && !participant.externalSession) throw denied();
+      if (room.locked && (!participant?.entered || participant.externalSession !== session)) throw rosterRoomLocked();
       if (participant && participant.externalSession !== session) {
         await this.removeRoster(room, participant);
         participant = undefined;
@@ -278,6 +297,80 @@ export class PrivateMeetingSfu {
       }
       return this.mintCredentials(room, participant, actor);
     });
+  }
+
+  rosterFocus(workspace: string, roomId: string): RosterMeetingFocus | undefined {
+    if (this.hasRosterRoom(workspace, roomId)) return this.rooms.get(roomId)?.focus;
+  }
+
+  raiseRosterHand(workspace: string, roomId: string, subject: string, session: string) {
+    return this.serial(async () => {
+      const room = this.rooms.get(roomId);
+      const target = room?.bySubject.get(subject);
+      if (!room || !this.hasRosterRoom(workspace, roomId) || !target || target.externalSession !== session
+        || target.revoked || target.pendingRemoval || target.leaseUntil <= this.now()) throw denied();
+      if (!target.speaking && target.raisedAt === undefined) {
+        target.raisedAt = this.now();
+        target.handOrder = room.nextHand++;
+      }
+    });
+  }
+
+  assertRosterHost(actor: SfuActor, roomId: string) {
+    if (!this.access(actor, roomId, true).managed || !actor.workspaceAdmin) throw denied();
+  }
+
+  rosterModeration(actor: SfuActor, roomId: string): RosterMeetingModeration {
+    this.assertRosterHost(actor, roomId);
+    const room = this.rooms.get(roomId)!;
+    return {
+      locked: room.locked, focus: room.focus,
+      participants: [...room.participants.values()]
+        .filter((p) => p.externalSession && !p.revoked && !p.pendingRemoval && p.leaseUntil > this.now())
+        .sort((a, b) => (a.handOrder ?? Infinity) - (b.handOrder ?? Infinity))
+        .map((p) => ({ id: p.id, pass: p.memberSubject.slice("roster:".length), name: p.name, raisedAt: p.raisedAt, speaking: !!p.speaking })),
+    };
+  }
+
+  moderateRoster(actor: SfuActor, roomId: string, command: RosterMeetingCommand) {
+    return this.serial(async () => {
+      this.assertRosterHost(actor, roomId);
+      const room = this.rooms.get(roomId)!;
+      switch (command.action) {
+        case "lock": room.locked = command.locked; break;
+        case "focus": room.focus = command.focus; break;
+        case "allow":
+        case "withdraw": {
+          const target = room.participants.get(command.identity);
+          if (!target?.externalSession || target.revoked || target.pendingRemoval || target.leaseUntil <= this.now()) throw denied();
+          await this.setRosterSpeaking(room, target, command.action === "allow");
+          break;
+        }
+        case "mute-all": {
+          const results = await Promise.allSettled([...room.participants.values()]
+            .filter((target) => target.externalSession && target.speaking && !target.revoked)
+            .map((target) => this.setRosterSpeaking(room, target, false)));
+          if (results.some((result) => result.status === "rejected")) throw unavailable();
+          break;
+        }
+      }
+      return this.rosterModeration(actor, roomId);
+    });
+  }
+
+  private async setRosterSpeaking(room: Room, target: SfuParticipant, speaking: boolean) {
+    if (!!target.speaking === speaking) return;
+    try {
+      await this.upstream(() => this.admin.updateParticipant(ROOM_PREFIX + room.id, target.id, {
+        permission: { ...permissions("listener"), canPublish: speaking, canPublishSources: speaking ? [TrackSource.MICROPHONE] : [] },
+      }));
+      target.speaking = speaking;
+      target.raisedAt = undefined;
+      target.handOrder = undefined;
+    } catch (error) {
+      await this.removeRoster(room, target).catch(() => undefined);
+      throw error;
+    }
   }
 
   private async removeRoster(room: Room, target: SfuParticipant): Promise<void> {
@@ -356,10 +449,14 @@ export class PrivateMeetingSfu {
       });
       const grant = payload.video as VideoGrant | undefined;
       if (grant?.roomJoin !== true || !grant.room?.startsWith(ROOM_PREFIX) || !payload.sub) return;
-      const lease = {
-        roomId: grant.room.slice(ROOM_PREFIX.length),
+      const roomId = grant.room.slice(ROOM_PREFIX.length);
+      const participant = this.rooms.get(roomId)?.participants.get(payload.sub);
+      const lease: SignalLease = {
+        roomId,
         identity: payload.sub,
         publisher: grant.canPublish !== false || Boolean(grant.canPublishSources?.length),
+        microphoneOnly: Boolean(participant?.externalSession),
+        screenOnly: participant?.role === "cohost",
       };
       return this.findLease(lease) ? lease : undefined;
     } catch {
@@ -373,12 +470,14 @@ export class PrivateMeetingSfu {
     const participant = room.participants.get(identity);
     if (!participant || participant.revoked || participant.pendingRemoval || participant.leaseUntil <= this.now()
       || (participant.role === "listener" && publisher)) return;
+    if (room.locked && (participant.externalSession || participant.role === "cohost") && !participant.entered) return;
     return participant;
   }
 
   attachSignal(lease: SignalLease, close: () => void): (() => void) | undefined {
     const participant = this.findLease(lease);
     if (!participant) return;
+    participant.entered = true;
     participant.closeSignal?.();
     participant.closeSignal = close;
     return () => {

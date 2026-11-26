@@ -34,6 +34,13 @@ const verifyBody = z.strictObject({
 const batchBody = z.strictObject({ row_ids: z.array(recordId).min(1).max(MAX_ROSTER_BATCH) });
 const reissueBody = z.strictObject({ row_id: recordId });
 const generationBody = z.strictObject({ generation: z.number().int().positive() });
+const moderationBody = z.discriminatedUnion("action", [
+  z.strictObject({ action: z.literal("lock"), locked: z.boolean() }),
+  z.strictObject({ action: z.literal("focus"), focus: z.enum(["auto", "speaker", "screen"]) }),
+  z.strictObject({ action: z.literal("allow"), identity: z.uuid() }),
+  z.strictObject({ action: z.literal("withdraw"), identity: z.uuid() }),
+  z.strictObject({ action: z.literal("mute-all") }),
+]);
 
 type Options = {
   service?: RosterMeetingService;
@@ -122,6 +129,14 @@ export function createMeetingRosterRoutes(options: Options = {}) {
     await next();
   };
   const database = (c: Context<AppBindings>) => dbs.get(c.req.raw)!;
+  const hostActor = (c: Context<AppBindings>) => {
+    const { exp, name } = c.var.user.raw;
+    if (typeof exp !== "number" || !Number.isFinite(exp) || exp * 1000 <= Date.now()) throw rosterDenied();
+    return {
+      workspace: database(c), subject: c.var.user.subject, expiresAt: exp * 1000, workspaceAdmin: true,
+      name: typeof name === "string" && name.trim() ? name.trim().slice(0, 96) : "主持人",
+    };
+  };
   const requireOrigin: MiddlewareHandler<AppBindings> = async (c, next) => {
     service.assertEnabled();
     if (c.req.header("origin") !== configuredOrigin(origin)) throw rosterDenied();
@@ -148,6 +163,10 @@ export function createMeetingRosterRoutes(options: Options = {}) {
   });
   app.get(publicPath + "/session", async (c) => c.json(await service.session(getCookie(c, cookieName))));
   app.post(publicPath + "/credentials", requireOrigin, async (c) => c.json(await service.credentials(getCookie(c, cookieName))));
+  app.post(publicPath + "/raise-hand", requireOrigin, async (c) => {
+    await service.raiseHand(getCookie(c, cookieName));
+    return c.body(null, 204);
+  });
 
   app.use(adminPath + "/:meeting/*", headers, oidc, admin);
   app.get(adminPath, headers, oidc, admin, async (c) => c.json({ meetings: await service.list(database(c)) }));
@@ -170,17 +189,15 @@ export function createMeetingRosterRoutes(options: Options = {}) {
     return c.body(null, 204);
   });
   app.post(adminPath + "/:meeting/start", async (c) => {
-    const { exp, name } = c.var.user.raw;
-    if (typeof exp !== "number" || !Number.isFinite(exp) || exp * 1000 <= Date.now()) throw rosterDenied();
-    return c.json(await service.start({
-      workspace: database(c), subject: c.var.user.subject, expiresAt: exp * 1000,
-      name: typeof name === "string" && name.trim() ? name.trim().slice(0, 96) : "主持人",
-    }, param(c, "meeting")), 201);
+    return c.json(await service.start(hostActor(c), param(c, "meeting")), 201);
   });
   app.post(adminPath + "/:meeting/end", async (c) => {
-    await service.end(database(c), param(c, "meeting"));
+    await service.end(hostActor(c), param(c, "meeting"));
     return c.body(null, 204);
   });
+  app.get(adminPath + "/:meeting/moderation", async (c) => c.json(await service.moderation(hostActor(c), param(c, "meeting"))));
+  app.post(adminPath + "/:meeting/moderation", async (c) =>
+    c.json(await service.moderation(hostActor(c), param(c, "meeting"), await input(c, moderationBody))));
   app.get(adminPath + "/:meeting/waiting", async (c) => c.json({
     waiting: await service.waiting(database(c), param(c, "meeting")),
   }));

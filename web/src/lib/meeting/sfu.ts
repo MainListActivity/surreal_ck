@@ -2,6 +2,7 @@ import type {
   MeetingSfuCredentials,
   MeetingSfuParticipant,
   MeetingSfuRoom,
+  RosterMeetingFocus,
 } from "@surreal-ck/shared";
 import type { Track } from "livekit-client";
 import { refresh } from "../auth";
@@ -11,12 +12,14 @@ export type MeetingSubscription = {
   identity: string;
   source: Track.Source;
   host: boolean;
+  cohost?: boolean;
 };
 
 export function selectedMeetingSubscriptions(
   publications: MeetingSubscription[],
   activeSpeakers: string[],
   policy: "desktop" | "mobile" | "audio",
+  focus?: RosterMeetingFocus,
 ): Set<string> {
   const host = publications.find((item) => item.host)?.identity;
   const audio = publications.filter((item) => item.source === "microphone");
@@ -24,6 +27,20 @@ export function selectedMeetingSubscriptions(
     ?? (audio.some((item) => item.identity === host) ? host : audio[0]?.identity);
   const selected = new Set(audio.filter((item) => policy === "desktop" || item.identity === speaker).map((item) => item.id));
   if (policy !== "audio") {
+    if (focus) {
+      const share = publications.filter((item) => (item.host || item.cohost) && item.source === "screen_share")
+        .sort((a, b) => Number(b.host) - Number(a.host) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))[0];
+      const camera = publications.find((item) => item.host && item.source === "camera");
+      const video = focus === "speaker" ? camera : focus === "screen" ? share : share ?? camera;
+      if (video) {
+        selected.add(video.id);
+        if (video === share) {
+          const shareAudio = publications.find((item) => item.identity === share.identity && item.source === "screen_share_audio");
+          if (shareAudio) selected.add(shareAudio.id);
+        }
+      }
+      return selected;
+    }
     const shares = publications.filter((item) => item.source === "screen_share");
     const share = shares.find((item) => item.host) ?? shares.find((item) => item.identity === speaker) ?? shares[0];
     const camera = policy === "desktop" && publications.find(
@@ -71,7 +88,7 @@ export const meetingSfuApi = {
   create: (seats: number) => request<MeetingSfuRoom>("/rooms", "POST", { seats, mode: "daily", large: true }),
   credentials: (id: string) => request<MeetingSfuCredentials>(`${roomPath(id)}/credentials`, "POST"),
   list: (id: string) => request<MeetingSfuParticipant[]>(`${roomPath(id)}/participants`),
-  invite: (id: string, subject: string, role: "speaker" | "listener") =>
+  invite: (id: string, subject: string, role: "speaker" | "listener" | "cohost") =>
     request<MeetingSfuParticipant>(`${roomPath(id)}/participants`, "POST", { subject, role }),
   kick: (id: string, identity: string) => request<void>(`${roomPath(id)}/participants/${encodeURIComponent(identity)}`, "DELETE"),
   stopPublishing: (id: string, identity: string) =>

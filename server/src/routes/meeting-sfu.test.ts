@@ -43,7 +43,7 @@ const topologyFixture = (service?: PrivateMeetingSfu) => createMeetingSfuRoutes(
     const [subject = "host", db = "workspace1"] = rawToken.split("|");
     c.set("user", {
       subject, rawToken,
-      raw: { db, ac: "participant", exp: Math.floor(Date.now() / 1000) + 600, name: subject },
+      raw: { db, ac: subject === "roster-host" ? "admin" : "participant", exp: Math.floor(Date.now() / 1000) + 600, name: subject },
     });
     await next();
   },
@@ -118,8 +118,12 @@ class SignalProbe {
   readonly messages: SignalResponse[] = [];
   readonly closed: Promise<void>;
 
-  constructor(grant: MeetingSfuCredentials) {
-    this.socket = new WebSocket(signalEndpoint(grant));
+  constructor(grant: MeetingSfuCredentials, native = false) {
+    const url = signalEndpoint(grant);
+    if (native) url.searchParams.delete("access_token");
+    this.socket = native
+      ? new WebSocket(url, { headers: { Authorization: `Bearer ${grant.token}` } })
+      : new WebSocket(url);
     this.socket.binaryType = "arraybuffer";
     this.socket.addEventListener("message", ({ data }) => {
       if (data instanceof ArrayBuffer) this.messages.push(SignalResponse.fromBinary(new Uint8Array(data)));
@@ -139,7 +143,7 @@ class SignalProbe {
   addTrack(source = TrackSource.CAMERA, type = TrackType.VIDEO) {
     this.socket.send(new SignalRequest({
       message: { case: "addTrack", value: {
-        cid: `probe-${source}`, name: "probe", type, source,
+        cid: crypto.randomUUID(), name: "probe", type, source,
       } },
     }).toBinary());
   }
@@ -203,6 +207,104 @@ describe.skipIf(!binary)("Bun signal gate and real private LiveKit", () => {
     }
   }, 15_000);
 
+  test("真实 LiveKit：举手、仅麦克风授权、撤权、全员静音与结束", async () => {
+    const actor = { workspace: "workspace1", subject: "host", name: "主持人", workspaceAdmin: true, expiresAt: Date.now() + 60_000 };
+    const guest = { ...actor, subject: "roster:guest", name: "参会人甲", workspaceAdmin: false };
+    const other = { ...guest, subject: "roster:other", name: "参会人乙" };
+    const room = await media.startRoster(actor, 4);
+    const grant = await media.rosterCredentials(guest, room.id, "guest-lease");
+    const otherGrant = await media.rosterCredentials(other, room.id, "other-lease");
+    const signal = new SignalProbe(grant, true);
+    const otherSignal = new SignalProbe(otherGrant);
+    try {
+      expect(await signal.find("join")).toBeDefined();
+      expect(await otherSignal.find("join")).toBeDefined();
+      signal.addTrack(TrackSource.MICROPHONE, TrackType.AUDIO);
+      expect(await signal.find("trackPublished", 250)).toBeUndefined();
+      await media.raiseRosterHand(actor.workspace, room.id, other.subject, "other-lease");
+      await media.raiseRosterHand(actor.workspace, room.id, guest.subject, "guest-lease");
+      await media.raiseRosterHand(actor.workspace, room.id, other.subject, "other-lease");
+      const queued = media.rosterModeration(actor, room.id).participants;
+      expect(queued.map(({ name }) => name)).toEqual(["参会人乙", "参会人甲"]);
+      expect(queued.every(({ raisedAt }) => typeof raisedAt === "number")).toBe(true);
+      await expect(media.moderateRoster({ ...guest, workspaceAdmin: true }, room.id, { action: "mute-all" })).rejects.toMatchObject({ status: 403 });
+      await media.moderateRoster(actor, room.id, { action: "lock", locked: true });
+      await expect(media.rosterCredentials({ ...guest, subject: "roster:new" }, room.id, "new-lease")).rejects.toMatchObject({ status: 423 });
+      expect((await media.rosterCredentials(guest, room.id, "guest-lease")).role).toBe("listener");
+      const id = decodeJwt(grant.token).sub!;
+      await media.moderateRoster(actor, room.id, { action: "allow", identity: id });
+      signal.addTrack(TrackSource.SCREEN_SHARE);
+      signal.addTrack(TrackSource.MICROPHONE, TrackType.VIDEO);
+      expect(await signal.find("trackPublished", 250)).toBeUndefined();
+      signal.addTrack(TrackSource.MICROPHONE, TrackType.AUDIO);
+      expect(await signal.find("trackPublished")).toBeDefined();
+      signal.messages.length = 0;
+      const withdrawAt = performance.now();
+      await media.moderateRoster(actor, room.id, { action: "withdraw", identity: id });
+      signal.addTrack(TrackSource.MICROPHONE, TrackType.AUDIO);
+      expect(await signal.find("trackPublished", 250)).toBeUndefined();
+      expect(performance.now() - withdrawAt).toBeLessThan(2000);
+      await media.moderateRoster(actor, room.id, { action: "allow", identity: id });
+      await media.moderateRoster(actor, room.id, { action: "allow", identity: decodeJwt(otherGrant.token).sub! });
+      expect((await media.moderateRoster(actor, room.id, { action: "mute-all" })).participants.every((p) => !p.speaking)).toBe(true);
+      otherSignal.addTrack(TrackSource.MICROPHONE, TrackType.AUDIO);
+      expect(await otherSignal.find("trackPublished", 250)).toBeUndefined();
+      await media.moderateRoster(actor, room.id, { action: "focus", focus: "screen" });
+      expect(media.rosterFocus(actor.workspace, room.id)).toBe("screen");
+      const endAt = performance.now();
+      await media.endRoster(actor.workspace, room.id);
+      await Promise.race([Promise.all([signal.closed, otherSignal.closed]), Bun.sleep(3000)]);
+      expect(signal.socket.readyState).toBe(WebSocket.CLOSED);
+      expect(otherSignal.socket.readyState).toBe(WebSocket.CLOSED);
+      expect(performance.now() - endAt).toBeLessThan(3000);
+      expect(await media.authorizeSignal(grant.token)).toBeUndefined();
+    } finally {
+      signal.close();
+      otherSignal.close();
+      await media.endRoster(actor.workspace, room.id);
+    }
+  }, 15_000);
+
+  test("真实 LiveKit：协办授权仅适用于当前房间，只能发布屏幕视频", async () => {
+    const host = { workspace: "workspace1", subject: "roster-host", name: "主持人", workspaceAdmin: true, expiresAt: Date.now() + 60_000 };
+    const room = await media.startRoster(host, 2);
+    const path = `/rooms/${room.id}`;
+    const member = "assistant|workspace1";
+    const admin = "roster-host|workspace1";
+    const invite = { role: "cohost", subject: "assistant" };
+    try {
+      expect((await control(`${path}/credentials`, member, "POST")).status).toBe(403);
+      expect((await control(`${path}/participants`, member, "POST", invite)).status).toBe(403);
+      expect((await control(`${path}/participants`, admin, "POST", { ...invite, subject: "disabled" })).status).toBe(403);
+      expect((await control(`${path}/participants`, admin, "POST", invite)).status).toBe(201);
+      expect((await control(`${path}/credentials`, "assistant|other", "POST")).status).toBe(403);
+      expect((await control(`${path}/participants`, member)).status).toBe(403);
+      expect((await control(path, member, "DELETE")).status).toBe(403);
+      await expect(media.moderateRoster({ ...host, subject: "assistant" }, room.id, { action: "focus", focus: "screen" }))
+        .rejects.toMatchObject({ status: 403 });
+      await media.moderateRoster(host, room.id, { action: "lock", locked: true });
+      expect((await control(`${path}/credentials`, member, "POST")).status).toBe(423);
+      await media.moderateRoster(host, room.id, { action: "lock", locked: false });
+      const response = await control(`${path}/credentials`, member, "POST");
+      expect(response.status).toBe(200);
+      const credentials = await response.json() as MeetingSfuCredentials;
+      expect(credentials.role).toBe("cohost");
+      const signal = new SignalProbe(credentials);
+      try {
+        expect(await signal.find("join")).toBeDefined();
+        signal.addTrack(TrackSource.MICROPHONE, TrackType.AUDIO);
+        signal.addTrack(TrackSource.CAMERA);
+        signal.addTrack(TrackSource.SCREEN_SHARE_AUDIO, TrackType.AUDIO);
+        expect(await signal.find("trackPublished", 250)).toBeUndefined();
+        signal.addTrack(TrackSource.SCREEN_SHARE);
+        expect(await signal.find("trackPublished")).toBeDefined();
+        await media.endRoster(host.workspace, room.id);
+        expect(await media.authorizeSignal(credentials.token)).toBeUndefined();
+        expect((await control(`${path}/credentials`, member, "POST")).status).toBe(403);
+      } finally { signal.close(); }
+    } finally { await media.endRoster(host.workspace, room.id); }
+  }, 10_000);
+
   test("rejects forged/cross-workspace grants, enforces listener permission, and revokes active signals", async () => {
     const host = "host|workspace1";
     const listener = "listener|workspace1";
@@ -235,6 +337,12 @@ describe.skipIf(!binary)("Bun signal gate and real private LiveKit", () => {
     const validation = signalEndpoint(listenerGrant, true);
     expect((await fetch(validation, { headers: { origin: appOrigin } })).headers.get("access-control-allow-origin")).toBe(appOrigin);
     expect((await fetch(validation, { headers: { origin: "https://other.example" } })).status).toBe(403);
+    const nativeHeaders = { Authorization: `Bearer ${listenerGrant.token}` };
+    expect((await fetch(validation, { headers: nativeHeaders })).status).toBe(403);
+    const nativeValidation = new URL(validation);
+    nativeValidation.searchParams.delete("access_token");
+    expect((await fetch(nativeValidation, { headers: nativeHeaders })).status).toBe(200);
+    expect((await fetch(nativeValidation, { headers: { Authorization: "Bearer invalid" } })).status).toBe(403);
     const forged = await new SignJWT({ video: { roomJoin: true, room: `ck-meeting-${id}`, canPublish: true } })
       .setIssuer(iss!).setSubject(sub!).setExpirationTime(exp!).setProtectedHeader({ alg: "HS256" })
       .sign(new TextEncoder().encode(randomBytes(32).toString("hex")));

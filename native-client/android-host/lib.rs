@@ -6,6 +6,8 @@ nsh::main!(app_root());
 #[cfg(target_os = "android")]
 fn app_root() -> nsh_core::element::Root {
     app::android_documents::ensure_linked();
+    #[cfg(feature = "experimental-native-roster-sfu")]
+    app::android_roster_sfu::ensure_linked();
     #[cfg(feature = "android-native-oauth")]
     app::android_oauth::ensure_linked();
     #[cfg(feature = "android-native-media")]
