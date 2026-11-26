@@ -57,6 +57,11 @@ function resolveConfig(config: Config) {
   return { privateUrl: privateUrl.origin, signalUrl: signalUrl.origin, appOrigin: appUrl ? appUrl.origin : undefined, key, secret, maxSeats };
 }
 
+export function createPrivateMeetingSfu(config: Config = env): PrivateMeetingSfu | undefined {
+  const resolved = resolveConfig(config);
+  return resolved && new PrivateMeetingSfu(resolved);
+}
+
 function validate<T>(schema: z.ZodType<T>, value: unknown): T {
   const result = schema.safeParse(value);
   if (!result.success) throw new HttpError(400, "meeting-sfu-invalid", "大会请求参数无效");
@@ -87,7 +92,7 @@ export function createMeetingSfuRoutes({
   service,
 }: Options) {
   const resolved = resolveConfig(config);
-  const sfu = service ?? (resolved && new PrivateMeetingSfu(resolved));
+  const sfu = service ?? createPrivateMeetingSfu(config);
   const signalRequests = new WeakMap<Request, { lease: SignalLease; upstream: URL }>();
 
   function requireSfu(): PrivateMeetingSfu {
@@ -110,7 +115,7 @@ export function createMeetingSfuRoutes({
     }
     if (!(await checkTokenActivity(user.rawToken))) throw new HttpError(401, "oidc-revoked", "登录会话已失效");
     actors.set(c.req.raw, {
-      workspace: db, subject: user.subject, expiresAt,
+      workspace: db, subject: user.subject, expiresAt, workspaceAdmin: ac === "admin",
       name: typeof name === "string" && name.trim() ? name.trim().slice(0, 96) : "参会人",
     });
     c.header("Cache-Control", "no-store");

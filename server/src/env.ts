@@ -26,6 +26,13 @@ const EnvSchema = z.object({
   MEETING_SFU_KEY: z.preprocess((v) => v === "" ? undefined : v, z.string().min(8).optional()),
   MEETING_SFU_SECRET: z.preprocess((v) => v === "" ? undefined : v, z.string().min(32).optional()),
   MEETING_SFU_MAX_SEATS: z.coerce.number().int().min(1).max(30).default(30),
+  MEETING_GUEST_ORIGIN: z.preprocess(value => value === "" ? undefined : value, z.string().url().optional()),
+  MEETING_GUEST_TRUST_PROXY: z.enum(["0", "1"]).default("0"),
+  MEETING_ROSTER_PEPPER: z.preprocess(
+    (value) => value === "" ? undefined : value,
+    z.string().min(32).optional(),
+  ),
+  MEETING_ROSTER_ORIGIN: z.preprocess((value) => value === "" ? undefined : value, z.url().optional()),
 
   SURREAL_URL: z.string().min(1),
   SURREAL_NS: z.string().min(1).default("main"),

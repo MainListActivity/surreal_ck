@@ -646,8 +646,9 @@ describe("workspace template scripts", () => {
 
   test("071：名册会议在 V2 会议控制面后追加", async () => {
     const scripts = await loadTemplateScripts();
-    expect(WORKSPACE_TEMPLATE_VERSION).toBe(71);
-    expect(scripts.at(-1)?.name).toBe("071-roster-meeting.surql");
+    expect(scripts.find((script) => script.version === 71)?.name).toBe("071-roster-meeting.surql");
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(72);
+    expect(scripts.at(-1)?.name).toBe("072-roster-meeting-sessions.surql");
   });
 
   test("外部协作者门户 v2 的四个迁移按顺序追加", async () => {

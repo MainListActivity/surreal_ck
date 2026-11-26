@@ -16,11 +16,12 @@ const JOIN_TOKEN_SECONDS = 90;
 const LEASE_MS = 2 * 60_000;
 const TICK_MS = 5_000;
 
-export type SfuActor = { workspace: string; subject: string; name: string; expiresAt: number };
+export type SfuActor = { workspace: string; subject: string; name: string; expiresAt: number; workspaceAdmin?: boolean };
 type Room = MeetingSfuRoom & {
   workspace: string;
   host: string;
   closing: boolean;
+  managed: boolean;
   participants: Map<string, SfuParticipant>;
   bySubject: Map<string, SfuParticipant>;
 };
@@ -28,6 +29,7 @@ type SfuParticipant = MeetingSfuParticipant & {
   leaseUntil: number;
   pendingRemoval: boolean;
   closeSignal?: () => void;
+  externalSession?: string;
 };
 
 type Admin = Pick<RoomServiceClient, "createRoom" | "listRooms" | "deleteRoom" | "removeParticipant" | "updateParticipant">;
@@ -150,23 +152,34 @@ export class PrivateMeetingSfu {
       await Promise.all([...room.participants.values()].map(async (participant) => {
         if (participant.pendingRemoval || (participant.leaseUntil !== 0 && participant.leaseUntil <= now)) {
           participant.leaseUntil = 0;
-          await this.dropParticipant(room, participant).catch(() => undefined);
+          const removal = participant.externalSession ? this.removeRoster(room, participant) : this.dropParticipant(room, participant);
+          await removal.catch(() => undefined);
         }
       }));
     }));
   }
 
+  get maxSeats(): number { return this.config.maxSeats; }
+
   create(actor: SfuActor, seats: number) {
+    return this.createRoom(actor, seats, false);
+  }
+
+  startRoster(actor: SfuActor, seats: number, endsAt?: number) {
+    return this.createRoom(actor, seats, true, endsAt);
+  }
+
+  private createRoom(actor: SfuActor, seats: number, managed: boolean, endsAt = Infinity) {
     return this.serial(async () => {
       await this.initialize();
-      if (actor.expiresAt <= this.now()) throw expired();
+      if (Math.min(actor.expiresAt, endsAt) <= this.now()) throw expired();
       if (!Number.isInteger(seats) || seats < 1 || seats > this.config.maxSeats) throw full();
       const reserved = [...this.rooms.values()].reduce((sum, room) => sum + room.seats, 0);
       if (seats + reserved > this.config.maxSeats) throw full();
       const id = randomUUID();
       const room: Room = {
         id, seats, topology: "sfu", workspace: actor.workspace, host: actor.subject,
-        expiresAt: this.now() + ROOM_SECONDS * 1000, closing: false,
+        expiresAt: Math.min(endsAt, this.now() + ROOM_SECONDS * 1000), closing: false, managed,
         participants: new Map(), bySubject: new Map(),
       };
       this.addParticipant(room, actor.subject, actor.name, "host");
@@ -206,6 +219,7 @@ export class PrivateMeetingSfu {
   invite(actor: SfuActor, roomId: string, subject: string, role: Exclude<MeetingSfuRole, "host">) {
     return this.serial(async () => {
       const room = this.access(actor, roomId, true);
+      if (room.managed) throw denied();
       const existing = room.bySubject.get(subject);
       if (existing?.revoked || existing?.role === "host" || (existing && existing.role !== role)) throw denied();
       return participantView(existing ?? this.addParticipant(room, subject, "参会人", role));
@@ -214,6 +228,7 @@ export class PrivateMeetingSfu {
 
   participants(actor: SfuActor, roomId: string) {
     const room = this.access(actor, roomId, true);
+    if (room.managed && !actor.workspaceAdmin) throw denied();
     return [...room.participants.values()].map(participantView);
   }
 
@@ -221,25 +236,78 @@ export class PrivateMeetingSfu {
     return this.serial(async () => {
       const room = this.access(actor, roomId);
       const participant = room.bySubject.get(actor.subject);
-      if (!participant || participant.revoked || participant.pendingRemoval) throw denied();
-      const now = this.now();
-      const leaseExpiresAt = Math.min(actor.expiresAt, room.expiresAt, now + LEASE_MS);
-      const ttl = Math.min(JOIN_TOKEN_SECONDS, Math.floor((leaseExpiresAt - now) / 1000));
-      if (ttl < 1) throw expired();
-      participant.name = actor.name;
-      const jwt = new AccessToken(this.config.key, this.config.secret, {
-        identity: participant.id, name: participant.name, metadata: participant.role === "host" ? "host" : undefined, ttl,
-      });
-      jwt.addGrant({ room: ROOM_PREFIX + roomId, roomJoin: true, ...permissions(participant.role) });
-      const token = await jwt.toJwt();
-      participant.leaseUntil = leaseExpiresAt;
-      return { url: this.signalUrl, token, leaseExpiresAt, role: participant.role };
+      if (!participant || participant.externalSession || (room.managed && !actor.workspaceAdmin)) throw denied();
+      return this.mintCredentials(room, participant, actor);
+    });
+  }
+
+  private async mintCredentials(room: Room, participant: SfuParticipant, actor: SfuActor): Promise<MeetingSfuCredentials> {
+    if (participant.revoked || participant.pendingRemoval) throw denied();
+    const now = this.now();
+    const leaseExpiresAt = Math.min(actor.expiresAt, room.expiresAt, now + LEASE_MS);
+    const ttl = Math.min(JOIN_TOKEN_SECONDS, Math.floor((leaseExpiresAt - now) / 1000));
+    if (ttl < 1) throw expired();
+    participant.name = actor.name;
+    const jwt = new AccessToken(this.config.key, this.config.secret, {
+      identity: participant.id, name: participant.name, metadata: participant.role === "host" ? "host" : undefined, ttl,
+    });
+    jwt.addGrant({ room: ROOM_PREFIX + room.id, roomJoin: true, ...permissions(participant.role) });
+    const token = await jwt.toJwt();
+    participant.leaseUntil = leaseExpiresAt;
+    return { url: this.signalUrl, token, leaseExpiresAt, role: participant.role };
+  }
+
+  hasRosterRoom(workspace: string, roomId: string): boolean {
+    const room = this.rooms.get(roomId);
+    return Boolean(room?.managed && room.workspace === workspace && !room.closing && room.expiresAt > this.now());
+  }
+
+  rosterCredentials(actor: SfuActor, roomId: string, session: string): Promise<MeetingSfuCredentials> {
+    return this.serial(async () => {
+      const room = this.access(actor, roomId);
+      if (!room.managed) throw denied();
+      let participant = room.bySubject.get(actor.subject);
+      if (participant && !participant.externalSession) throw denied();
+      if (participant && participant.externalSession !== session) {
+        await this.removeRoster(room, participant);
+        participant = undefined;
+      }
+      if (!participant) {
+        participant = this.addParticipant(room, actor.subject, actor.name, "listener");
+        participant.externalSession = session;
+      }
+      return this.mintCredentials(room, participant, actor);
+    });
+  }
+
+  private async removeRoster(room: Room, target: SfuParticipant): Promise<void> {
+    target.revoked = true;
+    target.leaseUntil = 0;
+    await this.upstream(() => this.dropParticipant(room, target));
+    room.bySubject.delete(target.memberSubject);
+    room.participants.delete(target.id);
+  }
+
+  dropRoster(workspace: string, roomId: string, subject: string) {
+    return this.serial(async () => {
+      const room = this.rooms.get(roomId);
+      if (!room?.managed || room.workspace !== workspace) return;
+      const target = room.bySubject.get(subject);
+      if (target?.externalSession) await this.removeRoster(room, target);
+    });
+  }
+
+  endRoster(workspace: string, roomId: string) {
+    return this.serial(async () => {
+      const room = this.rooms.get(roomId);
+      if (room?.managed && room.workspace === workspace) await this.upstream(() => this.closeRoom(room));
     });
   }
 
   kick(actor: SfuActor, roomId: string, identity: string) {
     return this.serial(async () => {
       const room = this.access(actor, roomId, true);
+      if (room.managed) throw denied();
       const target = room.participants.get(identity);
       if (!target || target.role === "host") throw denied();
       target.revoked = true;
@@ -251,6 +319,7 @@ export class PrivateMeetingSfu {
   stopPublishing(actor: SfuActor, roomId: string, identity: string) {
     return this.serial(async () => {
       const room = this.access(actor, roomId, true);
+      if (room.managed) throw denied();
       const target = room.participants.get(identity);
       if (!target || target.role === "host" || target.revoked) throw denied();
       target.role = "listener";
@@ -270,6 +339,7 @@ export class PrivateMeetingSfu {
   end(actor: SfuActor, roomId: string) {
     return this.serial(async () => {
       const room = this.rooms.get(roomId);
+      if (room?.managed) throw denied();
       if (room?.closing && room.workspace === actor.workspace && room.host === actor.subject && actor.expiresAt > this.now()) {
         await this.upstream(() => this.closeRoom(room));
         return;

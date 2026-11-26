@@ -28,6 +28,9 @@ import { createClaimsPortalRoutes } from "./routes/claims-portal";
 import { ClaimsPortalService } from "./claims-portal/service";
 import { createSessionRoutes } from "./routes/session";
 import { createMeetingIceRoutes } from "./routes/meeting-ice";
+import { createMeetingSfuRoutes, createPrivateMeetingSfu } from "./routes/meeting-sfu";
+import { createMeetingRosterRoutes } from "./routes/meeting-roster";
+import { RosterMeetingService } from "./meeting/roster";
 import { createMeetingV2Routes } from "./routes/meeting-v2";
 import { createMeetingSfuRoutes } from "./routes/meeting-sfu";
 import { createWorkspaceRoutes } from "./routes/workspaces";
@@ -456,6 +459,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     );
 
   const base = new Hono<AppBindings>();
+  const meetingSfu = createPrivateMeetingSfu();
   base.use("*", requestLogger);
   base.onError(handleError);
 
@@ -468,6 +472,8 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     .route("/", createInternalIdpRoutes(workspaceScope))
     .route("/", createSessionRoutes(workspaceScope, idpTokenScopeAdapter, options.requireUser))
     .route("/", createMeetingIceRoutes({ workspaceScope, requireUser: options.requireUser }))
+    .route("/", createMeetingSfuRoutes({ workspaceScope, requireUser: options.requireUser, service: meetingSfu }))
+    .route("/", createMeetingRosterRoutes({ requireUser: options.requireUser, service: new RosterMeetingService({ media: meetingSfu }) }))
     .route("/", createMeetingV2Routes({ workspaceScope, requireUser: options.requireUser }))
     .route("/", createMeetingSfuRoutes({ workspaceScope, requireUser: options.requireUser }))
     .route("/", createInternalAiIdentityRoutes({ db: async () => getRootDatabaseSession("_system"), requireUser: options.requireUser?.() }))
