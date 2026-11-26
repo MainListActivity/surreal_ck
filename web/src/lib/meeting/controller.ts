@@ -66,6 +66,7 @@ export type MeetingControllerDeps = {
   /** 进入任一终态（离会 / 散会 / 被移出 / 失败）时调用，用于立即释放本地设备。 */
   onTerminated?: (phase: MeetingPhase) => void;
   autoTick?: boolean;
+  authorizationLeaseMs?: number;
 };
 
 type EdgeEntry = {
@@ -106,6 +107,9 @@ export class MeetingController {
   #ice: MeetingIce | null = null;
   #lastRenew = 0;
   #timer: ReturnType<typeof setInterval> | null = null;
+  #leaseTimer: ReturnType<typeof setTimeout> | null = null;
+  #heartbeat: ReturnType<typeof setInterval> | null = null;
+  #heartbeatBusy = false;
   #ticking = false;
 
   constructor(deps: MeetingControllerDeps) {
@@ -151,10 +155,14 @@ export class MeetingController {
     await this.#enter(() => this.#deps.rpc.join(code.trim(), joinId), joinId);
   }
 
+  async attach(snapshot: MeetingSnapshot, authorizedAt: number): Promise<void> {
+    await this.#enter(() => Promise.resolve(snapshot), snapshot.local_join ?? "", authorizedAt);
+  }
+
   async invite(memberKeys: string[]): Promise<string[]> {
     const room = this.#snapshot?.room;
     if (!room || this.#phase !== "live") return [];
-    const result = await this.#deps.rpc.invite(room.id, memberKeys);
+    const result = await this.#deps.rpc.invite(room.id, memberKeys, this.#localJoin ?? undefined);
     return result.invited;
   }
 
@@ -207,7 +215,7 @@ export class MeetingController {
     if (this.#ticking || this.#phase !== "live") return;
     this.#ticking = true;
     try {
-      await this.#refreshSnapshot();
+      if (!this.#deps.authorizationLeaseMs) await this.#refreshSnapshot();
       if (this.#phase !== "live") return;
       await this.#ensureIce();
       await this.#pollOffers();
@@ -224,7 +232,7 @@ export class MeetingController {
     }
   }
 
-  async #enter(open: () => Promise<MeetingSnapshot>, joinId: string): Promise<void> {
+  async #enter(open: () => Promise<MeetingSnapshot>, joinId: string, authorizedAt = this.#now()): Promise<void> {
     if (this.#phase !== "idle") throw new Error("会议控制器只能进入一次");
     this.#phase = "joining";
     this.#emit();
@@ -236,6 +244,10 @@ export class MeetingController {
       this.#lastRenew = this.#now();
       this.#phase = "live";
       this.#applySnapshot(snapshot);
+      if (this.#deps.authorizationLeaseMs) {
+        this.#setAuthorizationDeadline(authorizedAt);
+        this.#heartbeat = setInterval(() => void this.#checkAuthorization(), 650);
+      }
       this.#ice = await this.#deps.fetchIce().catch(() => null);
     } catch (error) {
       this.#error = meetingErrorMessage(error);
@@ -243,10 +255,34 @@ export class MeetingController {
       throw error;
     }
     this.#emit();
-    if (this.#deps.autoTick !== false) {
+    if (this.#deps.autoTick !== false && this.#phase === "live") {
       this.#timer = setInterval(() => void this.tick(), TICK_MS);
       void this.tick();
     }
+  }
+
+  async #checkAuthorization(): Promise<void> {
+    if (this.#heartbeatBusy || this.#phase !== "live") return;
+    const started = this.#now();
+    this.#heartbeatBusy = true;
+    try {
+      await this.#refreshSnapshot();
+      if (this.#phase === "live") this.#setAuthorizationDeadline(started);
+    } catch (error) {
+      this.#handleError(error);
+    } finally {
+      this.#heartbeatBusy = false;
+      this.#emit();
+    }
+  }
+
+  #setAuthorizationDeadline(started: number): void {
+    const lease = this.#deps.authorizationLeaseMs;
+    if (!lease) return;
+    if (this.#leaseTimer) clearTimeout(this.#leaseTimer);
+    const remaining = started + lease - this.#now();
+    if (remaining <= 0) this.#terminate("removed");
+    else this.#leaseTimer = setTimeout(() => this.#terminate("removed"), remaining);
   }
 
   async #refreshSnapshot(): Promise<void> {
@@ -257,6 +293,7 @@ export class MeetingController {
     const snapshot = renew
       ? await this.#deps.rpc.renew(room.id, joinId)
       : await this.#deps.rpc.snapshot(room.id, joinId);
+    if (this.#phase !== "live") return;
     if (renew) this.#lastRenew = this.#now();
     this.#applySnapshot(snapshot);
   }
@@ -432,6 +469,8 @@ export class MeetingController {
           peerJoinId: peer.joinId,
           attempt: row.attempt,
           nonce: row.nonce,
+          wireId: row.id,
+          route: row.route,
           offerHash: row.offer_hash,
           answer,
           answerHash: await sha256Hex(answer),
@@ -492,6 +531,10 @@ export class MeetingController {
       this.#terminate(code === "expired" ? "ended" : "removed");
       return;
     }
+    if (code === "denied" && this.#deps.authorizationLeaseMs) {
+      this.#terminate("removed");
+      return;
+    }
     if (code === "rate_limited" || code === "conflict") return;
     this.#error = meetingErrorMessage(error);
   }
@@ -503,6 +546,10 @@ export class MeetingController {
     this.#phase = phase;
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = null;
+    if (this.#leaseTimer) clearTimeout(this.#leaseTimer);
+    if (this.#heartbeat) clearInterval(this.#heartbeat);
+    this.#leaseTimer = null;
+    this.#heartbeat = null;
     for (const peer of this.#peers.values()) peer.edge?.edge.close();
     this.#peers.clear();
     this.#deps.onTerminated?.(phase);

@@ -76,6 +76,8 @@ export type PostAnswerInput = {
   peerJoinId: string;
   attempt: number;
   nonce: string;
+  wireId?: string;
+  route?: MeetingRoute;
   offerHash: string;
   answer: string;
   answerHash: string;
@@ -84,7 +86,7 @@ export type PostAnswerInput = {
 export type MeetingRpc = {
   capability(): Promise<string>;
   create(nonce: string): Promise<MeetingSnapshot>;
-  invite(room: string, recipients: string[]): Promise<MeetingInviteResult>;
+  invite(room: string, recipients: string[], joinId?: string): Promise<MeetingInviteResult>;
   invitations(): Promise<MeetingInvitation[]>;
   join(code: string, joinId: string): Promise<MeetingSnapshot>;
   snapshot(room: string, joinId: string): Promise<MeetingSnapshot>;

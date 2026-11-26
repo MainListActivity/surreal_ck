@@ -1,10 +1,14 @@
 import "./app.css";
 import { mount } from "svelte";
-import App from "./App.svelte";
 
 const target = document.getElementById("app");
 if (!target) throw new Error("#app not found");
 
-const app = mount(App, { target });
-
-export default app;
+if (window.location.pathname === "/meeting/guest") {
+  const token = window.location.hash.slice(1);
+  window.history.replaceState(null, "", "/meeting/guest");
+  void import("./features/meeting/GuestMeetingScreen.svelte").then(({ default: GuestMeetingScreen }) =>
+    mount(GuestMeetingScreen, { target, props: { token } }));
+} else {
+  void import("./App.svelte").then(({ default: App }) => mount(App, { target }));
+}

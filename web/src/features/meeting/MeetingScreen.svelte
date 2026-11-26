@@ -15,6 +15,7 @@
     VideoOff,
   } from "@lucide/svelte";
   import MediaTrackView from "./MediaTrackView.svelte";
+  import GuestHostPanel from "./GuestHostPanel.svelte";
   import type PrivateMeetingView from "./PrivateMeeting.svelte";
   import { selectMeetingTopology } from "@surreal-ck/shared/meeting-sfu";
   import { getSurreal } from "../../lib/surreal";
@@ -41,11 +42,12 @@
     type MeetingInvitation,
   } from "../../lib/meeting/rpc";
   import type { MeetingSource } from "../../lib/meeting/sdp";
+  import { createMeetingV2Rpc, isV2MeetingCode } from "../../lib/meeting/v2";
 
   // M-05 浏览器会议：工作区内部成员免安装入会，与原生 App 共用 V1 网状房间。
   // 设备默认关闭，只在用户点击后申请权限；任何终态都立即 stop 全部本地轨道。
   type Stage = "lobby" | "prejoin" | "room" | "finished";
-  type Pending = { kind: "create" } | { kind: "join"; code: string };
+  type Pending = { kind: "create"; external?: boolean } | { kind: "join"; code: string };
 
   const support = checkMeetingSupport(readMeetingSupportEnv());
   const rpc = createMeetingRpc(getSurreal());
@@ -97,6 +99,8 @@
 
   function nameOf(member: string | null | undefined): string {
     if (!member) return "成员";
+    if (member.startsWith("guest:")) return "访客";
+    if (member.startsWith("member:")) return "工作区成员";
     return memberNames.get(member) ?? member.replace(/^user:/, "");
   }
 
@@ -187,7 +191,7 @@
 
   function openPrejoin(next: Pending): void {
     lobbyError = null;
-    if (next.kind === "join" && !/^[A-Za-z0-9]{4,64}$/.test(next.code.trim())) {
+    if (next.kind === "join" && !/^[A-Za-z0-9]{4,64}$/.test(next.code.trim()) && !isV2MeetingCode(next.code.trim().toUpperCase())) {
       lobbyError = "请输入有效的会议号";
       return;
     }
@@ -206,8 +210,9 @@
     if (!pending || busy) return;
     busy = true;
     lobbyError = null;
+    const v2 = pending.kind === "create" ? pending.external : isV2MeetingCode(pending.code.trim().toUpperCase());
     const next = new MeetingController({
-      rpc,
+      rpc: v2 ? createMeetingV2Rpc("member") : rpc,
       fetchIce: fetchMeetingIce,
       createEdge: (options) => new BrowserMeetingEdge(options),
       localTrack: (source) => media.track(source),
@@ -346,6 +351,7 @@
         <button class="primary" data-testid="meeting-create" onclick={planMeeting}>
           <Video size={16} />立即开会
         </button>
+        <button onclick={() => openPrejoin({ kind: "create", external: true })}>创建可邀请访客的会议</button>
       </div>
       <form class="card" onsubmit={(e) => { e.preventDefault(); openPrejoin({ kind: "join", code: joinCode }); }}>
         <h2>加入会议</h2>
@@ -470,6 +476,9 @@
             </div>
           {/if}
           {#if inviteNotice}<p class="muted">{inviteNotice}</p>{/if}
+          {#if view.room && view.localJoin && isV2MeetingCode(view.room.code)}
+            <GuestHostPanel room={view.room.id} join={view.localJoin} />
+          {/if}
         {/if}
         <h3>聊天</h3>
         <ol class="chat" data-testid="meeting-chat">
