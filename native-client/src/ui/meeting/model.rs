@@ -87,7 +87,7 @@ impl EdgeStatus {
             Self::Direct => "直连",
             Self::Relay => "中继",
             Self::Failed { .. } => "连接失败",
-            Self::Unknown => "本人无边",
+            Self::Unknown => "路径未知",
         }
     }
     pub fn can_retry(&self) -> bool {
@@ -190,6 +190,7 @@ pub enum MeetingUpdate {
     Invitations(Vec<Invitation>),
     Contacts(Vec<Contact>),
     Snapshot(RoomSnapshot),
+    ManagedIceUnavailable(bool),
     Device { source: Source, state: DeviceState },
     Error(MeetingError),
     Left,
@@ -202,6 +203,7 @@ pub struct MeetingView {
     pub invitations: Vec<Invitation>,
     pub contacts: Vec<Contact>,
     pub room: Option<RoomSnapshot>,
+    pub managed_ice_unavailable: bool,
     pub devices: BTreeMap<Source, DeviceState>,
     pub error: Option<MeetingError>,
     pub notice: Option<String>,
@@ -219,6 +221,7 @@ impl Default for MeetingView {
             invitations: vec![],
             contacts: vec![],
             room: None,
+            managed_ice_unavailable: false,
             devices: Source::ALL
                 .into_iter()
                 .map(|s| (s, DeviceState::Off))
@@ -288,6 +291,7 @@ impl MeetingView {
                 if c != Capability::Available {
                     self.stop();
                     self.room = None;
+                    self.managed_ice_unavailable = false;
                 } else if self.room.is_none() {
                     self.stopping = false;
                 }
@@ -295,6 +299,9 @@ impl MeetingView {
             }
             MeetingUpdate::Invitations(i) => self.invitations = i,
             MeetingUpdate::Contacts(c) => self.contacts = c,
+            MeetingUpdate::ManagedIceUnavailable(unavailable) => {
+                self.managed_ice_unavailable = unavailable;
+            }
             MeetingUpdate::Snapshot(r) => {
                 if r.state == RoomState::Active
                     && r.local_join_id.as_ref().is_some_and(|join| {
@@ -360,6 +367,7 @@ impl MeetingView {
             MeetingUpdate::Left | MeetingUpdate::Ended { .. } => {
                 self.stop();
                 self.room = None;
+                self.managed_ice_unavailable = false;
                 self.stopping = false;
                 self.notice = Some(
                     match update {
