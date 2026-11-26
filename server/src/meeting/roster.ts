@@ -11,7 +11,9 @@ import { dateTimeTimestamp, toIsoDateTimeString } from "../db/surreal-values";
 import { env } from "../env";
 import { HttpError } from "../http-error";
 import { generateToken, hashToken, safeTextEqual, signPayload, verifySignature } from "../secure-token";
-import { rosterRoomLocked, type PrivateMeetingSfu, type SfuActor } from "./sfu";
+import { archiveMeeting, verifyArchiveSheets, type archiveConfigSchema, type ExpectedSubject } from "./roster-archive";
+import { castVote, participantPolls, publishPoll, receipt, recordDigest, voteAgendaSchema, voteResults } from "./roster-votes";
+import { rosterRoomLocked, type PrivateMeetingSfu, type RosterSfuEvent, type SfuActor } from "./sfu";
 
 const PASS_TABLE = "roster_meeting_pass";
 const MEETING_TABLE = "roster_meeting";
@@ -20,6 +22,7 @@ const LOCK = 30 * 60_000;
 const SESSION_TTL = 2 * 60 * 60_000;
 const PASS_TTL = 7 * 24 * 60 * 60_000;
 const MAX_BUCKETS = 20_000;
+const MAX_ARCHIVE_ROSTER = 10_000;
 export const MAX_ROSTER_BATCH = 500;
 const slugPattern = /^[a-z0-9][a-z0-9-]{0,62}$/u;
 const passPattern = /^([a-z0-9][a-z0-9-]{0,62})\.[A-Za-z0-9_-]{43}$/u;
@@ -30,6 +33,7 @@ const presetSchema = z.object({
   key: z.string(), sheet_key: z.string(), display_key: z.string(),
   check_key: z.string().optional(), check_label: z.string().optional(), check_mode: checkModeSchema.optional(),
   admission: admissionSchema, concurrency: concurrencySchema,
+  vote_agenda: voteAgendaSchema.optional(), vote_weight_key: z.string().optional(),
 });
 const cookieSchema = z.strictObject({
   slug: z.string().regex(slugPattern), meeting: z.string(), pass: z.string(),
@@ -41,7 +45,8 @@ type Admission = z.infer<typeof admissionSchema>;
 type LeaseState = "waiting" | "admitted" | "kicked";
 type Query = { query(sql: string, vars?: Record<string, unknown>): Promise<unknown> };
 type Media = Pick<PrivateMeetingSfu, "maxSeats" | "startRoster" | "endRoster" | "hasRosterRoom" | "rosterCredentials" | "dropRoster"
-  | "isRosterLocked" | "rosterFocus" | "raiseRosterHand" | "rosterModeration" | "moderateRoster" | "assertRosterHost">;
+  | "isRosterLocked" | "rosterFocus" | "raiseRosterHand" | "rosterModeration" | "moderateRoster" | "assertRosterHost">
+  & Partial<Pick<PrivateMeetingSfu, "setRosterEventSink" | "flushRosterEvents">>;
 type Deps = {
   getSession?: (db: string) => Promise<Query>;
   resolveWorkspace?: typeof resolveWorkspaceBySlug;
@@ -54,6 +59,9 @@ type Meeting = {
   id: RecordId; title: string; roster_sheet: RecordId; display_field: string; check_field?: string;
   check_mode?: z.infer<typeof checkModeSchema>; check_label?: string; admission: Admission;
   concurrency: z.infer<typeof concurrencySchema>; status: "open" | "closed"; scheduled_at: unknown; ends_at?: unknown; room_id?: string;
+  vote_weight_key?: string; vote_agenda?: z.infer<typeof voteAgendaSchema>;
+  roster_snapshot?: ExpectedSubject[]; attendance_sheet?: RecordId; vote_sheet?: RecordId;
+  archived_at?: unknown; ended_at?: unknown;
 };
 type Pass = {
   id: RecordId; meeting: RecordId; roster_row: RecordId; status: "active" | "revoked"; code_hash: string;
@@ -182,6 +190,7 @@ export class RosterMeetingService {
     this.resolveWorkspace = deps.resolveWorkspace ?? resolveWorkspaceBySlug;
     this.getPepper = deps.getPepper ?? (() => env.MEETING_ROSTER_PEPPER);
     this.media = deps.media;
+    this.media?.setRosterEventSink?.((event) => this.recordSfuEvent(event));
     this.now = deps.now ?? Date.now;
     this.remaining = deps.remaining ?? (async (db, database) => {
       const quota = await new SurrealNativeQuotaClient(db).info(database);
@@ -214,6 +223,21 @@ export class RosterMeetingService {
     return statement<Meeting>(await db.query("SELECT * FROM $id;", {
       id: typeof id === "string" ? record(MEETING_TABLE, id) : id,
     }))[0];
+  }
+
+  private async recordSfuEvent(event: RosterSfuEvent) {
+    const db = await this.getSession(event.workspace);
+    const id = new RecordId("roster_meeting_event", "sfu_" + recordDigest(event.pass, event.key));
+    await db.query(`
+      IF !record::exists($id) {
+        LET $identity = (SELECT id, meeting, roster_row FROM $pass)[0];
+        IF $identity != NONE {
+          CREATE $id SET meeting = $identity.meeting, subject = $identity.roster_row, pass = $identity.id,
+            kind = $kind, at = $at, connection = $connection, actor = $actor;
+        };
+      };
+    `, { id, pass: record(PASS_TABLE, event.pass), kind: event.kind, at: new DateTime(new Date(event.at)),
+      connection: event.connection, actor: event.actor });
   }
 
   private async requireMeeting(db: Query, id: string): Promise<Meeting> {
@@ -255,11 +279,13 @@ export class RosterMeetingService {
     const [created] = statement<Meeting>(await db.query(`
       CREATE roster_meeting SET title = $title, roster_sheet = $sheet, scheduled_at = $scheduled, ends_at = $ends,
         display_field = $display, check_field = $check, check_mode = $checkMode, check_label = $checkLabel,
-        admission = $admission, concurrency = $concurrency, created_by = $subject;
+        admission = $admission, concurrency = $concurrency, created_by = $subject,
+        vote_weight_key = $weightKey, vote_agenda = $agenda;
     `, {
       title: input.title, sheet: sheet.id, scheduled: new DateTime(new Date(scheduled)),
       ends: ends === undefined ? undefined : new DateTime(new Date(ends)),
       display, check, checkMode, checkLabel, admission, concurrency, subject,
+      weightKey: (preset || undefined)?.vote_weight_key, agenda: (preset || undefined)?.vote_agenda,
     }));
     if (!created) throw conflict();
     return meetingView(created);
@@ -330,6 +356,7 @@ export class RosterMeetingService {
                 WHERE meeting = $meeting AND roster_row = $entry.row AND status = "active" RETURN id;
               FOR $item IN $retired {
                 CREATE roster_meeting_audit SET action = "revoked", target = $item.id, actor = $actor;
+                CREATE roster_meeting_event SET meeting = $meeting, pass = $item.id, subject = $entry.row, kind = "revoked", actor = $actor;
               };
             };
             CREATE $entry.id SET meeting = $meeting, roster_row = $entry.row,
@@ -445,10 +472,14 @@ export class RosterMeetingService {
             WHERE status = "active" AND lease_generation = $previous AND expires_at > $at RETURN id;
           IF array::len($updated) != 1 { THROW "roster-pass-conflict"; };
           CREATE roster_meeting_audit SET action = "verify_ok", target = $id, actor = $subject;
-          IF $current { CREATE roster_meeting_audit SET action = "replaced", target = $id, actor = $subject; };
+          CREATE roster_meeting_event SET meeting = $meeting, pass = $id, subject = $row, kind = "verified", name = $name, at = $at;
+          IF $current {
+            CREATE roster_meeting_audit SET action = "replaced", target = $id, actor = $subject;
+            CREATE roster_meeting_event SET meeting = $meeting, pass = $id, subject = $row, kind = "replaced", at = $at;
+          };
           COMMIT TRANSACTION;
         `, {
-          meeting: meeting.id, id: pass.id, previous: pass.lease_generation, subject, current,
+          meeting: meeting.id, id: pass.id, row: pass.roster_row, name, previous: pass.lease_generation, subject, current,
           generation, leaseId: session, state, at: new DateTime(new Date(now)),
           deadline: new DateTime(new Date(state === "waiting" ? Math.min(exp, now + WINDOW) : exp)),
         });
@@ -475,7 +506,8 @@ export class RosterMeetingService {
   }
 
   private async withSession<T>(raw: string | undefined, run: (data: {
-    database: string; meeting: Meeting; pass: Pass; state: LeaseState | "replaced" | "revoked"; name: string;
+    db: Query; database: string; meeting: Meeting; pass: Pass; state: LeaseState | "replaced" | "revoked"; name: string;
+    canReadReceipt: boolean;
   }) => Promise<T>) {
     const cookie = this.readCookie(raw);
     const workspace = await this.resolveWorkspace(cookie.slug);
@@ -494,14 +526,17 @@ export class RosterMeetingService {
       else if (pass.lease_state === "kicked") state = "kicked";
       else if (!pass.lease_state || pass.lease_generation !== cookie.generation || dateTimeTimestamp(pass.lease_expires_at) <= this.now()) state = "revoked";
       else state = pass.lease_state;
-      return run({ database, meeting, pass, state, name: name || "" });
+      const canReadReceipt = pass.status === "active" && pass.lease_state === "admitted"
+        && pass.lease_session === cookie.session && pass.lease_generation === cookie.generation;
+      return run({ db, database, meeting, pass, state, name: name || "", canReadReceipt });
     });
   }
 
   session(raw: string | undefined) {
-    return this.withSession(raw, async ({ database, state, meeting, name }) => ({
+    return this.withSession(raw, async ({ database, state, meeting, name, canReadReceipt }) => ({
       state, title: meeting.title, name, check_label: meeting.check_label,
       ended: meeting.status === "closed" ? true : undefined,
+      canReadReceipt: meeting.status === "closed" && canReadReceipt ? true : undefined,
       focus: state === "admitted" && meeting.room_id ? this.media?.rosterFocus(database, meeting.room_id) : undefined,
     }));
   }
@@ -521,6 +556,113 @@ export class RosterMeetingService {
       if (state !== "admitted" || !pass.lease_session) throw rosterDenied();
       if (!meeting.room_id || !this.media) throw noRoom();
       await this.media.raiseRosterHand(database, meeting.room_id, rosterSubject(pass.id), pass.lease_session);
+    });
+  }
+
+  polls(raw: string | undefined) {
+    return this.withSession(raw, async ({ db, meeting, pass, canReadReceipt }) => {
+      if (!canReadReceipt) throw rosterDenied();
+      return participantPolls(db, meeting, pass.roster_row);
+    });
+  }
+
+  vote(raw: string | undefined, poll: string, input: Parameters<typeof castVote>[5]) {
+    return this.withSession(raw, async ({ db, meeting, pass, state, name, canReadReceipt }) => {
+      if (!canReadReceipt || (state !== "admitted" && this.open(meeting))) throw rosterDenied();
+      return castVote(db, meeting, pass, name, poll, input);
+    });
+  }
+
+  voteReceipt(raw: string | undefined, poll: string) {
+    return this.withSession(raw, async ({ db, meeting, pass, canReadReceipt }) => {
+      if (!canReadReceipt) throw rosterDenied();
+      return receipt(db, meeting, pass.roster_row, poll);
+    });
+  }
+
+  hostPolls(database: string, meetingId: string) {
+    return this.withWorkspace(database, async () => {
+      const db = await this.getSession(database);
+      return voteResults(db, await this.requireMeeting(db, meetingId));
+    });
+  }
+
+  openPoll(actor: Actor, meetingId: string, input: Parameters<typeof publishPoll>[2]) {
+    return this.withWorkspace(actor.workspace, async () => {
+      const db = await this.getSession(actor.workspace);
+      const meeting = await this.requireMeeting(db, meetingId);
+      if (!meeting.room_id || !this.media) throw noRoom();
+      this.media.assertRosterHost(actor, meeting.room_id);
+      return publishPoll(db, meeting, input);
+    });
+  }
+
+  async archiveConfig(database: string, meetingId: string) {
+    const db = await this.getSession(database);
+    const meeting = await this.requireMeeting(db, meetingId);
+    return {
+      attendanceSheet: meeting.attendance_sheet && String(meeting.attendance_sheet),
+      voteSheet: meeting.vote_sheet && String(meeting.vote_sheet),
+      weightField: meeting.vote_weight_key,
+      defaults: { agenda: meeting.vote_agenda ?? [], weightField: meeting.vote_weight_key },
+    };
+  }
+
+  bindArchive(database: string, meetingId: string, input: z.infer<typeof archiveConfigSchema>) {
+    return this.withWorkspace(database, async () => {
+      const db = await this.getSession(database);
+      const meeting = await this.requireMeeting(db, meetingId);
+      if (meeting.archived_at && (String(meeting.attendance_sheet) !== input.attendanceSheet
+        || String(meeting.vote_sheet) !== input.voteSheet)) {
+        throw new HttpError(409, "meeting-archive-already-written", "已有归档记录，不能更换归档工作表");
+      }
+      const [roster, attendance, vote] = await Promise.all([
+        this.sheet(db, meeting.roster_sheet),
+        this.sheet(db, record("sheet", input.attendanceSheet)),
+        this.sheet(db, record("sheet", input.voteSheet)),
+      ]);
+      verifyArchiveSheets(roster, attendance, vote, input.weightField);
+      await db.query("UPDATE $id SET attendance_sheet = $attendance, vote_sheet = $vote, vote_weight_key = $weight;", {
+        id: meeting.id, attendance: attendance.id, vote: vote.id, weight: input.weightField,
+      });
+      return this.archiveConfig(database, meetingId);
+    });
+  }
+
+  private async snapshotRoster(db: Query, meeting: Meeting, roster: Sheet): Promise<ExpectedSubject[]> {
+    const subjects = statement<{ id: RecordId; name: unknown }>(await db.query(
+      "SELECT id, $this[$display] AS name FROM type::table($table) ORDER BY id LIMIT $limit;",
+      { display: meeting.display_field, table: roster.table_name, limit: MAX_ARCHIVE_ROSTER + 1 },
+    ));
+    if (subjects.length > MAX_ARCHIVE_ROSTER) {
+      throw new HttpError(409, "meeting-archive-roster-limit", "此会议名册超过归档人数上限，请缩小名册范围");
+    }
+    return subjects.map((subject) => ({ subject: String(subject.id), name: fieldText(subject.name) }));
+  }
+
+  private async writeArchive(db: Query, database: string, meeting: Meeting) {
+    if (!meeting.attendance_sheet || !meeting.vote_sheet) {
+      throw new HttpError(409, "meeting-archive-not-bound", "请先绑定签到和表决工作表");
+    }
+    if (meeting.status === "open" && !meeting.room_id) throw noRoom();
+    if (meeting.room_id && this.media?.flushRosterEvents && !await this.media.flushRosterEvents(meeting.room_id)) {
+      throw new HttpError(503, "meeting-archive-timeline-pending", "会议流水尚未保存完成，请稍后重试归档");
+    }
+    const [roster, attendance, vote] = await Promise.all([
+      this.sheet(db, meeting.roster_sheet), this.sheet(db, meeting.attendance_sheet), this.sheet(db, meeting.vote_sheet),
+    ]);
+    verifyArchiveSheets(roster, attendance, vote);
+    const subjects = meeting.roster_snapshot ?? await this.snapshotRoster(db, meeting, roster);
+    const cutoff = Math.min(this.now(), dateTimeTimestamp(meeting.ended_at) || Infinity, dateTimeTimestamp(meeting.ends_at) || Infinity);
+    return archiveMeeting(db, database, meeting, { attendance, vote }, subjects, cutoff);
+  }
+
+  archive(actor: Actor, meetingId: string) {
+    return this.withWorkspace(actor.workspace, async () => {
+      const db = await this.getSession(actor.workspace);
+      const meeting = await this.requireMeeting(db, meetingId);
+      if (meeting.room_id && this.media?.hasRosterRoom(actor.workspace, meeting.room_id)) this.media.assertRosterHost(actor, meeting.room_id);
+      return this.writeArchive(db, actor.workspace, meeting);
     });
   }
 
@@ -551,9 +693,12 @@ export class RosterMeetingService {
         await db.query(`
           BEGIN TRANSACTION;
           LET $changed = UPDATE $id SET status = "revoked", lease_generation += 1 WHERE status = "active" RETURN id;
-          IF array::len($changed) = 1 { CREATE roster_meeting_audit SET action = "revoked", target = $id, actor = $actor; };
+          IF array::len($changed) = 1 {
+            CREATE roster_meeting_audit SET action = "revoked", target = $id, actor = $actor;
+            CREATE roster_meeting_event SET meeting = $meeting, pass = $id, subject = $row, kind = "revoked", actor = $actor;
+          };
           COMMIT TRANSACTION;
-        `, { id: pass.id, actor });
+        `, { id: pass.id, actor, meeting: meeting.id, row: pass.roster_row });
       } catch (cause) { writeError(cause); }
       if (meeting.room_id) await this.media?.dropRoster(database, meeting.room_id, rosterSubject(pass.id));
     });
@@ -599,11 +744,12 @@ export class RosterMeetingService {
             WHERE status = "active" AND lease_generation = $generation RETURN id;
           IF array::len($changed) != 1 { THROW "roster-pass-conflict"; };
           IF $audit != NONE { CREATE roster_meeting_audit SET action = $audit, target = $id, actor = $actor; };
+          CREATE roster_meeting_event SET meeting = $meeting, pass = $id, subject = $row, kind = $kind, actor = $actor;
           COMMIT TRANSACTION;
         `, {
-          id: pass.id, meeting: meeting.id, generation, next: admitting ? generation : generation + 1,
+          id: pass.id, meeting: meeting.id, row: pass.roster_row, generation, next: admitting ? generation : generation + 1,
           state: admitting ? "admitted" : "kicked", until: new DateTime(new Date(admitting ? deadline : now)),
-          audit: admitting ? undefined : "kicked", actor,
+          audit: admitting ? undefined : "kicked", kind: admitting ? "admitted" : action === "reject" ? "rejected" : "kicked", actor,
         });
       } catch (cause) { writeError(cause); }
       if (!admitting && meeting.room_id) await this.media?.dropRoster(database, meeting.room_id, rosterSubject(pass.id));
@@ -619,15 +765,13 @@ export class RosterMeetingService {
       const meeting = await this.requireMeeting(db, meetingId);
       if (!this.open(meeting) || (meeting.room_id && media.hasRosterRoom(actor.workspace, meeting.room_id))) throw conflict();
       const sheet = await this.sheet(db, meeting.roster_sheet);
-      const [count] = statement<{ total: number }>(await db.query(
-        "SELECT count() AS total FROM type::table($table) GROUP ALL;", { table: sheet.table_name },
-      ));
-      const room = await media.startRoster(actor, Math.min(media.maxSeats, (count?.total ?? 0) + 2),
+      const snapshot = meeting.roster_snapshot ?? await this.snapshotRoster(db, meeting, sheet);
+      const room = await media.startRoster(actor, Math.min(media.maxSeats, snapshot.length + 2),
         dateTimeTimestamp(meeting.ends_at) || undefined);
       try {
         const rows = statement(await db.query(
-          "UPDATE $id SET room_id = $room WHERE status = 'open' AND room_id = $previous RETURN id;",
-          { id: meeting.id, room: room.id, previous: meeting.room_id },
+          "UPDATE $id SET room_id = $room, roster_snapshot = $snapshot WHERE status = 'open' AND room_id = $previous RETURN id;",
+          { id: meeting.id, room: room.id, previous: meeting.room_id, snapshot },
         ));
         if (rows.length !== 1) throw conflict();
       } catch (cause) {
@@ -647,6 +791,10 @@ export class RosterMeetingService {
       if (meeting.room_id && this.media?.hasRosterRoom(database, meeting.room_id)) this.media.assertRosterHost(actor, meeting.room_id);
       await db.query("UPDATE $id SET status = 'closed';", { id: meeting.id });
       if (meeting.room_id) await this.media?.endRoster(database, meeting.room_id);
+      await db.query("UPDATE $id SET ended_at = ended_at ?? time::now();", { id: meeting.id });
+      if (meeting.attendance_sheet && meeting.vote_sheet) {
+        await this.writeArchive(db, database, await this.requireMeeting(db, meetingId));
+      }
     });
   }
 }

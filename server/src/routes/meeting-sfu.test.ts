@@ -1,12 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { ParticipantInfo, Room, SignalRequest, SignalResponse, TrackSource, TrackType } from "@livekit/protocol";
 import type { MeetingSfuCredentials, MeetingSfuParticipant, MeetingSfuRoom } from "@surreal-ck/shared";
 import { Hono } from "hono";
 import { websocket } from "hono/bun";
 import { decodeJwt, SignJWT } from "jose";
 import { handleError } from "../middleware/error";
-import { PrivateMeetingSfu } from "../meeting/sfu";
+import { PrivateMeetingSfu, type RosterSfuEvent } from "../meeting/sfu";
 import { createMeetingSfuRoutes } from "./meeting-sfu";
 
 const key = "ck-tests";
@@ -91,6 +91,150 @@ test("checks the live lease again when a preauthorized upgrade races a demotion 
     await service.kick(host, room.id, admitted.id);
     expect(service.attachSignal(listenerLease!, () => {})).toBeUndefined();
     await expect(service.credentials(guest, room.id)).rejects.toMatchObject({ status: 403 });
+  } finally {
+    service.close();
+  }
+});
+
+function rosterTelemetryFixture() {
+  let now = Date.now();
+  const service = new PrivateMeetingSfu(
+    { privateUrl: privateAddress, signalUrl: signalAddress, key, secret, maxSeats: 4 },
+    {
+      createRoom: async ({ name }) => new Room({ name }),
+      listRooms: async () => [],
+      deleteRoom: async () => {},
+      removeParticipant: async () => {},
+      updateParticipant: async () => new ParticipantInfo(),
+    },
+    () => now,
+  );
+  const host = { workspace: "workspace1", subject: "roster-host", name: "主持人", workspaceAdmin: true, expiresAt: now + 300_000 };
+  const pass = "roster_meeting_pass:fixture";
+  const guest = { ...host, subject: `roster:${pass}`, name: "名册成员", workspaceAdmin: false };
+  const app = topologyFixture(service).onError(handleError);
+  const webhook = "/internal/meeting/sfu/livekit-webhook";
+  const post = async (body: string, signedBody = body) => {
+    const signature = await new SignJWT({ sha256: createHash("sha256").update(signedBody).digest("base64") })
+      .setProtectedHeader({ alg: "HS256" }).setIssuer(key).setExpirationTime("1m")
+      .sign(new TextEncoder().encode(secret));
+    return app.request(webhook, {
+      method: "POST", body, headers: { Authorization: signature, "Content-Type": "application/webhook+json" },
+    });
+  };
+  const body = (event: string, roomId: string, identity: string, sid: string, at = Math.floor(now / 1000) * 1000) =>
+    JSON.stringify({ event, room: { name: `ck-meeting-${roomId}` }, participant: { identity, sid }, createdAt: String(at / 1000) });
+  return { service, host, pass, guest, app, webhook, body, post, now: () => now, advance: () => { now += 1000; } };
+}
+
+test("名册出席仅来自签名媒体事件，同一参与者 SID 的信令恢复不重复签到", async () => {
+  const { service, host, pass, guest, app, webhook, body, post, now, advance } = rosterTelemetryFixture();
+  try {
+    const events: RosterSfuEvent[] = [];
+    service.setRosterEventSink(async (event) => { events.push(event); });
+    const room = await service.startRoster(host, 2);
+    const grant = await service.rosterCredentials(guest, room.id, "guest-session");
+    const identity = decodeJwt(grant.token).sub!;
+    const lease = (await service.authorizeSignal(grant.token))!;
+    service.attachSignal(lease, () => {})?.();
+    service.attachSignal(lease, () => {})?.();
+    const joined = body("participant_joined", room.id, identity, "PA_first");
+    expect((await app.request(webhook, { method: "POST", body: joined, headers: { "x-edge-proxy-secret": "fixture" } })).status).toBe(404);
+    expect((await app.request(webhook, { method: "POST", body: joined })).status).toBe(403);
+    expect((await post(joined, joined + " ")).status).toBe(403);
+    expect((await post(body("participant_connection_aborted", room.id, identity, "PA_aborted"))).status).toBe(204);
+    expect((await post(body("participant_joined", crypto.randomUUID(), identity, "PA_wrong_room"))).status).toBe(204);
+    expect((await post(body("participant_joined", room.id, decodeJwt((await service.credentials(host, room.id)).token).sub!, "PA_host"))).status).toBe(204);
+    expect(events).toEqual([]);
+
+    expect((await post(joined)).status).toBe(204);
+    expect((await post(joined)).status).toBe(204);
+    expect(events).toEqual([expect.objectContaining({
+      workspace: host.workspace, roomId: room.id, pass, kind: "joined", at: Math.floor(now() / 1000) * 1000,
+    })]);
+    advance();
+    const left = body("participant_left", room.id, identity, "PA_first");
+    expect((await post(left)).status).toBe(204);
+    expect((await post(left)).status).toBe(204);
+    expect((await post(joined)).status).toBe(204);
+    expect(events.map((event) => event.kind)).toEqual(["joined", "left"]);
+    expect(events[1]).toMatchObject({ connection: events[0]!.connection, at: Math.floor(now() / 1000) * 1000 });
+    expect(events[0]!.connection).toMatch(/^[a-f0-9-]{36}$/u);
+    expect(events[0]!.connection).not.toBe(identity);
+  } finally {
+    service.close();
+  }
+});
+
+test("重连、替换、踢出和散会均关闭对应出席片段，迟到的旧事件不重开片段", async () => {
+  const { service, host, guest, body, post, now, advance } = rosterTelemetryFixture();
+  try {
+    const events: RosterSfuEvent[] = [];
+    service.setRosterEventSink(async (event) => { events.push(event); });
+    const room = await service.startRoster(host, 3);
+    const other = { ...guest, subject: "roster:roster_meeting_pass:other" };
+    const credential = async (actor: typeof guest, session: string) => decodeJwt((await service.rosterCredentials(actor, room.id, session)).token).sub!;
+    const old = await credential(guest, "first");
+    await post(body("participant_joined", room.id, old, "PA_first"));
+    advance();
+    await post(body("participant_joined", room.id, old, "PA_resume_as_new"));
+    await post(body("participant_left", room.id, old, "PA_first"));
+    advance();
+    const replacement = await credential(guest, "replacement");
+    expect(events.map((event) => event.kind)).toEqual(["joined", "left", "joined", "left"]);
+    expect(events[3]!.at).toBe(now());
+    await post(body("participant_joined", room.id, replacement, "PA_replacement"));
+    await post(body("participant_left", room.id, old, "PA_resume_as_new"));
+    await service.dropRoster(host.workspace, room.id, guest.subject);
+    const otherIdentity = await credential(other, "other");
+    const delayed = body("participant_joined", room.id, otherIdentity, "PA_other");
+    advance();
+    await service.endRoster(host.workspace, room.id);
+    await post(delayed);
+    await post(body("participant_left", room.id, otherIdentity, "PA_other"));
+    await post(delayed);
+
+    expect(events.map((event) => event.kind)).toEqual(["joined", "left", "joined", "left", "joined", "left", "joined", "left"]);
+    for (let i = 0; i < events.length; i += 2) {
+      expect(events[i + 1]).toMatchObject({ connection: events[i]!.connection, pass: events[i]!.pass });
+    }
+    expect(events[7]).toMatchObject({ pass: "roster_meeting_pass:other", at: now() });
+    expect(new Set(events.map((event) => event.key)).size).toBe(events.length);
+  } finally {
+    service.close();
+  }
+});
+
+test("名册会控仅记录真实状态变更，写入失败使用同一事件键按序重试", async () => {
+  const { service, host, pass, guest, body, post, advance } = rosterTelemetryFixture();
+  try {
+    const events: RosterSfuEvent[] = [];
+    let failedKey: string | undefined;
+    service.setRosterEventSink(async (event) => {
+      if (!failedKey) {
+        failedKey = event.key;
+        throw new Error("fixture sink failed");
+      }
+      events.push(event);
+    });
+    const room = await service.startRoster(host, 2);
+    const identity = decodeJwt((await service.rosterCredentials(guest, room.id, "session")).token).sub!;
+    await post(body("participant_joined", room.id, identity, "PA_first"));
+    const raise = () => service.raiseRosterHand(host.workspace, room.id, guest.subject, "session");
+    advance();
+    await raise();
+    await raise();
+    await service.moderateRoster(host, room.id, { action: "allow", identity });
+    await service.moderateRoster(host, room.id, { action: "allow", identity });
+    await service.moderateRoster(host, room.id, { action: "mute-all" });
+    await service.moderateRoster(host, room.id, { action: "withdraw", identity });
+    await service.endRoster(host.workspace, room.id);
+    const deadline = Date.now() + 2000;
+    while (events.length < 5 && Date.now() < deadline) await Bun.sleep(10);
+    expect(events.map((event) => event.kind)).toEqual(["joined", "raised", "allowed", "withdrawn", "left"]);
+    expect(events[0]!.key).toBe(failedKey);
+    expect(events.slice(1, 4).map((event) => event.actor)).toEqual([pass, host.subject, host.subject]);
+    expect(events.every((event) => event.connection === events[0]!.connection)).toBe(true);
   } finally {
     service.close();
   }

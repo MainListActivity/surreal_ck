@@ -5,7 +5,9 @@ import {
   selectMeetingTopology,
 } from "@surreal-ck/shared";
 import { Hono, type MiddlewareHandler } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { upgradeWebSocket } from "hono/bun";
+import { WebhookReceiver } from "livekit-server-sdk";
 import { z } from "zod";
 import { env, type ServerEnv } from "../env";
 import type { AppBindings } from "../hono-types";
@@ -17,6 +19,7 @@ import type { WorkspaceScopeModule } from "../workspaces/workspace-scope";
 
 const apiPath = "/api/meeting/sfu";
 const rtcPath = `${MEETING_SFU_SIGNAL_PATH}/rtc`;
+const webhookPath = "/internal/meeting/sfu/livekit-webhook";
 const newRoom = z.strictObject({
   mode: z.enum(["daily", "controlled"]).default("daily"),
   seats: z.number().int().positive(),
@@ -104,6 +107,7 @@ function validUntil(exp: unknown): number {
 }
 
 const MAX_SIGNAL_FRAME = 256 * 1024;
+const MAX_WEBHOOK_BODY = 256 * 1024;
 const signalParams = [
   "auto_subscribe", "reconnect", "sid", "sdk", "version", "protocol",
   "device_model", "os", "os_version", "browser", "browser_version", "adaptive_stream",
@@ -116,6 +120,7 @@ export function createMeetingSfuRoutes({
 }: Options) {
   const resolved = resolveConfig(config);
   const sfu = service ?? createPrivateMeetingSfu(config);
+  const webhook = resolved && new WebhookReceiver(resolved.key, resolved.secret);
   const signalRequests = new WeakMap<Request, { lease: SignalLease; upstream: URL }>();
 
   function requireSfu(): PrivateMeetingSfu {
@@ -179,6 +184,22 @@ export function createMeetingSfuRoutes({
   };
 
   return new Hono<AppBindings>()
+    .post(
+      webhookPath,
+      (c, next) => c.req.header("x-edge-proxy-secret") === undefined ? next() : c.body(null, 404),
+      bodyLimit({ maxSize: MAX_WEBHOOK_BODY, onError: (c) => c.text("Payload Too Large", 413) }),
+      async (c) => {
+        if (!sfu || !webhook) return c.body(null, 503);
+        const auth = c.req.header("authorization");
+        if (!auth) return c.body(null, 403);
+        const raw = await c.req.text();
+        const event = await webhook.receive(raw, auth).catch(() => undefined);
+        if (!event) return c.body(null, 403);
+        const roomId = sfu.observeLiveKitPresence(event);
+        if (roomId && !await sfu.flushRosterEvents(roomId)) return c.body(null, 503);
+        return c.body(null, 204);
+      },
+    )
     .get(`${apiPath}/availability`, requireUser(), (c) => c.json({ enabled: Boolean(sfu), maxSeats: resolved?.maxSeats ?? 0 }))
     .post(`${apiPath}/rooms`, requireUser(), authenticate, async (c) => {
       const options = validate(newRoom, await c.req.json().catch(() => null));

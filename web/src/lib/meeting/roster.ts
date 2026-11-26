@@ -1,4 +1,7 @@
 import type { MeetingSfuCredentials, RosterMeetingFocus } from "@surreal-ck/shared";
+import type { RosterBallot, RosterPoll } from "./roster-polls";
+
+const publicBase = "/api/meeting/roster";
 
 export type RosterSession = {
   state: "waiting" | "admitted" | "replaced" | "kicked" | "revoked";
@@ -7,6 +10,7 @@ export type RosterSession = {
   check_label?: string;
   focus?: RosterMeetingFocus;
   ended?: boolean;
+  canReadReceipt?: boolean;
 };
 
 export class RosterRequestError extends Error {
@@ -31,11 +35,12 @@ export function rosterVerifyMessage(error: unknown): string {
 }
 
 export async function rosterRequest(path: string, options: {
-  method?: "GET" | "POST" | "DELETE"; body?: unknown; token?: string; fetcher?: typeof fetch;
+  method?: "GET" | "POST" | "PUT" | "DELETE"; body?: unknown; token?: string; fetcher?: typeof fetch;
+  credentials?: "same-origin" | "include";
 } = {}): Promise<Response> {
-  const { method = "GET", body, token, fetcher = fetch } = options;
+  const { method = "GET", body, token, fetcher = fetch, credentials = "same-origin" } = options;
   const response = await fetcher(path, {
-    method, credentials: token ? "omit" : "same-origin", cache: "no-store",
+    method, credentials: token ? "omit" : credentials, cache: "no-store",
     headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(10_000),
@@ -49,12 +54,18 @@ export async function rosterRequest(path: string, options: {
 
 export function createPublicRosterApi(fetcher?: typeof fetch) {
   const request = async <T>(operation: string, method?: "POST", body?: unknown): Promise<T> =>
-    (await rosterRequest(`/api/meeting/roster/${operation}`, { method, body, fetcher })).json() as Promise<T>;
+    (await rosterRequest(`${publicBase}/${operation}`, { method, body, fetcher })).json() as Promise<T>;
+  const pollPath = (poll: string) => `polls/${encodeURIComponent(poll)}`;
   return {
     verify: (pass: string, code: string, check?: string) =>
       request<RosterSession>("verify", "POST", { pass, code, check }),
     session: () => request<RosterSession>("session"),
     credentials: () => request<MeetingSfuCredentials>("credentials", "POST"),
-    raiseHand: () => rosterRequest("/api/meeting/roster/raise-hand", { method: "POST", fetcher }),
+    raiseHand: () => rosterRequest(`${publicBase}/raise-hand`, { method: "POST", fetcher }),
+    polls: async () => (await request<{ polls: RosterPoll[] }>("polls")).polls,
+    vote: (poll: string, input: { option: string; note?: string; requestId?: string }) =>
+      request<RosterBallot>(`${pollPath(poll)}/vote`, "POST", input),
+    receipt: async (poll: string) =>
+      (await rosterRequest(`${publicBase}/${pollPath(poll)}/receipt.pdf`, { fetcher, credentials: "include" })).blob(),
   };
 }

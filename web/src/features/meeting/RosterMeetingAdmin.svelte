@@ -3,15 +3,15 @@
   import { onMount } from "svelte";
   import { getSurreal } from "../../lib/surreal";
   import { createRosterAdminApi, type RosterMeeting, type RosterMeetingInput, type RosterPass, type RosterWaiting } from "../../lib/meeting/roster-admin";
+  import type { RosterWorkbookSheet } from "../../lib/meeting/roster-archive";
+  import RosterMeetingRecords from "./RosterMeetingRecords.svelte";
 
   let { slug, onhost, onend, onback }: {
     slug: string; onhost: (room: string) => void; onend: (room: string | undefined) => void; onback: () => void;
   } = $props();
   const api = $derived(createRosterAdminApi(slug));
-  type Column = { key: string; label?: string };
   type Preset = { key: string; label: string; sheet_key: string };
-  type Sheet = { id: unknown; label: string; workbook_name?: string; table_name: string; column_defs?: Column[];
-    template_sheet_key?: string; presets?: Preset[] };
+  type Sheet = RosterWorkbookSheet & { template_sheet_key?: string; presets?: Preset[] };
   let sheets = $state<Sheet[]>([]);
   let meetings = $state<RosterMeeting[]>([]);
   let meetingId = $state("");
@@ -289,6 +289,9 @@
         {/each}
       </ul>
     {/if}
+    {#key current.id}
+      <RosterMeetingRecords {api} meeting={current} {sheets} />
+    {/key}
     <h3>参会凭证</h3>
     {#if !passes.length}<p>尚未签发凭证。</p>{/if}
     <ul>

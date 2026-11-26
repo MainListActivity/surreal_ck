@@ -1,6 +1,8 @@
 import type { MeetingSfuRoom, RosterMeetingCommand, RosterMeetingModeration } from "@surreal-ck/shared";
 import { refresh } from "../auth";
 import { RosterRequestError, rosterRequest } from "./roster";
+import type { RosterArchiveConfig, RosterArchiveSheets } from "./roster-archive";
+import type { RosterPollInput, RosterPollResult } from "./roster-polls";
 
 export type RosterMeetingInput = {
   title: string; scheduled_at: string; sheet_id: string; preset_key?: string;
@@ -20,7 +22,7 @@ export function createRosterAdminApi(slug: string, getToken: () => Promise<strin
   const base = `/api/workspaces/${encodeURIComponent(slug)}/roster-meetings`;
   const meetingPath = (id: string) => `/${encodeURIComponent(id)}`;
   const passPath = (meeting: string, id: string) => `${meetingPath(meeting)}/passes/${encodeURIComponent(id)}`;
-  async function request(path: string, method?: "POST" | "DELETE", body?: unknown) {
+  async function request(path: string, method?: "POST" | "PUT" | "DELETE", body?: unknown) {
     const token = await getToken();
     if (!token) throw new RosterRequestError(401, "请重新登录后再管理名册会议");
     return rosterRequest(base + path, { token, method, body, fetcher });
@@ -37,6 +39,12 @@ export function createRosterAdminApi(slug: string, getToken: () => Promise<strin
     revoke: (id: string, pass: string) => request(passPath(id, pass), "DELETE"),
     start: (id: string) => json<MeetingSfuRoom>(`${meetingPath(id)}/start`, "POST"),
     end: (id: string) => request(`${meetingPath(id)}/end`, "POST"),
+    polls: async (id: string) => (await json<{ polls: RosterPollResult[] }>(`${meetingPath(id)}/polls`)).polls,
+    createPoll: (id: string, input: RosterPollInput) => request(`${meetingPath(id)}/polls`, "POST", input),
+    archiveConfig: (id: string) => json<RosterArchiveConfig>(`${meetingPath(id)}/archive-config`),
+    saveArchiveConfig: (id: string, input: RosterArchiveSheets & { weightField?: string }) =>
+      request(`${meetingPath(id)}/archive-config`, "PUT", input),
+    archive: (id: string) => json<RosterArchiveSheets>(`${meetingPath(id)}/archive`, "POST"),
     moderation: (id: string) => json<RosterMeetingModeration>(`${meetingPath(id)}/moderation`),
     moderate: (id: string, command: RosterMeetingCommand) =>
       json<RosterMeetingModeration>(`${meetingPath(id)}/moderation`, "POST", command),

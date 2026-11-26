@@ -10,7 +10,7 @@ import {
   type RosterMeetingModeration,
 } from "@surreal-ck/shared";
 import { jwtVerify } from "jose";
-import { AccessToken, RoomServiceClient, TrackSource, type VideoGrant } from "livekit-server-sdk";
+import { AccessToken, RoomServiceClient, TrackSource, type VideoGrant, type WebhookEvent } from "livekit-server-sdk";
 import { HttpError } from "../http-error";
 
 const ROOM_PREFIX = "ck-meeting-";
@@ -18,6 +18,28 @@ const ROOM_SECONDS = 2 * 60 * 60;
 const JOIN_TOKEN_SECONDS = 90;
 const LEASE_MS = 2 * 60_000;
 const TICK_MS = 5_000;
+const WEBHOOK_GRACE_MS = 5 * 60_000;
+const ROSTER_SUBJECT_PREFIX = "roster:";
+
+export type RosterSfuEvent = {
+  workspace: string;
+  roomId: string;
+  pass: string;
+  kind: "joined" | "left" | "raised" | "allowed" | "withdrawn";
+  at: number;
+  connection?: string;
+  actor?: string;
+  key: string;
+};
+type RosterEventSink = (event: RosterSfuEvent) => Promise<void>;
+type Presence = {
+  roomId: string;
+  workspace: string;
+  pass: string;
+  seen: Set<string>;
+  active?: { sid: string; connection: string; at: number };
+  retiredAt?: number;
+};
 
 export type SfuActor = { workspace: string; subject: string; name: string; expiresAt: number; workspaceAdmin?: boolean };
 type Room = MeetingSfuRoom & {
@@ -78,6 +100,10 @@ export function isSfuRoomId(id: string): boolean {
 
 export class PrivateMeetingSfu {
   private readonly rooms = new Map<string, Room>();
+  private readonly rosterPresence = new Map<string, Presence>();
+  private readonly rosterEvents = new Map<string, RosterSfuEvent[]>();
+  private readonly rosterDeliveries = new Map<string, Promise<void>>();
+  private rosterSink?: RosterEventSink;
   private readonly admin: Admin;
   private readonly verifyKey: Uint8Array;
   private queue: Promise<unknown> = Promise.resolve();
@@ -94,6 +120,97 @@ export class PrivateMeetingSfu {
     this.signalUrl = new URL(MEETING_SFU_SIGNAL_PATH, config.signalUrl).toString();
     this.admin = admin ?? new RoomServiceClient(config.privateUrl, config.key, config.secret, { requestTimeout: 3 });
     this.verifyKey = new TextEncoder().encode(config.secret);
+  }
+
+  setRosterEventSink(sink: RosterEventSink): void {
+    this.rosterSink = sink;
+  }
+
+  async flushRosterEvents(roomId: string, timeout = 2000): Promise<boolean> {
+    const delivery = this.rosterDeliveries.get(roomId);
+    if (!delivery) return true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([delivery.then(() => true),
+        new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), timeout); })]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private emitRoster(
+    { workspace, roomId, pass }: Presence, kind: RosterSfuEvent["kind"], at: number,
+    connection?: string, actor?: string,
+  ): void {
+    if (!this.rosterSink) return;
+    const key = connection && (kind === "joined" || kind === "left")
+      ? `${roomId}:${connection}:${kind}`
+      : `${roomId}:${randomUUID()}:${kind}`;
+    const event = { workspace, roomId, pass, kind, at, connection, actor, key };
+    const pending = this.rosterEvents.get(roomId);
+    if (pending) {
+      pending.push(event);
+    } else {
+      const queue = [event];
+      this.rosterEvents.set(roomId, queue);
+      this.rosterDeliveries.set(roomId, Promise.resolve().then(() => this.deliverRoster(roomId, queue)));
+    }
+  }
+
+  private async deliverRoster(roomId: string, pending: RosterSfuEvent[]): Promise<void> {
+    let retryMs = 250;
+    while (pending.length) {
+      try {
+        await this.rosterSink!(pending[0]!);
+        pending.shift();
+        retryMs = 250;
+      } catch {
+        console.error("[meeting-sfu] 名册遥测写入失败，将重试", { roomId, pending: pending.length, retryMs });
+        await new Promise<void>((resolve) => { setTimeout(resolve, retryMs).unref(); });
+        retryMs = Math.min(retryMs * 2, 30_000);
+      }
+    }
+    this.rosterEvents.delete(roomId);
+    this.rosterDeliveries.delete(roomId);
+  }
+
+  private leaveRoster(presence: Presence, at: number): void {
+    const active = presence.active;
+    if (!active) return;
+    presence.active = undefined;
+    this.emitRoster(presence, "left", Math.max(at, active.at), active.connection);
+  }
+
+  private retireRoster(identity: string, at: number): void {
+    const presence = this.rosterPresence.get(identity);
+    if (!presence || presence.retiredAt !== undefined) return;
+    presence.retiredAt = at;
+    this.leaveRoster(presence, at);
+  }
+
+  observeLiveKitPresence(event: WebhookEvent): string | undefined {
+    if (event.event !== "participant_joined" && event.event !== "participant_left") return;
+    const { participant, room } = event;
+    if (!participant?.identity || !participant.sid || !room?.name) return;
+    const presence = this.rosterPresence.get(participant.identity);
+    const at = Number(event.createdAt) * 1000;
+    if (!presence || room.name !== ROOM_PREFIX + presence.roomId || !Number.isSafeInteger(at) || at <= 0) return;
+
+    if (event.event === "participant_left") {
+      if (presence.active?.sid === participant.sid) this.leaveRoster(presence, at);
+      else if (!presence.seen.has(participant.sid)) {
+        console.warn("[meeting-sfu] 收到缺少加入事件的名册离场", { roomId: presence.roomId });
+      }
+      return presence.roomId;
+    }
+    if (presence.seen.has(participant.sid) || (presence.retiredAt !== undefined && at > presence.retiredAt)) return presence.roomId;
+    presence.seen.add(participant.sid);
+    this.leaveRoster(presence, at);
+    const connection = randomUUID();
+    presence.active = { sid: participant.sid, connection, at };
+    this.emitRoster(presence, "joined", at, connection);
+    if (presence.retiredAt !== undefined) this.leaveRoster(presence, presence.retiredAt);
+    return presence.roomId;
   }
 
   private serial<T>(operation: () => Promise<T>): Promise<T> {
@@ -150,11 +267,16 @@ export class PrivateMeetingSfu {
     room.closing = true;
     for (const participant of room.participants.values()) participant.closeSignal?.();
     await this.deleteRoom(ROOM_PREFIX + room.id);
+    const at = this.now();
+    for (const participant of room.participants.values()) this.retireRoster(participant.id, at);
     this.rooms.delete(room.id);
   }
 
   private async sweep(): Promise<void> {
     const now = this.now();
+    for (const [identity, presence] of this.rosterPresence) {
+      if (presence.retiredAt !== undefined && presence.retiredAt + WEBHOOK_GRACE_MS <= now) this.rosterPresence.delete(identity);
+    }
     await Promise.all([...this.rooms.values()].map(async (room) => {
       if (room.closing || room.expiresAt <= now) {
         await this.closeRoom(room).catch(() => undefined);
@@ -294,6 +416,12 @@ export class PrivateMeetingSfu {
       if (!participant) {
         participant = this.addParticipant(room, actor.subject, actor.name, "listener");
         participant.externalSession = session;
+        if (actor.subject.startsWith(`${ROSTER_SUBJECT_PREFIX}roster_meeting_pass:`)
+          && actor.subject.length > `${ROSTER_SUBJECT_PREFIX}roster_meeting_pass:`.length) {
+          this.rosterPresence.set(participant.id, {
+            workspace: room.workspace, roomId: room.id, pass: actor.subject.slice(ROSTER_SUBJECT_PREFIX.length), seen: new Set(),
+          });
+        }
       }
       return this.mintCredentials(room, participant, actor);
     });
@@ -312,6 +440,8 @@ export class PrivateMeetingSfu {
       if (!target.speaking && target.raisedAt === undefined) {
         target.raisedAt = this.now();
         target.handOrder = room.nextHand++;
+        const presence = this.rosterPresence.get(target.id);
+        if (presence) this.emitRoster(presence, "raised", target.raisedAt, presence.active?.connection, presence.pass);
       }
     });
   }
@@ -343,13 +473,13 @@ export class PrivateMeetingSfu {
         case "withdraw": {
           const target = room.participants.get(command.identity);
           if (!target?.externalSession || target.revoked || target.pendingRemoval || target.leaseUntil <= this.now()) throw denied();
-          await this.setRosterSpeaking(room, target, command.action === "allow");
+          await this.setRosterSpeaking(room, target, command.action === "allow", actor.subject);
           break;
         }
         case "mute-all": {
           const results = await Promise.allSettled([...room.participants.values()]
             .filter((target) => target.externalSession && target.speaking && !target.revoked)
-            .map((target) => this.setRosterSpeaking(room, target, false)));
+            .map((target) => this.setRosterSpeaking(room, target, false, actor.subject)));
           if (results.some((result) => result.status === "rejected")) throw unavailable();
           break;
         }
@@ -358,7 +488,7 @@ export class PrivateMeetingSfu {
     });
   }
 
-  private async setRosterSpeaking(room: Room, target: SfuParticipant, speaking: boolean) {
+  private async setRosterSpeaking(room: Room, target: SfuParticipant, speaking: boolean, actor: string) {
     if (!!target.speaking === speaking) return;
     try {
       await this.upstream(() => this.admin.updateParticipant(ROOM_PREFIX + room.id, target.id, {
@@ -367,6 +497,8 @@ export class PrivateMeetingSfu {
       target.speaking = speaking;
       target.raisedAt = undefined;
       target.handOrder = undefined;
+      const presence = this.rosterPresence.get(target.id);
+      if (presence) this.emitRoster(presence, speaking ? "allowed" : "withdrawn", this.now(), presence.active?.connection, actor);
     } catch (error) {
       await this.removeRoster(room, target).catch(() => undefined);
       throw error;
@@ -377,6 +509,7 @@ export class PrivateMeetingSfu {
     target.revoked = true;
     target.leaseUntil = 0;
     await this.upstream(() => this.dropParticipant(room, target));
+    this.retireRoster(target.id, this.now());
     room.bySubject.delete(target.memberSubject);
     room.participants.delete(target.id);
   }
