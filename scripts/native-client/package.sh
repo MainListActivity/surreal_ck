@@ -59,6 +59,13 @@ case "$target" in
     else
       signing=(--keystore-existing "$ANDROID_KEYSTORE_PATH" --key-alias "$ANDROID_KEY_ALIAS")
     fi
+    roster=()
+    if [[ "${ANDROID_ROSTER_SFU:-0}" == 1 ]]; then
+      : "${ANDROID_ROSTER_WEBRTC_JAR:?set the libwebrtc.jar produced by the locked roster-SFU build}"
+      roster=(--roster-webrtc-jar "$ANDROID_ROSTER_WEBRTC_JAR"
+        --java-source-dir native-client/android-host/android
+        --manifest-fragment native-client/android-host/roster-sfu-manifest.xml)
+    fi
     python scripts/native-client/package-android-host.py --enable-collaboration-host --enable-experimental-oauth \
       --input-apk "$apk" --output-apk "$out/SurrealCK-android-$status.apk" \
       --sdk "$ANDROID_HOME" \
@@ -70,6 +77,7 @@ case "$target" in
       --manifest-fragment native-media-platform/android/documents-manifest.xml \
       --manifest-fragment native-media-platform/android/media-manifest.xml \
       --manifest-fragment native-media-platform/android/auth-manifest.xml \
+      "${roster[@]}" \
       "${signing[@]}"
     "$tools/apksigner" verify --verbose --print-certs "$out/SurrealCK-android-$status.apk" > "$out/apk-verification.txt" ;;
   linux)

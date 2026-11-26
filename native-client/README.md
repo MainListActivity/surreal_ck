@@ -53,7 +53,7 @@ CC=clang-21 CXX=clang++-21 LIBCLANG_PATH=/usr/lib/llvm-21/lib \
   --features desktop,experimental-native-roster-sfu
 ```
 
-在「会议 → 名册核验大会」粘贴邀请并核验，无需参会人账号。主持人先登录并明确选择管理员工作区。外部席位默认只听，获准后仍须在本机点击开麦。该 feature 不启用 Android 或其他平台的名册媒体。
+在「会议 → 名册核验大会」粘贴邀请并核验，无需参会人账号。主持人先登录并明确选择管理员工作区。外部席位默认只听，获准后仍须在本机点击开麦。主持人可在当前大会指定工作区成员担任协办人；协办授权随媒体房间销毁，仅允许共享屏幕。Android 参见 [实验宿主打包说明](android-host/README.md#名册会议-sfu实验)，不支持屏幕共享。
 
 ```sh
 cd native-client

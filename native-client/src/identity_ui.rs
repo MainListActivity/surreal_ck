@@ -162,7 +162,10 @@ struct Directory {
     /// 成员目录与信令使用的 participant RECORD 会话；没有时不得启用聊天。
     #[cfg_attr(not(feature = "experimental-enterprise-signaling"), allow(dead_code))]
     collaboration: Option<Arc<Session>>,
-    #[cfg(all(target_os = "linux", feature = "experimental-native-roster-sfu"))]
+    #[cfg(all(
+        any(target_os = "linux", target_os = "android"),
+        feature = "experimental-native-roster-sfu"
+    ))]
     roster: Option<crate::roster_actor::HostScope>,
     view: DirectoryView,
     message: String,
@@ -379,7 +382,10 @@ async fn login_directory(
         .ensure_current()
         .map_err(|error| error.to_string())?;
     Ok(Directory {
-        #[cfg(all(target_os = "linux", feature = "experimental-native-roster-sfu"))]
+        #[cfg(all(
+            any(target_os = "linux", target_os = "android"),
+            feature = "experimental-native-roster-sfu"
+        ))]
         roster: workspaces
             .workspaces
             .iter()
@@ -441,7 +447,10 @@ async fn switch_directory(previous: Arc<Session>, slug: String) -> Result<Direct
     let mut view = DirectoryView::from_workspaces(&workspaces.workspaces);
     view.select(target, members, collaboration.is_some());
     Ok(Directory {
-        #[cfg(all(target_os = "linux", feature = "experimental-native-roster-sfu"))]
+        #[cfg(all(
+            any(target_os = "linux", target_os = "android"),
+            feature = "experimental-native-roster-sfu"
+        ))]
         roster: crate::roster_actor::HostScope::new(&client, &session, target),
         session,
         collaboration,
@@ -458,7 +467,10 @@ fn start(
     #[cfg(feature = "experimental-enterprise-meeting")] meeting: Option<
         Arc<crate::meeting_actor::Shared>,
     >,
-    #[cfg(all(target_os = "linux", feature = "experimental-native-roster-sfu"))]
+    #[cfg(all(
+        any(target_os = "linux", target_os = "android"),
+        feature = "experimental-native-roster-sfu"
+    ))]
     roster: tokio::sync::watch::Sender<Option<crate::roster_actor::HostScope>>,
 ) -> (
     async_channel::Sender<Command>,
@@ -494,7 +506,7 @@ fn start(
                 tokio::select! {
                     _ = expiry.tick() => {
                         if directory.as_ref().is_some_and(|entry| entry.session.ensure_current().is_err()) {
-                            #[cfg(all(target_os = "linux", feature = "experimental-native-roster-sfu"))]
+                            #[cfg(all(any(target_os = "linux", target_os = "android"), feature = "experimental-native-roster-sfu"))]
                             roster.send_replace(None);
                             #[cfg(feature = "experimental-enterprise-signaling")]
                             {
@@ -532,7 +544,7 @@ fn start(
                             }
                             other => other,
                         };
-                        #[cfg(all(target_os = "linux", feature = "experimental-native-roster-sfu"))]
+                        #[cfg(all(any(target_os = "linux", target_os = "android"), feature = "experimental-native-roster-sfu"))]
                         roster.send_replace(None);
                         abort(&mut pending);
                         #[cfg(feature = "experimental-enterprise-signaling")]
@@ -618,7 +630,7 @@ fn start(
                         pending.take();
                         match result {
                             Ok(next) if next.session.ensure_current().is_ok() => {
-                                #[cfg(all(target_os = "linux", feature = "experimental-native-roster-sfu"))]
+                                #[cfg(all(any(target_os = "linux", target_os = "android"), feature = "experimental-native-roster-sfu"))]
                                 roster.send_replace(next.roster.clone());
                                 let event = Event::Ready(next.view.clone(), next.message.clone());
                                 #[cfg(feature = "experimental-enterprise-meeting")]
@@ -684,7 +696,7 @@ fn start(
                                     directory.take();
                                     let _ = out.send((id, Event::Cleared("登录已过期，请重新登录。".into()))).await;
                                 } else {
-                                    #[cfg(all(target_os = "linux", feature = "experimental-native-roster-sfu"))]
+                                    #[cfg(all(any(target_os = "linux", target_os = "android"), feature = "experimental-native-roster-sfu"))]
                                     roster.send_replace(directory.as_ref().and_then(|entry| entry.roster.clone()));
                                     let message = if directory.is_some() {
                                         format!("切换未完成：{error}。已保留原会话与成员；服务端最近选择可能已更新。")
@@ -744,7 +756,10 @@ fn summary_of(state: &IdentityViewState, available: bool) -> crate::first_screen
 pub fn enterprise_identity(
     summary: Signal<crate::first_screen::IdentitySummary>,
     #[cfg(feature = "experimental-enterprise-meeting")] meeting: &crate::meeting_actor::Bridge,
-    #[cfg(all(target_os = "linux", feature = "experimental-native-roster-sfu"))]
+    #[cfg(all(
+        any(target_os = "linux", target_os = "android"),
+        feature = "experimental-native-roster-sfu"
+    ))]
     roster: tokio::sync::watch::Sender<Option<crate::roster_actor::HostScope>>,
 ) -> impl IntoElement {
     let expanded = signal(false);
@@ -767,7 +782,10 @@ pub fn enterprise_identity(
     let (commands, events) = start(
         #[cfg(feature = "experimental-enterprise-meeting")]
         Some(meeting.shared()),
-        #[cfg(all(target_os = "linux", feature = "experimental-native-roster-sfu"))]
+        #[cfg(all(
+            any(target_os = "linux", target_os = "android"),
+            feature = "experimental-native-roster-sfu"
+        ))]
         roster,
     );
     let cleanup_commands = commands.clone();

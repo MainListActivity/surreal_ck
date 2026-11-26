@@ -24,6 +24,8 @@ env_logger = "0.11"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 nsh-platform-linux = { version = "0.4.0", default-features = false, optional = true }
+
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
 livekit = { version = "=0.12.1", features = ["rustls-tls-webpki-roots"], optional = true }
 futures-util = { version = "0.3", optional = true }
 zeroize = { version = "1", optional = true }
@@ -39,7 +41,6 @@ nsh-platform-windows = { version = "0.4.0", default-features = false, optional =
 [target.'cfg(target_os = "android")'.dependencies]
 surreal-ck-native-media-platform = { path = "../native-media-platform", optional = true }
 jni = { version = "0.21.1", optional = true }
-zeroize = { version = "1", optional = true }
 surreal-ck-native-updater-platform = { path = "../native-updater-platform", optional = true }
 
 [features]
@@ -49,7 +50,7 @@ experimental-enterprise-signaling = ["dep:surreal-ck-native-signaling"]
 experimental-enterprise-media = ["experimental-enterprise-signaling"]
 experimental-enterprise-files = ["experimental-enterprise-signaling"]
 experimental-enterprise-meeting = ["experimental-enterprise-media"]
-experimental-native-roster-sfu = ["dep:livekit", "dep:futures-util", "dep:zeroize"]
+experimental-native-roster-sfu = ["dep:livekit", "dep:futures-util", "dep:zeroize", "dep:jni"]
 experimental-macos-video = ["surreal-ck-native-video-view/macos-appkit", "surreal-ck-native-video-view/experimental-host"]
 experimental-windows-video = ["surreal-ck-native-video-view/windows-d2d", "surreal-ck-native-video-view/experimental-host"]
 android-native-oauth = ["dep:jni", "dep:zeroize"]

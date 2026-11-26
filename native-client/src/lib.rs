@@ -5,6 +5,8 @@ mod android_call_bridge;
 pub mod android_documents;
 #[cfg(all(target_os = "android", feature = "android-native-oauth"))]
 pub mod android_oauth;
+#[cfg(all(target_os = "android", feature = "experimental-native-roster-sfu"))]
+pub mod android_roster_sfu;
 mod bridge;
 mod call_bridge;
 mod call_ui;
@@ -27,11 +29,20 @@ mod meeting_actor;
 pub mod model;
 mod network_config;
 mod network_ui;
-#[cfg(all(target_os = "linux", feature = "experimental-native-roster-sfu"))]
+#[cfg(all(
+    any(target_os = "linux", target_os = "android"),
+    feature = "experimental-native-roster-sfu"
+))]
 mod roster_actor;
-#[cfg(all(target_os = "linux", feature = "experimental-native-roster-sfu"))]
+#[cfg(all(
+    any(target_os = "linux", target_os = "android"),
+    feature = "experimental-native-roster-sfu"
+))]
 mod roster_media;
-#[cfg(all(target_os = "linux", feature = "experimental-native-roster-sfu"))]
+#[cfg(all(
+    any(target_os = "linux", target_os = "android"),
+    feature = "experimental-native-roster-sfu"
+))]
 mod roster_ui;
 #[cfg_attr(feature = "github-manual-updates", allow(dead_code))]
 mod startup;
@@ -579,15 +590,24 @@ pub fn Collaboration() -> impl IntoElement {
                 )),
             ),
         );
-    #[cfg(all(target_os = "linux", feature = "experimental-native-roster-sfu"))]
+    #[cfg(all(
+        any(target_os = "linux", target_os = "android"),
+        feature = "experimental-native-roster-sfu"
+    ))]
     let (roster_host, host_scope) = tokio::sync::watch::channel(None);
-    #[cfg(all(target_os = "linux", feature = "experimental-native-roster-sfu"))]
+    #[cfg(all(
+        any(target_os = "linux", target_os = "android"),
+        feature = "experimental-native-roster-sfu"
+    ))]
     let meeting_page = meeting_page.child(roster_ui::panel(host_scope));
     let identity_panel = identity_ui::enterprise_identity(
         identity,
         #[cfg(feature = "experimental-enterprise-meeting")]
         &meeting_bridge,
-        #[cfg(all(target_os = "linux", feature = "experimental-native-roster-sfu"))]
+        #[cfg(all(
+            any(target_os = "linux", target_os = "android"),
+            feature = "experimental-native-roster-sfu"
+        ))]
         roster_host,
     )
     .into_element();

@@ -16,6 +16,7 @@ pub(crate) fn panel(scope: watch::Receiver<Option<HostScope>>) -> impl IntoEleme
     let code = signal(String::new());
     let check = signal(String::new());
     let confirm_end = signal(false);
+    let cohost_room = signal(String::new());
     let stop = actions.clone();
     cleanup(move || {
         stop.close();
@@ -41,6 +42,7 @@ pub(crate) fn panel(scope: watch::Receiver<Option<HostScope>>) -> impl IntoEleme
             move || {
                 let join = join.clone();
                 let host = host.clone();
+                let enter_cohost = host.clone();
                 ui::card()
                     .child(private_input(invitation, "粘贴名册邀请链接"))
                     .child(private_input(code, "访问码"))
@@ -59,6 +61,30 @@ pub(crate) fn panel(scope: watch::Receiver<Option<HostScope>>) -> impl IntoEleme
                                 code.set(String::new());
                                 check.set(String::new());
                             }
+                        },
+                    ))
+                    .child(when(
+                        move || state.get().member_available,
+                        move || {
+                            let enter = enter_cohost.clone();
+                            view()
+                                .child(
+                                    input()
+                                        .value(move || cohost_room.get())
+                                        .placeholder("协办大会编号")
+                                        .on_change(move |value: &str| {
+                                            cohost_room.set(value.to_owned())
+                                        }),
+                                )
+                                .child(ui::secondary(
+                                    "进入协办席位",
+                                    move || cohost_room.get().trim().is_empty(),
+                                    move || {
+                                        let _ = enter.try_send(Action::Cohost(
+                                            cohost_room.get().trim().to_owned(),
+                                        ));
+                                    },
+                                ))
                         },
                     ))
                     .child(when(
@@ -116,7 +142,7 @@ pub(crate) fn panel(scope: watch::Receiver<Option<HostScope>>) -> impl IntoEleme
         .child(when(
             move || {
                 let s = state.get();
-                s.connected && s.host.is_none()
+                s.connected && s.host.is_none() && !s.cohost
             },
             move || {
                 let raise = raise.clone();
@@ -159,7 +185,43 @@ pub(crate) fn panel(scope: watch::Receiver<Option<HostScope>>) -> impl IntoEleme
                     ))
             },
         ))
+        .child(when(
+            move || cfg!(target_os = "linux") && state.get().cohost,
+            {
+                let actions = actions.clone();
+                move || share_controls(actions.clone(), move || state.get().sharing)
+            },
+        ))
         .child(host_panel(state, actions, confirm_end))
+}
+
+#[cfg(target_os = "linux")]
+fn share_controls(
+    actions: async_channel::Sender<Action>,
+    sharing: impl Fn() -> bool + Copy + 'static,
+) -> impl IntoElement {
+    view()
+        .child(ui::secondary("共享整个屏幕", sharing, {
+            let start = actions.clone();
+            move || {
+                let _ = start.try_send(Action::Share(true));
+            }
+        }))
+        .child(ui::secondary(
+            "停止屏幕共享",
+            move || !sharing(),
+            move || {
+                let _ = actions.try_send(Action::Share(false));
+            },
+        ))
+}
+
+#[cfg(target_os = "android")]
+fn share_controls(
+    _actions: async_channel::Sender<Action>,
+    _sharing: impl Fn() -> bool + Copy + 'static,
+) -> impl IntoElement {
+    view()
 }
 
 fn private_input(value: Signal<String>, placeholder: &'static str) -> impl IntoElement {
@@ -176,6 +238,7 @@ fn host_panel(
     confirm_end: Signal<bool>,
 ) -> impl IntoElement {
     let open = actions.clone();
+    let cohost_subject = signal(String::new());
     view()
         .gap_2()
         .child(each(
@@ -205,7 +268,7 @@ fn host_panel(
                 let screen = actions.clone();
                 let mute = actions.clone();
                 let share = actions.clone();
-                let stop = actions.clone();
+                let designate = actions.clone();
                 let end = actions.clone();
                 let attendee_action = actions.clone();
                 ui::card()
@@ -254,18 +317,34 @@ fn host_panel(
                             let _ = mute.try_send(Action::MuteAll);
                         },
                     ))
-                    .child(ui::secondary(
-                        "共享整个屏幕",
-                        move || state.get().host.is_some_and(|h| h.sharing),
+                    .child(when(
+                        || cfg!(target_os = "linux"),
                         move || {
-                            let _ = share.try_send(Action::Share(true));
+                            share_controls(share.clone(), move || {
+                                state.get().host.is_some_and(|h| h.sharing)
+                            })
                         },
                     ))
+                    .child(ui::note(move || {
+                        state
+                            .get()
+                            .host
+                            .map(|h| format!("协办大会编号：{}", h.room))
+                            .unwrap_or_default()
+                    }))
+                    .child(
+                        input()
+                            .value(move || cohost_subject.get())
+                            .placeholder("工作区成员的 OIDC 主体 ID")
+                            .on_change(move |value: &str| cohost_subject.set(value.to_owned())),
+                    )
                     .child(ui::secondary(
-                        "停止屏幕共享",
-                        move || !state.get().host.is_some_and(|h| h.sharing),
+                        "指定协办人（仅共享屏幕）",
+                        move || cohost_subject.get().trim().is_empty(),
                         move || {
-                            let _ = stop.try_send(Action::Share(false));
+                            let _ = designate.try_send(Action::Designate(
+                                cohost_subject.get().trim().to_owned(),
+                            ));
                         },
                     ))
                     .child(ui::section_label("举手队列与参会人"))

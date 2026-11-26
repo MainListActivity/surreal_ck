@@ -3,7 +3,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use livekit::prelude::*;
 use surreal_ck_native_identity::{
-    IdentityClient, IdentityError, Result, Session, Workspace,
+    IdentityClient, IdentityError, Result, Session, Workspace, WorkspaceRole,
     roster::{Command, Credentials, Focus, Guest, Host, Moderation, State, Status},
 };
 use tokio::{sync::watch, time};
@@ -24,6 +24,9 @@ pub(crate) struct View {
     pub video: Option<String>,
     pub busy: bool,
     pub host_available: bool,
+    pub member_available: bool,
+    pub cohost: bool,
+    pub sharing: bool,
     pub host: Option<HostView>,
 }
 
@@ -37,7 +40,10 @@ pub(crate) enum Action {
     MuteAll,
     Revoke(String),
     End,
+    #[cfg(target_os = "linux")]
     Share(bool),
+    Cohost(String),
+    Designate(String),
     Leave,
     Raise,
     Microphone(bool),
@@ -56,7 +62,7 @@ impl HostScope {
         session: &Arc<Session>,
         workspace: &Workspace,
     ) -> Option<Self> {
-        client.roster_host(session, workspace).ok()?;
+        session.ensure_current().ok()?;
         Some(Self {
             client: client.clone(),
             session: session.clone(),
@@ -67,6 +73,11 @@ impl HostScope {
     fn api(&self) -> Result<Host<'_>> {
         self.client.roster_host(&self.session, &self.workspace)
     }
+
+    fn cohost(&self, room: &str) -> Result<Credentials> {
+        self.client
+            .roster_cohost_credentials(&self.session, &self.workspace, room)
+    }
 }
 
 #[derive(Clone, Default, PartialEq)]
@@ -75,6 +86,7 @@ pub(crate) struct HostView {
     pub locked: bool,
     pub participants: Vec<Attendee>,
     pub sharing: bool,
+    pub room: String,
 }
 
 #[derive(Clone, PartialEq)]
@@ -98,7 +110,12 @@ pub(crate) fn start(
         runtime.block_on(async move {
             loop {
                 let current = scope.borrow_and_update().clone();
-                view.send_modify(|v| v.host_available = current.is_some());
+                view.send_modify(|v| {
+                    v.host_available = current
+                        .as_ref()
+                        .is_some_and(|scope| scope.workspace.role == WorkspaceRole::Admin);
+                    v.member_available = current.is_some();
+                });
                 let action = tokio::select! {
                     biased;
                     changed = scope.changed() => {
@@ -118,13 +135,24 @@ pub(crate) fn start(
                         });
                         join(invitation, code, check, &rx, &view).await
                     }
-                    Action::Host if current.is_some() => {
+                    Action::Host
+                        if current
+                            .as_ref()
+                            .is_some_and(|scope| scope.workspace.role == WorkspaceRole::Admin) =>
+                    {
                         view.send_modify(|v| {
                             v.busy = true;
                             v.host = Some(HostView::default());
                             v.message = "正在读取名册会议".into();
                         });
                         host(current.unwrap(), &mut scope, &rx, &view).await
+                    }
+                    Action::Cohost(id) if current.is_some() => {
+                        view.send_modify(|v| {
+                            v.busy = true;
+                            v.message = "正在连接协办席位".into();
+                        });
+                        cohost(current.unwrap(), id, &mut scope, &rx, &view).await
                     }
                     _ => continue,
                 };
@@ -239,13 +267,17 @@ async fn host(
     view.send_modify(|v| {
         v.connected = true;
         v.message = "已进入主持席位".into();
-        v.host = Some(HostView::default());
+        v.host = Some(HostView {
+            room: room_id.clone(),
+            ..HostView::default()
+        });
     });
     let mut ticks = time::interval(POLL);
     ticks.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
     let mut moderation = None::<Moderation>;
     let mut pending = None::<tokio::task::JoinHandle<Result<HostUpdate>>>;
     let mut queued = std::collections::VecDeque::new();
+    #[cfg(target_os = "linux")]
     let mut share = None;
     let mut video = crate::roster_media::Video::default();
     let result = loop {
@@ -258,6 +290,7 @@ async fn host(
             },
             action = actions.recv() => match action {
                 Err(_) | Ok(Action::Leave) => break Ok(()),
+                #[cfg(target_os = "linux")]
                 Ok(Action::Share(true)) if share.is_none() => {
                     match crate::roster_media::Share::start(&room).await {
                         Ok(active) => {
@@ -269,13 +302,14 @@ async fn host(
                         Err(message) => view.send_modify(|v| v.message = message.into()),
                     }
                 }
+                #[cfg(target_os = "linux")]
                 Ok(Action::Share(false)) => {
                     if let Some(active) = share.take() { active.stop(&room).await; }
                     view.send_modify(|v| {
                         if let Some(host) = &mut v.host { host.sharing = false; }
                     });
                 }
-                Ok(action @ (Action::Lock(_) | Action::Focus(_) | Action::Speak(..) | Action::MuteAll | Action::Revoke(_) | Action::End)) if queued.len() < 16 => queued.push_back(action),
+                Ok(action @ (Action::Lock(_) | Action::Focus(_) | Action::Speak(..) | Action::MuteAll | Action::Revoke(_) | Action::End | Action::Designate(_))) if queued.len() < 16 => queued.push_back(action),
                 _ => {}
             },
             reply = async { pending.as_mut().unwrap().await }, if pending.is_some() => {
@@ -285,6 +319,9 @@ async fn host(
                         view.send_modify(|v| v.message = "已结束全体会议".into());
                         break Ok(());
                     }
+                    Ok(Ok(HostUpdate::Designation(result))) => view.send_modify(|v| {
+                        v.message = result.err().map_or_else(|| "已授权协办人共享屏幕".into(), |error| error.to_string());
+                    }),
                     Ok(Ok(HostUpdate::Snapshot(next, next_lease))) => {
                         lease = next_lease;
                         view.send_modify(|v| {
@@ -332,6 +369,9 @@ async fn host(
                                 api.end(&meeting)?;
                                 return Ok(HostUpdate::Ended);
                             }
+                            Some(Action::Designate(subject)) => {
+                                return Ok(HostUpdate::Designation(api.designate_cohost(&room_id, subject)));
+                            }
                             _ => None,
                         };
                         let snapshot = api.moderation(&meeting, command)?;
@@ -347,6 +387,7 @@ async fn host(
     if let Some(task) = pending {
         task.abort();
     }
+    #[cfg(target_os = "linux")]
     if let Some(active) = share {
         active.stop(&room).await;
     }
@@ -358,7 +399,98 @@ async fn host(
 
 enum HostUpdate {
     Ended,
+    Designation(Result<()>),
     Snapshot(Moderation, u64),
+}
+
+async fn cohost(
+    account: HostScope,
+    id: String,
+    scope: &mut watch::Receiver<Option<HostScope>>,
+    actions: &async_channel::Receiver<Action>,
+    view: &watch::Sender<View>,
+) -> Result<()> {
+    let (room, mut events, mut lease) = {
+        let account = account.clone();
+        let id = id.clone();
+        tokio::select! {
+            _ = scope.changed() => return Ok(()),
+            reply = until_left(actions, async {
+                let credentials = request(move || account.cohost(&id)).await?;
+                let lease = credentials.lease_expires_at;
+                let (room, events) = connect(credentials).await?;
+                Ok::<_, IdentityError>((room, events, lease))
+            }) => {
+                let Some(reply) = reply else { return Ok(()) };
+                reply?
+            }
+        }
+    };
+    let audio = PlatformAudio::new().ok();
+    let mut video = crate::roster_media::Video::default();
+    #[cfg(target_os = "linux")]
+    let mut share = None;
+    let mut renewal = None::<tokio::task::JoinHandle<Result<Credentials>>>;
+    let mut tick = time::interval(POLL);
+    view.send_modify(|v| {
+        v.connected = true;
+        v.cohost = true;
+        v.message = "已进入协办席位 · 仅可共享屏幕".into();
+    });
+    let result = loop {
+        tokio::select! {
+            biased;
+            _ = scope.changed() => break Ok(()),
+            event = events.recv() => match event {
+                None | Some(RoomEvent::Disconnected { .. } | RoomEvent::Reconnecting) => break Ok(()),
+                Some(event) => video.event(event, view),
+            },
+            action = actions.recv() => match action {
+                Err(_) | Ok(Action::Leave) => break Ok(()),
+                #[cfg(target_os = "linux")]
+                Ok(Action::Share(true)) if share.is_none() => match crate::roster_media::Share::start(&room).await {
+                    Ok(active) => {
+                        share = Some(active);
+                        view.send_modify(|v| v.sharing = true);
+                    }
+                    Err(message) => view.send_modify(|v| v.message = message.into()),
+                },
+                #[cfg(target_os = "linux")]
+                Ok(Action::Share(false)) => {
+                    if let Some(active) = share.take() { active.stop(&room).await; }
+                    view.send_modify(|v| v.sharing = false);
+                }
+                _ => {}
+            },
+            reply = async { renewal.as_mut().unwrap().await }, if renewal.is_some() => {
+                renewal = None;
+                match reply {
+                    Ok(Ok(grant)) => lease = grant.lease_expires_at,
+                    Ok(Err(error)) => break Err(error),
+                    Err(_) => break Err(IdentityError::Network),
+                }
+            },
+            _ = tick.tick() => {
+                if now_ms() >= lease { break Err(IdentityError::MeetingExpired); }
+                if renewal.is_none() && lease.saturating_sub(now_ms()) <= LEASE_MARGIN_MS {
+                    let account = account.clone();
+                    let id = id.clone();
+                    renewal = Some(tokio::spawn(request(move || account.cohost(&id))));
+                }
+            }
+        }
+    };
+    if let Some(task) = renewal {
+        task.abort();
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(active) = share {
+        active.stop(&room).await;
+    }
+    drop(video);
+    drop(audio);
+    let _ = room.close().await;
+    result
 }
 
 async fn request<T: Send + 'static>(run: impl FnOnce() -> Result<T> + Send + 'static) -> Result<T> {
@@ -460,6 +592,10 @@ pub(crate) async fn guest(
 pub(crate) async fn connect(
     credentials: Credentials,
 ) -> Result<(Room, tokio::sync::mpsc::UnboundedReceiver<RoomEvent>)> {
+    #[cfg(target_os = "android")]
+    if !crate::android_roster_sfu::ready() {
+        return Err(IdentityError::MeetingUnavailable);
+    }
     let mut options = RoomOptions::default();
     options.single_peer_connection = false;
     time::timeout(
@@ -598,6 +734,11 @@ async fn run_room(
                 }
                 Ok(Action::Microphone(true)) if grant && microphone.is_none()
                     && local.permission().is_some_and(|p| may_publish(p.can_publish, &p.can_publish_sources)) => {
+                    #[cfg(target_os = "android")]
+                    if !crate::android_roster_sfu::request_microphone() {
+                        view.send_modify(|v| v.message = "请授权麦克风，并再次点击开启".into());
+                        continue;
+                    }
                     match Microphone::publish(&room).await {
                         Ok(track) => {
                             microphone = Some(track);

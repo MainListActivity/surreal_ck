@@ -44,6 +44,7 @@ pub struct Status {
 pub enum Role {
     Host,
     Listener,
+    Cohost,
 }
 
 pub struct Credentials {
@@ -174,6 +175,25 @@ impl IdentityClient {
             url,
         })
     }
+
+    pub fn roster_cohost_credentials(
+        &self,
+        session: &Session,
+        workspace: &Workspace,
+        room: &str,
+    ) -> Result<Credentials> {
+        session.require_scope(workspace)?;
+        self.require_session(session)?;
+        let url = endpoint(&self.config.api_base, "/api/meeting/sfu/rooms");
+        let bearer = Zeroizing::new(format!("Bearer {}", session.access_token()));
+        let (data, _) = self.transport.roster(
+            "POST",
+            &append(url, &[room, "credentials"])?,
+            &[("Authorization", &bearer)],
+            None,
+        )?;
+        credentials(&data, Role::Cohost)
+    }
 }
 
 impl Guest {
@@ -294,6 +314,13 @@ impl Host<'_> {
         )
     }
 
+    pub fn designate_cohost(&self, room: &str, subject: &str) -> Result<()> {
+        let url = endpoint(&self.client.config.api_base, "/api/meeting/sfu/rooms");
+        let body = serde_json::json!({ "subject": subject, "role": "cohost" }).to_string();
+        self.request("POST", append(url, &[room, "participants"])?, Some(&body))?;
+        Ok(())
+    }
+
     pub fn moderation(&self, meeting: &str, command: Option<Command<'_>>) -> Result<Moderation> {
         let url = append(self.url.clone(), &[meeting, "moderation"])?;
         let body = command
@@ -333,6 +360,9 @@ mod tests {
         };
         let secure = "https://signal.example/api/meeting/sfu/signal";
         assert!(credentials(body(secure, "listener").as_bytes(), Role::Listener).is_ok());
+        assert!(credentials(body(secure, "cohost").as_bytes(), Role::Cohost).is_ok());
+        assert!(credentials(body(secure, "cohost").as_bytes(), Role::Host).is_err());
+        assert!(credentials(body(secure, "host").as_bytes(), Role::Cohost).is_err());
         assert!(credentials(body(secure, "host").as_bytes(), Role::Listener).is_err());
         assert!(credentials(
             body("https://signal.example/rtc", "listener").as_bytes(),

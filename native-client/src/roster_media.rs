@@ -1,25 +1,30 @@
-use std::{collections::BTreeMap, time::Duration};
+use std::collections::BTreeMap;
+#[cfg(target_os = "linux")]
+use std::time::Duration;
 
 use futures_util::StreamExt;
+#[cfg(target_os = "linux")]
+use livekit::webrtc::{
+    desktop_capturer::{DesktopCaptureSourceType, DesktopCapturer, DesktopCapturerOptions},
+    native::yuv_helper::argb_to_nv12,
+    video_frame::{NV12Buffer, VideoFrame, VideoRotation},
+    video_source::{RtcVideoSource, VideoResolution, native::NativeVideoSource},
+};
 use livekit::{
     prelude::*,
-    webrtc::{
-        desktop_capturer::{DesktopCaptureSourceType, DesktopCapturer, DesktopCapturerOptions},
-        native::yuv_helper::argb_to_nv12,
-        video_frame::{NV12Buffer, VideoFormatType, VideoFrame, VideoRotation},
-        video_source::{RtcVideoSource, VideoResolution, native::NativeVideoSource},
-        video_stream::native::NativeVideoStream,
-    },
+    webrtc::{video_frame::VideoFormatType, video_stream::native::NativeVideoStream},
 };
 use surreal_ck_native_identity::roster::Focus;
 use surreal_ck_native_video_view::{FramePublisher, MAX_FRAME_SIDE, RgbaFrame};
-use tokio::{sync::watch, task::JoinHandle, time};
+#[cfg(target_os = "linux")]
+use tokio::time;
+use tokio::{sync::watch, task::JoinHandle};
 
 use crate::roster_actor::View;
 
 #[derive(Default)]
 pub(crate) struct Video {
-    tracks: BTreeMap<String, (TrackSource, RemoteVideoTrack)>,
+    tracks: BTreeMap<String, (TrackSource, RemoteVideoTrack, bool)>,
     active: Option<Rendered>,
 }
 
@@ -43,9 +48,18 @@ impl Video {
                 track: RemoteTrack::Video(track),
                 publication,
                 participant,
-            } if participant.metadata() == "host" => {
-                self.tracks
-                    .insert(publication.sid().to_string(), (publication.source(), track));
+            } if participant.metadata() == "host"
+                || (participant.metadata() == "cohost"
+                    && publication.source() == TrackSource::Screenshare) =>
+            {
+                self.tracks.insert(
+                    publication.sid().to_string(),
+                    (
+                        publication.source(),
+                        track,
+                        participant.metadata() == "host",
+                    ),
+                );
             }
             RoomEvent::TrackUnsubscribed {
                 track: RemoteTrack::Video(_),
@@ -61,7 +75,12 @@ impl Video {
 
     pub fn refresh(&mut self, view: &watch::Sender<View>) {
         let focus = view.borrow().focus;
-        let find = |source| self.tracks.iter().find(|(_, (kind, _))| *kind == source);
+        let find = |source| {
+            self.tracks
+                .iter()
+                .filter(|(_, (kind, _, _))| *kind == source)
+                .min_by_key(|(sid, (_, _, host))| (!*host, *sid))
+        };
         let selected = match focus {
             Focus::Screen => find(TrackSource::Screenshare),
             Focus::Speaker => find(TrackSource::Camera),
@@ -71,7 +90,7 @@ impl Video {
             return;
         }
         self.active = None;
-        self.active = selected.and_then(|(sid, (_, track))| {
+        self.active = selected.and_then(|(sid, (_, track, _))| {
             let frames = surreal_ck_native_video_view::open_stream().ok()?;
             let out = frames.clone();
             let mut input = NativeVideoStream::new(track.rtc_track());
@@ -118,12 +137,14 @@ impl Video {
     }
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) struct Share {
     sid: TrackSid,
     track: LocalVideoTrack,
     stop: std::sync::mpsc::Sender<()>,
 }
 
+#[cfg(target_os = "linux")]
 impl Share {
     pub async fn start(room: &Room) -> Result<Self, &'static str> {
         let source = NativeVideoSource::new(
