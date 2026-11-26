@@ -2,11 +2,20 @@
   import { onMount } from "svelte";
   import RosterMeetingPolls from "./RosterMeetingPolls.svelte";
   import { Room, RoomEvent, Track, type RemoteTrack, type RemoteTrackPublication } from "livekit-client";
+  import {
+    checkMeetingSupport,
+    IN_APP_LABELS,
+    OPEN_IN_SYSTEM_BROWSER,
+    readMeetingSupportEnv,
+  } from "../../lib/meeting/browser-support";
   import { createPublicRosterApi, rosterExitMessage, rosterVerifyMessage, RosterRequestError, type RosterSession } from "../../lib/meeting/roster";
   import { selectedMeetingSubscriptions } from "../../lib/meeting/sfu";
 
   let { pass, checkLabel }: { pass: string; checkLabel: string } = $props();
   const api = createPublicRosterApi();
+  const supportEnv = readMeetingSupportEnv();
+  const support = checkMeetingSupport(supportEnv);
+  const browserBlocked = support.kind === "in-app" || (!supportEnv.isSecureContext || !supportEnv.hasPeerConnection);
   const mobile = window.matchMedia("(pointer: coarse)").matches;
   let session = $state<RosterSession>();
   let code = $state("");
@@ -224,6 +233,7 @@
   }
 
   onMount(() => {
+    if (browserBlocked) return;
     void poll();
     const timer = setInterval(() => void poll(), 2000);
     return () => {
@@ -234,11 +244,15 @@
   });
 </script>
 
-<svelte:window ononline={() => void poll()} />
+<svelte:window ononline={() => { if (!browserBlocked) void poll(); }} />
 
 <main>
   <h1>{session?.title ?? "名册会议"}</h1>
-  {#if exit}
+  {#if support.kind === "in-app"}
+    <p role="alert">{IN_APP_LABELS[support.app]}内置浏览器不支持会议音视频。{OPEN_IN_SYSTEM_BROWSER}</p>
+  {:else if browserBlocked && support.kind === "unsupported"}
+    <p role="alert">{support.reason}。请使用最新版 Chrome、Edge 或 Safari。</p>
+  {:else if exit}
     <p role="alert">{exit}</p>
   {:else if session}
     <label>参会显示名 <input value={session.name} readonly /></label>
