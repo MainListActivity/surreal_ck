@@ -638,10 +638,16 @@ describe("workspace template scripts", () => {
 
   test("070：独立的 V2 会议控制面不移除 V1", async () => {
     const scripts = await loadTemplateScripts();
-    expect(WORKSPACE_TEMPLATE_VERSION).toBe(70);
-    expect(scripts.at(-2)?.name).toBe("069-native-meeting.surql");
-    expect(scripts.at(-2)?.sql).toContain("fn::meeting_capability");
-    expect(scripts.at(-1)?.name).toBe("070-meeting-v2.surql");
+    const v1 = scripts.find((script) => script.version === 69);
+    expect(v1?.name).toBe("069-native-meeting.surql");
+    expect(v1?.sql).toContain("fn::meeting_capability");
+    expect(scripts.find((script) => script.version === 70)?.name).toBe("070-meeting-v2.surql");
+  });
+
+  test("071：名册会议在 V2 会议控制面后追加", async () => {
+    const scripts = await loadTemplateScripts();
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(71);
+    expect(scripts.at(-1)?.name).toBe("071-roster-meeting.surql");
   });
 
   test("外部协作者门户 v2 的四个迁移按顺序追加", async () => {

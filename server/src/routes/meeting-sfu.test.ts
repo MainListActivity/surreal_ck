@@ -29,8 +29,9 @@ const configBody = [
   "  use_external_ip: false", "  node_ip: 127.0.0.1", "  stun_servers: [127.0.0.1:3478]",
   "room:", "  auto_create: false", "logging:", "  level: error",
 ].join("\n");
-const topologyFixture = () => createMeetingSfuRoutes({
+const topologyFixture = (service?: PrivateMeetingSfu) => createMeetingSfuRoutes({
   config,
+  service,
   workspaceScope: {
     async resolveCollaborationScope({ subject, dbName }) {
       if (subject === "disabled") return { kind: "member-missing" };
@@ -149,6 +150,7 @@ class SignalProbe {
 describe.skipIf(!binary)("Bun signal gate and real private LiveKit", () => {
   let livekit: ReturnType<typeof Bun.spawn>;
   let server: ReturnType<typeof Bun.serve>;
+  const media = new PrivateMeetingSfu({ privateUrl: privateAddress, signalUrl: signalAddress, key, secret, maxSeats: 4 });
 
   beforeAll(async () => {
     livekit = Bun.spawn([binary!], {
@@ -160,14 +162,46 @@ describe.skipIf(!binary)("Bun signal gate and real private LiveKit", () => {
       if (Date.now() >= deadline) throw new Error("LiveKit failed to start");
       await Bun.sleep(50);
     }
-    const app = new Hono().onError(handleError).route("/", topologyFixture());
+    const app = new Hono().onError(handleError).route("/", topologyFixture(media));
     server = Bun.serve({ hostname: "127.0.0.1", port: 18783, fetch: app.fetch, websocket });
   });
 
   afterAll(() => {
+    media.close();
     server?.stop(true);
     livekit?.kill();
   });
+
+  test("名册监听席更换身份并同时关闭旧信令和 LiveKit 参与者", async () => {
+    const actor = { workspace: "workspace1", subject: "host", name: "主持人", expiresAt: Date.now() + 60_000 };
+    const listener = { ...actor, subject: "roster:fixture", name: "名册成员" };
+    const room = await media.startRoster(actor, 2);
+    const first = await media.rosterCredentials(listener, room.id, "first");
+    const firstSignal = new SignalProbe(first);
+    try {
+      expect(await firstSignal.find("join")).toBeDefined();
+      expect(first.role).toBe("listener");
+      expect(decodeJwt(first.token).name).toBe("名册成员");
+      await expect(media.credentials(listener, room.id)).rejects.toThrow();
+      await expect(media.invite(actor, room.id, "member", "speaker")).rejects.toThrow();
+      const second = await media.rosterCredentials(listener, room.id, "second");
+      expect(decodeJwt(second.token).sub).not.toBe(decodeJwt(first.token).sub);
+      await firstSignal.closed;
+      expect((await fetch(signalEndpoint(first, true))).status).toBe(403);
+      const secondSignal = new SignalProbe(second);
+      try {
+        expect(await secondSignal.find("join")).toBeDefined();
+        await media.dropRoster(actor.workspace, room.id, listener.subject);
+        await secondSignal.closed;
+        expect((await fetch(signalEndpoint(second, true))).status).toBe(403);
+      } finally {
+        secondSignal.close();
+      }
+    } finally {
+      firstSignal.close();
+      await media.endRoster(actor.workspace, room.id);
+    }
+  }, 15_000);
 
   test("rejects forged/cross-workspace grants, enforces listener permission, and revokes active signals", async () => {
     const host = "host|workspace1";

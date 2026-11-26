@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import {
     DisconnectReason, Room, RoomEvent, Track, type RemoteTrack, type RemoteTrackPublication,
   } from "livekit-client";
@@ -9,7 +9,9 @@
   import { fetchMeetingIce } from "../../lib/meeting/ice";
   import { meetingSfuApi, selectedMeetingSubscriptions, SfuRequestError } from "../../lib/meeting/sfu";
 
-  let { initialRoom, initialSeats, maxSeats, onback }: { initialRoom: string; initialSeats: number; maxSeats: number; onback: () => void } = $props();
+  let { initialRoom, initialSeats, maxSeats, onback, rosterManaged = false }: {
+    initialRoom: string; initialSeats: number; maxSeats: number; onback: () => void; rosterManaged?: boolean;
+  } = $props();
   let inputId = $state("");
   let seats = $state(10);
   let roomId = $state("");
@@ -39,6 +41,8 @@
 
   $effect(() => { inputId = initialRoom; });
   $effect(() => { seats = Math.min(Math.max(1, initialSeats || 10), maxSeats || 10); });
+
+  onMount(() => { if (rosterManaged) void run(() => enter(initialRoom)); });
 
   function reconcile(current: Room) {
     const publications: RemoteTrackPublication[] = [];
@@ -158,7 +162,7 @@
     status = "connected";
     reconcile(current);
     refreshTimer = setInterval(() => { void refreshLease(); }, 30_000);
-    if (role === "host") {
+    if (role === "host" && !rosterManaged) {
       void refreshAttendees();
       void loadMemberRows(getSurreal()).then((rows) => {
         if (room === current) contacts = rows.flatMap(({ subject, ...member }) => subject ? [{ ...member, subject }] : []);
@@ -246,10 +250,13 @@
 
 <div class="private-meeting" data-testid="private-meeting">
   <header>
-    <h2>私有大会</h2>
-    <button onclick={() => { disconnect(); onback(); }}>返回普通会议</button>
+    <h2>{rosterManaged ? "名册会议主持席" : "私有大会"}</h2>
+    <button onclick={() => { disconnect(); onback(); }}>{rosterManaged ? "关闭主持席" : "返回普通会议"}</button>
   </header>
   {#if status === "idle"}
+    {#if rosterManaged}
+      <button disabled={busy} onclick={() => void run(() => enter(initialRoom))}>连接主持席</button>
+    {:else}
     <p>媒体由公司私有节点转发，仅获邀请的工作区成员可进入。默认关闭录制。</p>
     {#if maxSeats > 0}
       <form onsubmit={(event) => { event.preventDefault(); void run(async () => {
@@ -265,6 +272,7 @@
       <label>大会编号 <input required bind:value={inputId} autocomplete="off" /></label>
       <button disabled={busy}>加入大会</button>
     </form>
+    {/if}
   {:else}
     <p aria-live="polite">{status === "reconnecting" ? "网络变化，正在自动重连…" : "已连接 · 私有媒体"}{role === "listener" ? " · 只听" : ""}</p>
     <div class="media">
@@ -289,11 +297,11 @@
         {/if}
       {/if}
       <button onclick={disconnect}>离开</button>
-      {#if role === "host"}
+      {#if role === "host" && !rosterManaged}
         <button disabled={busy} onclick={() => void run(async () => { await meetingSfuApi.end(roomId); disconnect(); })}>结束大会</button>
       {/if}
     </div>
-    {#if role === "host"}
+    {#if role === "host" && !rosterManaged}
       <form onsubmit={(event) => { event.preventDefault(); void run(async () => {
         await meetingSfuApi.invite(roomId, inviteSubject, inviteRole);
         await refreshAttendees();

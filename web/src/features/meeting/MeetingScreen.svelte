@@ -15,10 +15,12 @@
     VideoOff,
   } from "@lucide/svelte";
   import MediaTrackView from "./MediaTrackView.svelte";
-  import GuestHostPanel from "./GuestHostPanel.svelte";
   import type PrivateMeetingView from "./PrivateMeeting.svelte";
   import { selectMeetingTopology } from "@surreal-ck/shared/meeting-sfu";
+  import GuestHostPanel from "./GuestHostPanel.svelte";
+  import RosterMeetingAdmin from "./RosterMeetingAdmin.svelte";
   import { getSurreal } from "../../lib/surreal";
+  import { getCurrentWorkspace } from "../../lib/workspace-store.svelte";
   import { loadMembers, type WorkspaceMember } from "../../lib/members-data";
   import {
     checkMeetingSupport,
@@ -80,6 +82,9 @@
   let sfuInitialRoom = $state("");
   let PrivateMeeting = $state<typeof PrivateMeetingView>();
   let sfuOpen = $state(false);
+  const workspace = $derived(getCurrentWorkspace());
+  let rosterOpen = $state(false);
+  let rosterHostRoom = $state("");
 
   let controller: MeetingController | null = null;
   let unsubscribe: (() => void) | null = null;
@@ -117,10 +122,11 @@
     }
   }
 
-  async function openPrivateMeeting(): Promise<void> {
+  async function openPrivateMeeting(rosterRoom?: string): Promise<void> {
     try {
       PrivateMeeting ??= (await import("./PrivateMeeting.svelte")).default;
-      sfuOpen = true;
+      if (rosterRoom) rosterHostRoom = rosterRoom;
+      else sfuOpen = true;
     } catch {
       lobbyError = "无法加载私有会议，请刷新后重试";
     }
@@ -335,6 +341,19 @@
     </div>
   {:else if sfuOpen && PrivateMeeting}
     <PrivateMeeting initialRoom={sfuInitialRoom} initialSeats={expectedSeats} maxSeats={sfuMaxSeats} onback={() => { sfuOpen = false; }} />
+  {:else if rosterOpen && workspace?.role === "admin" && workspace.slug}
+    {#key workspace.slug}
+      <RosterMeetingAdmin slug={workspace.slug} onhost={(room) => void openPrivateMeeting(room)}
+        onend={(room) => { if (room === rosterHostRoom) rosterHostRoom = ""; }}
+        onback={() => { rosterOpen = false; rosterHostRoom = ""; }} />
+      {#if rosterHostRoom && PrivateMeeting}
+        {#key rosterHostRoom}
+          <PrivateMeeting initialRoom={rosterHostRoom} initialSeats={expectedSeats} maxSeats={sfuMaxSeats}
+            rosterManaged onback={() => { rosterHostRoom = ""; }} />
+        {/key}
+      {/if}
+      {#if lobbyError}<p class="error" role="alert">{lobbyError}</p>{/if}
+    {/key}
   {:else if stage === "lobby"}
     <header class="head">
       <h1>会议</h1>
@@ -382,6 +401,9 @@
     </div>
     {#if sfuMaxSeats > 0}
       <button onclick={() => void openPrivateMeeting()}>创建或加入私有大会</button>
+    {/if}
+    {#if workspace?.role === "admin" && workspace.slug}
+      <button onclick={() => { rosterOpen = true; }}>管理名册会议</button>
     {/if}
     {#if lobbyError}<p class="error" role="alert">{lobbyError}</p>{/if}
   {:else if stage === "prejoin"}

@@ -15,6 +15,19 @@ INSERT INTO workbook_template [
     description: "债权人、债权申报与审查进度的一体化管理台账",
     builtin: true,
     sort_order: 60,
+    roster_meeting_presets: [
+      {
+        key: "creditor-meeting",
+        label: "债权人会议",
+        sheet_key: "creditors",
+        display_key: "creditor_name",
+        check_key: "identity_number",
+        check_label: "证件号码后四位",
+        check_mode: "suffix4",
+        admission: "waiting",
+        concurrency: "replace",
+      },
+    ],
     sheet_defs: [
       {
         key: "creditors",
@@ -574,7 +587,8 @@ ON DUPLICATE KEY UPDATE
   sheet_defs = $input.sheet_defs,
   quick_tasks = $input.quick_tasks,
   row_analysis = $input.row_analysis,
-  default_dashboard = $input.default_dashboard;
+  default_dashboard = $input.default_dashboard,
+  roster_meeting_presets = $input.roster_meeting_presets;
 
 INSERT INTO claim_supplement_template [
   { key: "contract", label: "缺少合同", body: "请补充合同、协议及相关附件的完整清晰副本。" },
