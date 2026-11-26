@@ -67,7 +67,7 @@ describe("template pack scripts", () => {
     expect(script?.sql).toContain("ON DUPLICATE KEY UPDATE");
     // 幂等更新只覆盖声明字段；旧顶层 column_defs 兼容输入与管理员自定义不被覆盖。
     expect(script?.sql).not.toContain("column_defs = $input.column_defs");
-    for (const field of ["sheet_defs", "quick_tasks", "row_analysis", "default_dashboard"]) {
+    for (const field of ["sheet_defs", "quick_tasks", "row_analysis", "default_dashboard", "roster_meeting_presets"]) {
       expect(script?.sql).toContain(`${field} = $input.${field}`);
     }
     // 两表形状：债权人 + 债权申报（引用回 creditors）。
@@ -75,6 +75,17 @@ describe("template pack scripts", () => {
       expect(script?.sql).toContain(`key: "${key}"`);
     }
     expect(script?.sql).toContain('reference_sheet_key: "creditors"');
+    expect(script?.sql).toMatch(/roster_meeting_presets:\s*\[/);
+    for (const clause of [
+      'label: "债权人会议"',
+      'sheet_key: "creditors"',
+      'display_key: "creditor_name"',
+      'check_key: "identity_number"',
+      'check_label: "证件号码后四位"',
+      'check_mode: "suffix4"',
+    ]) {
+      expect(script?.sql).toContain(clause);
+    }
     const taskCount = script?.sql.match(/task_text:/g)?.length ?? 0;
     expect(taskCount).toBeGreaterThanOrEqual(5);
     expect(script?.sql).toContain('risk: "write"');
