@@ -29,6 +29,7 @@ import { ClaimsPortalService } from "./claims-portal/service";
 import { createSessionRoutes } from "./routes/session";
 import { createMeetingIceRoutes } from "./routes/meeting-ice";
 import { createMeetingSfuRoutes, createPrivateMeetingSfu } from "./routes/meeting-sfu";
+import { dailyRecording, finalizeDaily } from "./meeting/evidence-daily";
 import { createMeetingRosterRoutes } from "./routes/meeting-roster";
 import { configuredMeetingEvidence } from "./meeting/evidence-archive";
 import { configuredTrackRecording } from "./meeting/evidence-recording";
@@ -462,7 +463,14 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
   const base = new Hono<AppBindings>();
   const meetingEvidence = configuredMeetingEvidence();
   const recording = configuredTrackRecording();
-  const meetingSfu = createPrivateMeetingSfu(env, recording?.start.bind(recording));
+  let roster: RosterMeetingService;
+  const evidenceJobs = meetingEvidence && recording && meetingEvidence.finalization((job) =>
+    job.kind === "daily" ? finalizeDaily(meetingEvidence, recording, job) : roster.finalizeEvidence(job));
+  const meetingSfu = createPrivateMeetingSfu(env, recording?.start.bind(recording),
+    meetingEvidence && recording && evidenceJobs ? dailyRecording(meetingEvidence, recording, evidenceJobs) : undefined);
+  roster = new RosterMeetingService({ media: meetingSfu, evidence: meetingEvidence, recording, evidenceJobs,
+    requireEvidence: env.NODE_ENV === "production" });
+  evidenceJobs?.start();
   base.use("*", requestLogger);
   base.onError(handleError);
 
@@ -478,8 +486,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     .route("/", createMeetingSfuRoutes({ workspaceScope, requireUser: options.requireUser, service: meetingSfu }))
     .route("/", createMeetingRosterRoutes({
       requireUser: options.requireUser, evidence: meetingEvidence,
-      service: new RosterMeetingService({ media: meetingSfu, evidence: meetingEvidence, recording,
-        requireEvidence: env.NODE_ENV === "production" }),
+      service: roster,
     }))
     .route("/", createMeetingV2Routes({ workspaceScope, requireUser: options.requireUser }))
     .route("/", createInternalAiIdentityRoutes({ db: async () => getRootDatabaseSession("_system"), requireUser: options.requireUser?.() }))

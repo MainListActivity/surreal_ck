@@ -6,7 +6,8 @@ import { env } from "../env";
 import { HttpError } from "../http-error";
 import { signPayload, verifySignature } from "../secure-token";
 import { privateEvidenceDirectory } from "./evidence-filesystem";
-import { MeetingEvidenceLedger, type EvidenceEvent } from "./evidence-ledger";
+import { EvidenceJobs, type EvidenceJob } from "./evidence-jobs";
+import { MeetingEvidenceLedger, type EvidenceArtifact, type EvidenceEvent } from "./evidence-ledger";
 import { deriveEvidenceWorkspaceKey, evidenceHash, evidenceJson, EvidenceVault, type EvidenceJson } from "./evidence-vault";
 import { rows, type RosterQuery } from "./roster-votes";
 
@@ -38,10 +39,23 @@ export class MeetingEvidenceArchive {
     return this.ledger.events(scoped(workspace, meeting));
   }
 
-  async seal(workspace: string, meeting: string, at: string, metadata: EvidenceJson, artifacts: ReadonlyMap<string, Uint8Array>) {
+  finalization(finalize: (job: EvidenceJob) => Promise<void>) {
+    return new EvidenceJobs(this.vault, finalize);
+  }
+
+  async seal(workspace: string, meeting: string, at: string, metadata: EvidenceJson, artifacts: ReadonlyMap<string, EvidenceArtifact>) {
     const scope = scoped(workspace, meeting);
     const retainUntil = new Date(Date.parse(at) + this.retentionDays * day).toISOString();
-    const root = await this.ledger.seal(scope, at, { meeting, sealedAt: at, retainUntil, meetingMetadata: metadata }, artifacts);
+    await this.ledger.seal(scope, at, { meeting, sealedAt: at, retainUntil, meetingMetadata: metadata }, artifacts);
+    return this.publish(workspace, meeting);
+  }
+
+  async publish(workspace: string, meeting: string) {
+    const scope = scoped(workspace, meeting);
+    const root = await this.vault.read(scope, "root.sha256");
+    if (!root) throw conflict();
+    const manifest = await this.ledger.verifiedManifest(scope, root.toString("hex"));
+    const { sealedAt: at, retainUntil } = manifest.metadata as { sealedAt: string; retainUntil: string };
     const db = await this.dbFor(workspace);
     const id = projectionId(meeting);
     const previous = await this.projection(db, meeting);

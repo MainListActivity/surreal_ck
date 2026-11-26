@@ -44,7 +44,7 @@ test.skipIf(!cli || !spool || !endpoint || !key || !secret)("真实 Track Egress
     const artifacts = await recording.collect(room, "m13-test", start, end, tracks.map(({ sid }) => sid));
     expect([...artifacts.keys()].filter((name) => name.includes("-audio."))).toHaveLength(1);
     expect([...artifacts.keys()].filter((name) => name.includes("-video."))).toHaveLength(1);
-    expect(artifacts.get("archive.mp4")?.byteLength).toBeGreaterThan(1000);
+    expect((artifacts.get("archive.mp4") as Blob | undefined)?.size).toBeGreaterThan(1000);
     let projection: Record<string, unknown> | undefined;
     let now = end;
     const vault = new EvidenceVault(privateEvidenceDirectory(folders), deriveEvidenceWorkspaceKey(Buffer.alloc(32, 42)));
@@ -64,7 +64,9 @@ test.skipIf(!cli || !spool || !endpoint || !key || !secret)("真实 Track Egress
     await expect(archive.download(workspace, meeting, "member", token)).rejects.toMatchObject({ status: 403 });
     const content = await archive.download(workspace, meeting, "host", token);
     await expect(archive.download(workspace, meeting, "host", token)).rejects.toMatchObject({ status: 403 });
-    await Bun.write(join(folders, "package.tar"), content);
+    const writer = Bun.file(join(folders, "package.tar")).writer();
+    for await (const chunk of content) writer.write(chunk);
+    await writer.end();
     expect(Bun.spawnSync(["tar", "-xf", join(folders, "package.tar"), "-C", folders]).exitCode).toBe(0);
     const probe = Bun.spawnSync(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type",
       "-of", "csv=p=0", join(folders, "archive.mp4")]);

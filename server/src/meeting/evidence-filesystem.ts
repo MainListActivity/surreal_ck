@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { link, mkdir, open, readFile, realpath, stat, unlink } from "node:fs/promises";
+import { link, mkdir, open, readdir, readFile, realpath, stat, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { EvidenceObjects } from "./evidence-vault";
 
@@ -23,6 +23,10 @@ export function privateEvidenceDirectory(path: string): EvidenceObjects {
     return join(await root, key);
   }
   return {
+    async list(key) {
+      try { return (await readdir(await locate(key), { withFileTypes: true })).filter((entry) => entry.isFile()).map(({ name }) => name); }
+      catch (error) { if (hasCode(error, "ENOENT")) return []; throw error; }
+    },
     async read(key) {
       try { return await readFile(await locate(key)); }
       catch (error) { if (hasCode(error, "ENOENT")) return null; throw error; }

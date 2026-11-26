@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { streamEvidenceTar } from "./evidence-tar";
 import { evidenceHash, evidenceJson, type EvidenceJson, type EvidenceScope, type EvidenceVault } from "./evidence-vault";
 
 const hashPattern = /^[a-f0-9]{64}$/u;
@@ -5,11 +7,13 @@ const pathPattern = /^[a-zA-Z0-9_-][a-zA-Z0-9_.-]{0,127}$/u;
 const genesis = "0".repeat(64);
 const rootObject = "root.sha256";
 const manifestObject = "manifest.json";
+const partSize = 4 * 1024 * 1024;
 
 export type EvidenceEvent = Readonly<{ id: string; kind: string; at: string; payload: EvidenceJson }>;
+export type EvidenceArtifact = Uint8Array | Bun.BunFile;
 type LedgerEntry = Readonly<{ sequence: number; previous: string; event: EvidenceEvent }>;
 type LedgerTail = Readonly<{ sequence: number; digest: string; sealed: boolean }>;
-export type EvidenceItem = Readonly<{ path: string; bytes: number; sha256: string }>;
+export type EvidenceItem = Readonly<{ path: string; bytes: number; sha256: string; parts?: number }>;
 export type EvidenceManifest = Readonly<{
   version: 1;
   workspace: string;
@@ -34,17 +38,8 @@ function artifactPath(path: string): string {
   return `files/${path}`;
 }
 
-function makeManifest(scope: EvidenceScope, tail: LedgerTail, metadata: EvidenceJson, files: ReadonlyMap<string, Uint8Array>): Buffer {
-  const items = [...files.keys()].sort().map((path) => {
-    if (path !== "ledger.json") artifactPath(path);
-    const bytes = files.get(path)!;
-    return { path, bytes: bytes.byteLength, sha256: evidenceHash(bytes).toString("hex") };
-  });
-  return evidenceJson({
-    version: 1, workspace: scope.workspace, meeting: scope.meeting,
-    ledger: { sequence: tail.sequence, sha256: tail.digest }, metadata, files: items,
-  } satisfies EvidenceManifest);
-}
+const fileKey = (path: string) => path === "ledger.json" ? "files/ledger.json" : artifactPath(path);
+const partKey = (path: string, index: number) => `chunks/${path}/${index}`;
 
 export function verifyEvidenceManifest(manifest: Uint8Array, trustedRoot: Uint8Array): EvidenceManifest {
   if (trustedRoot.byteLength !== 32 || !evidenceHash(manifest).equals(trustedRoot)) {
@@ -111,8 +106,27 @@ export class MeetingEvidenceLedger {
     }
   }
 
+  private async storeArtifact(scope: EvidenceScope, path: string, artifact: EvidenceArtifact): Promise<EvidenceItem> {
+    const key = fileKey(path);
+    const bytes = artifact instanceof Uint8Array ? artifact.byteLength : artifact.size;
+    if (artifact instanceof Uint8Array && bytes <= partSize) {
+      await this.immutable(scope, key, Buffer.from(artifact));
+      return { path, bytes, sha256: evidenceHash(artifact).toString("hex") };
+    }
+    const hash = createHash("sha256");
+    let parts = 0;
+    for (let offset = 0; offset < bytes; offset += partSize) {
+      const chunk = artifact instanceof Uint8Array ? Buffer.from(artifact.subarray(offset, offset + partSize))
+        : Buffer.from(await artifact.slice(offset, offset + partSize).arrayBuffer());
+      if (chunk.byteLength !== Math.min(partSize, bytes - offset)) throw new Error("会议存证源文件长度变化");
+      hash.update(chunk);
+      await this.immutable(scope, partKey(path, parts++), chunk);
+    }
+    return { path, bytes, sha256: hash.digest("hex"), parts };
+  }
+
   async seal(
-    scope: EvidenceScope, sealedAt: string, metadata: EvidenceJson, artifacts: ReadonlyMap<string, Uint8Array>,
+    scope: EvidenceScope, sealedAt: string, metadata: EvidenceJson, artifacts: ReadonlyMap<string, EvidenceArtifact>,
   ): Promise<Buffer> {
     if (!Number.isFinite(Date.parse(sealedAt))) throw new Error("会议存证封存时间无效");
     for (const name of artifacts.keys()) artifactPath(name);
@@ -120,11 +134,13 @@ export class MeetingEvidenceLedger {
     const { records, tail } = await this.entries(scope);
     const files = new Map(artifacts);
     files.set("ledger.json", evidenceJson(records));
-    const manifest = makeManifest(scope, tail, metadata, files);
+    const items: EvidenceItem[] = [];
+    for (const name of [...files.keys()].sort()) items.push(await this.storeArtifact(scope, name, files.get(name)!));
+    const manifest = evidenceJson({
+      version: 1, workspace: scope.workspace, meeting: scope.meeting,
+      ledger: { sequence: tail.sequence, sha256: tail.digest }, metadata, files: items,
+    } satisfies EvidenceManifest);
     const root = evidenceHash(manifest);
-    for (const [name, bytes] of files) {
-      await this.immutable(scope, name === "ledger.json" ? "files/ledger.json" : artifactPath(name), Buffer.from(bytes));
-    }
     await this.immutable(scope, manifestObject, manifest);
     if (this.tsa && (await this.vault.read(scope, "tsa-response.bin")) === null) {
       const response = await this.tsa.timestamp(Uint8Array.from(root));
@@ -151,27 +167,49 @@ export class MeetingEvidenceLedger {
   }
 
   async readVerifiedArtifact(scope: EvidenceScope, item: EvidenceItem): Promise<Buffer> {
-    const bytes = await this.vault.read(scope, item.path === "ledger.json" ? "files/ledger.json" : artifactPath(item.path));
-    if (bytes === null) throw new Error("缺少会议存证产物");
-    verifyEvidenceArtifact(item, bytes);
-    return bytes;
+    const chunks: Buffer[] = [];
+    for await (const chunk of this.artifactChunks(scope, item)) chunks.push(chunk);
+    return Buffer.concat(chunks);
   }
 
-  async exportPackage(scope: EvidenceScope, projectedRoot: string | undefined): Promise<Blob> {
+  private async *artifactChunks(scope: EvidenceScope, item: EvidenceItem) {
+    const key = fileKey(item.path);
+    if (item.parts === undefined) {
+      const bytes = await this.vault.read(scope, key);
+      if (bytes === null) throw new Error("缺少会议存证产物");
+      verifyEvidenceArtifact(item, bytes);
+      yield bytes;
+      return;
+    }
+    if (item.parts !== Math.ceil(item.bytes / partSize)) throw new Error("会议存证产物分块数量无效");
+    const hash = createHash("sha256");
+    for (let index = 0; index < item.parts; index++) {
+      const chunk = await this.vault.read(scope, partKey(item.path, index));
+      if (chunk?.length !== Math.min(partSize, item.bytes - index * partSize)) throw new Error("会议存证分块长度不匹配");
+      hash.update(chunk);
+      if (index === item.parts - 1 && hash.digest("hex") !== item.sha256) throw new Error("会议存证产物 SHA-256 不匹配");
+      yield chunk;
+    }
+  }
+
+  async exportPackage(scope: EvidenceScope, projectedRoot: string | undefined) {
     const manifest = await this.verifiedManifest(scope, projectedRoot);
     const manifestBytes = await this.vault.read(scope, manifestObject);
     if (manifestBytes === null) throw new Error("缺少会议存证清单");
     verifyEvidenceManifest(manifestBytes, Buffer.from(projectedRoot!, "hex"));
-    const files: Record<string, string | Uint8Array> = Object.create(null);
-    files[manifestObject] = manifestBytes;
-    for (const item of manifest.files) files[item.path] = await this.readVerifiedArtifact(scope, item);
     const tsa = await this.vault.read(scope, "tsa-response.bin");
-    if (tsa !== null) files["tsa-response.bin"] = tsa;
-    files["VERIFICATION.txt"] = [
+    const instructions = Buffer.from([
       "从独立存证域取得会议可信根 SHA-256，不使用来自存证包或工作区投影的值。",
       "解包后运行 python3 verify-meeting-evidence.py <目录> --trusted-root <可信根>",
       "如果附有 TSA 回执，另用其供应商/协议的验证器核对可信根。",
-    ].join("\n") + "\n";
-    return new Bun.Archive(files).blob();
+    ].join("\n") + "\n");
+    const entry = (path: string, data: Buffer) => ({ path, bytes: data.length, chunks: (async function* () { yield data; })() });
+    const artifacts = (item: EvidenceItem) => this.artifactChunks(scope, item);
+    return streamEvidenceTar((async function* () {
+      yield entry(manifestObject, manifestBytes);
+      for (const item of manifest.files) yield { path: item.path, bytes: item.bytes, chunks: artifacts(item) };
+      if (tsa) yield entry("tsa-response.bin", tsa);
+      yield entry("VERIFICATION.txt", instructions);
+    })());
   }
 }

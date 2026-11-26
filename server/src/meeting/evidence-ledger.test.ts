@@ -90,7 +90,7 @@ describe("独立会议存证", () => {
     const ledger = new MeetingEvidenceLedger(vault);
     const artifacts = new Map([["video.mp4", Buffer.from([1, 2, 3])], ["votes.json", Buffer.from('{"yes":1}')]]);
     const root = (await ledger.seal(scope, at, { number: "42" }, artifacts)).toString("hex");
-    const archive = new Bun.Archive(await ledger.exportPackage(scope, root));
+    const archive = new Bun.Archive(await new Response(await ledger.exportPackage(scope, root)).blob());
     const report = await archive.files();
     expect([...report.keys()].sort()).toEqual(["VERIFICATION.txt", "ledger.json", "manifest.json", "video.mp4", "votes.json"]);
     const directory = await mkdtemp(join(tmpdir(), "meeting-evidence-"));
@@ -114,5 +114,28 @@ describe("独立会议存证", () => {
     } finally {
       await rm(directory, { force: true, recursive: true });
     }
+  });
+
+  test("分块加密及 tar 流保留跨块视频的精确大小和 SHA-256", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "meeting-chunks-"));
+    try {
+      const { vault } = fixture();
+      const ledger = new MeetingEvidenceLedger(vault);
+      const media = join(directory, "source");
+      const video = Buffer.alloc(9 * 1024 * 1024 + 17, 14);
+      await Bun.write(media, video);
+      const path = "video-" + "long".repeat(25) + ".mp4";
+      const root = (await ledger.seal(scope, at, null, new Map([[path, Bun.file(media)]]))).toString("hex");
+      const item = (await ledger.verifiedManifest(scope, root)).files.find((file) => file.path === path)!;
+      expect(item.parts).toBe(3);
+      expect(item.bytes).toBe(video.length);
+      const tar = join(directory, "evidence.tar");
+      const writer = Bun.file(tar).writer();
+      for await (const chunk of await ledger.exportPackage(scope, root)) writer.write(chunk);
+      await writer.end();
+      expect(Bun.spawnSync(["tar", "-xf", tar, "-C", directory]).stderr.toString()).toBe("");
+      expect(await Bun.file(join(directory, path)).size).toBe(video.length);
+      expect(Bun.spawnSync(["python3", "../scripts/verify-meeting-evidence.py", directory, "--trusted-root", root]).exitCode).toBe(0);
+    } finally { await rm(directory, { recursive: true, force: true }); }
   });
 });

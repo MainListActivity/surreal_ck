@@ -17,6 +17,7 @@
   let roomId = $state("");
   let consentRoom = $state("");
   let recording = $state(false);
+  let consentRequired = $state(false);
   let role = $state<MeetingSfuRole>("listener");
   const canSpeak = $derived(role === "host" || role === "speaker");
   let status = $state<"idle" | "connected" | "reconnecting">("idle");
@@ -41,6 +42,7 @@
   let renewing = false;
   let attempt = 0;
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
+  let recordingTimer: ReturnType<typeof setInterval> | undefined;
 
   $effect(() => { inputId = initialRoom; });
   $effect(() => { seats = Math.min(Math.max(1, initialSeats || 10), maxSeats || 10); });
@@ -104,14 +106,15 @@
   }
 
   async function enter(id: string, connectionAttempt = ++attempt, retry = false) {
-    const controlled = await meetingSfuApi.recording(id);
+    const state = await meetingSfuApi.recording(id);
     if (destroyed || attempt !== connectionAttempt) return;
-    recording = controlled;
-    if (controlled && consentRoom !== id) {
+    recording = state.recording;
+    consentRequired = state.consentRequired;
+    if (consentRequired && consentRoom !== id) {
       roomId = id;
       return;
     }
-    const grant = await meetingSfuApi.credentials(id, controlled);
+    const grant = await meetingSfuApi.credentials(id, consentRequired);
     if (destroyed || attempt !== connectionAttempt) return;
     const current = new Room({ adaptiveStream: true, dynacast: true });
     room = current;
@@ -172,6 +175,11 @@
     status = "connected";
     reconcile(current);
     refreshTimer = setInterval(() => { void refreshLease(); }, 30_000);
+    if (!state.recording) recordingTimer = setInterval(() => {
+      void meetingSfuApi.recording(id).then((state) => {
+        if (room === current) recording = state.recording;
+      }).catch(() => undefined);
+    }, 2_000);
     if (role === "host") {
       if (!rosterManaged) void refreshAttendees();
       void loadMemberRows(getSurreal()).then((rows) => {
@@ -184,6 +192,8 @@
     attempt++;
     if (refreshTimer) clearInterval(refreshTimer);
     refreshTimer = undefined;
+    clearInterval(recordingTimer);
+    recordingTimer = undefined;
     const current = room;
     room = undefined;
     status = "idle";
@@ -264,7 +274,7 @@
     <button onclick={() => { disconnect(); onback(); }}>{rosterManaged ? "关闭主持席" : "返回普通会议"}</button>
   </header>
   {#if status === "idle"}
-    {#if recording && consentRoom !== roomId}
+    {#if consentRequired && consentRoom !== roomId}
       <p>本会议将录制音视频，并保留身份核验、入场、发言和表决记录，用于会议存证。</p>
       <label><input type="checkbox" onchange={(event) => {
         if (event.currentTarget.checked) {
@@ -306,6 +316,12 @@
       {/each}
     </div>
     <div class="controls">
+      {#if role === "host" && !rosterManaged && !recording}
+        <button disabled={busy} onclick={() => {
+          if (!window.confirm("启用后将录制当前及后续音视频，直至会议结束。确认启用录制？")) return;
+          void run(async () => { recording = (await meetingSfuApi.startRecording(roomId)).recording; });
+        }}>开始录制</button>
+      {/if}
       {#if needsAudio}
         <button onclick={() => void run(() => room?.startAudio() ?? Promise.resolve())}>开启声音</button>
       {/if}

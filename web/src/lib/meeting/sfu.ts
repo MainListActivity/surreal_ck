@@ -86,7 +86,8 @@ const roomPath = (id: string) => `/rooms/${encodeURIComponent(id)}`;
 export const meetingSfuApi = {
   availability: () => request<{ enabled: boolean; maxSeats: number }>("/availability"),
   create: (seats: number) => request<MeetingSfuRoom>("/rooms", "POST", { seats, mode: "daily", large: true }),
-  recording: async (id: string) => (await request<{ recording: boolean }>(`${roomPath(id)}/recording`, "GET")).recording,
+  recording: (id: string) => request<{ recording: boolean; consentRequired: boolean }>(`${roomPath(id)}/recording`),
+  startRecording: (id: string) => request<{ recording: boolean }>(`${roomPath(id)}/recording`, "POST"),
   credentials: (id: string, consent = false) =>
     request<MeetingSfuCredentials>(`${roomPath(id)}/credentials`, "POST", consent ? { consent } : undefined),
   list: (id: string) => request<MeetingSfuParticipant[]>(`${roomPath(id)}/participants`),

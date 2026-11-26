@@ -1,11 +1,12 @@
-import { chmod, mkdir, realpath, stat } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { chmod, mkdir, realpath, rename, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { DirectFileOutput, EgressClient, EgressStatus } from "livekit-server-sdk";
 import { env } from "../env";
+import type { EvidenceArtifact } from "./evidence-ledger";
 
 const trackPattern = /^TR_[\da-z]+$/iu;
 const roomPattern = /^ck-meeting-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/u;
-const bytesLimit = 256 * 1024 * 1024;
 const active = (status: EgressStatus) => status < EgressStatus.EGRESS_COMPLETE;
 
 export class MeetingTrackRecording {
@@ -42,7 +43,7 @@ export class MeetingTrackRecording {
     return this.requests.get(key)!.then(() => undefined);
   }
 
-  collect(id: string, meeting: string, start: number, end: number, expected: readonly string[] = []): Promise<ReadonlyMap<string, Uint8Array>> {
+  collect(id: string, meeting: string, start: number, end: number, expected: readonly string[] = []): Promise<ReadonlyMap<string, EvidenceArtifact>> {
     const operation = this.synthesis.then(() => this.synthesize(`ck-meeting-${id}`, meeting, start, end, expected));
     this.synthesis = operation.then(() => undefined, () => undefined);
     return operation;
@@ -70,12 +71,11 @@ export class MeetingTrackRecording {
     if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) throw new Error("录制起止时间无效");
     const folder = join(this.directory, room);
     await mkdir(folder, { recursive: true, mode: 0o2770 });
-    const artifacts = new Map<string, Uint8Array>();
-    let bytes = 0;
+    const artifacts = new Map<string, EvidenceArtifact>();
     const store = async (path: string, name: string) => {
       const file = Bun.file(path);
-      if (file.size === 0 || (bytes += file.size) > bytesLimit) throw new Error("会议录制超过单包大小上限或轨道为空");
-      artifacts.set(name, new Uint8Array(await file.arrayBuffer()));
+      if ((await stat(path)).size === 0) throw new Error("会议录制轨道为空");
+      artifacts.set(name, file);
     };
     const input: string[] = [];
     const filters: string[] = [];
@@ -83,7 +83,8 @@ export class MeetingTrackRecording {
     const indexEntries: { track: string; file: string; startUtc: string }[] = [];
     let video = "[0:v]";
     const duration = (end - start) / 1000;
-    for (const item of completed.sort((a, b) => a.startedAt < b.startedAt ? -1 : 1)) {
+    for (const item of completed.sort((a, b) => a.startedAt === b.startedAt
+      ? a.egressId.localeCompare(b.egressId) : a.startedAt < b.startedAt ? -1 : 1)) {
       if (item.request?.case !== "track" || !trackPattern.test(item.request.value.trackId)) throw new Error("录制轨道无效");
       const { trackId } = item.request.value;
       const entry = item.fileResults[0];
@@ -111,13 +112,19 @@ export class MeetingTrackRecording {
     const meetingNumber = meeting.replace(/[^\w-]/gu, "").slice(-64);
     filters.push(`${video}drawtext=text='${meetingNumber} UTC %{pts\\:gmtime\\:${Math.floor(start / 1000)}}':x=16:y=16:fontsize=20:fontcolor=white:box=1:boxcolor=black[vout]`);
     filters.push(`[1:a]${audio.join("")}amix=inputs=${audio.length + 1}:duration=first:normalize=0[aout]`);
-    const output = join(folder, "archive.mp4");
-    const process = Bun.spawn(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
-      "-filter_complex_threads", "1", "-f", "lavfi", "-i", "color=size=960x540:rate=25",
-      "-f", "lavfi", "-i", "anullsrc=channel_layout=mono:sample_rate=48000", ...input, "-filter_complex", filters.join(";"),
-      "-map", "[vout]", "-map", "[aout]", "-t", String(duration), "-c:v", "libx264", "-threads", "2", "-preset", "veryfast",
-      "-c:a", "aac", "-movflags", "+faststart", output], { stdout: "ignore", stderr: "ignore" });
-    if (await process.exited !== 0) throw new Error("离线视频合成失败");
+    const output = join(folder, "archive.ready.mp4");
+    if (!await Bun.file(output).exists()) {
+      const temporary = join(folder, `archive-${randomUUID()}.partial.mp4`);
+      try {
+        const process = Bun.spawn(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+          "-filter_complex_threads", "1", "-f", "lavfi", "-i", "color=size=960x540:rate=25",
+          "-f", "lavfi", "-i", "anullsrc=channel_layout=mono:sample_rate=48000", ...input, "-filter_complex", filters.join(";"),
+          "-map", "[vout]", "-map", "[aout]", "-t", String(duration), "-c:v", "libx264", "-threads", "2", "-preset", "veryfast",
+          "-c:a", "aac", "-movflags", "+faststart", temporary], { stdout: "ignore", stderr: "ignore" });
+        if (await process.exited !== 0) throw new Error("离线视频合成失败");
+        await rename(temporary, output);
+      } finally { await rm(temporary, { force: true }); }
+    }
     await store(output, "archive.mp4");
     artifacts.set("media-index.json", Buffer.from(JSON.stringify(indexEntries)));
     for (const key of requested) {

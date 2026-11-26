@@ -41,3 +41,17 @@ test("主持人客户端按会议读写表决与归档配置", async () => {
   expect(requests[1]?.init?.body).toBe(JSON.stringify(poll));
   expect(requests[3]?.init?.body).toBe(JSON.stringify(config));
 });
+
+test("存证下载使用同工作区的单次票据并将响应体交给流式保存", async () => {
+  const path = "/api/workspaces/fixture/roster-meetings/roster_meeting%3Aa/evidence";
+  const content = new Response("tar");
+  const requests: [string, string | undefined][] = [];
+  const api = createRosterAdminApi("fixture", async () => "fixture-token", Object.assign(async (url: unknown, init?: RequestInit) => {
+    requests.push([String(url), init?.method]);
+    expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer fixture-token");
+    return init?.method === "POST" ? Response.json({ url: path + "/download?ticket=fixture" }) : content;
+  }, { preconnect: () => {} }));
+  expect(await api.downloadEvidence("roster_meeting:a")).toBe(content);
+  expect(content.bodyUsed).toBe(false);
+  expect(requests).toEqual([[path + "/grant", "POST"], [path + "/download?ticket=fixture", "GET"]]);
+});

@@ -10,6 +10,7 @@ export type EvidenceJson = null | boolean | number | string | readonly EvidenceJ
 export interface EvidenceObjects {
   read(key: string): Promise<Uint8Array | null>;
   create(key: string, content: Uint8Array): Promise<boolean>;
+  list?(key: string): Promise<string[]>;
 }
 
 export function privateEvidenceBucket(bucket: S3Client, request: typeof fetch = fetch): EvidenceObjects {
@@ -76,6 +77,11 @@ export class EvidenceVault {
     private readonly objects: EvidenceObjects,
     private readonly workspaceKey: (workspace: string) => Promise<Uint8Array>,
   ) {}
+
+  list(scope: EvidenceScope, directory: string) {
+    if (!this.objects.list) throw new Error("会议存证后端不支持任务枚举");
+    return this.objects.list(objectKey(scope, directory));
+  }
 
   private async wrappingKey(workspace: string): Promise<Uint8Array> {
     const key = await this.workspaceKey(workspace);

@@ -16,6 +16,8 @@ import type { MeetingEvidenceArchive } from "./evidence-archive";
 import { evidenceJson, type EvidenceJson } from "./evidence-vault";
 import { renderEvidenceSummary } from "./roster-receipt-pdf";
 import type { MeetingTrackRecording } from "./evidence-recording";
+import type { EvidenceJob, EvidenceJobs } from "./evidence-jobs";
+import type { EvidenceArtifact } from "./evidence-ledger";
 import { castVote, participantPolls, publishPoll, receipt, recordDigest, voteAgendaSchema, voteResults } from "./roster-votes";
 import { rosterRoomLocked, type PrivateMeetingSfu, type RosterSfuEvent, type SfuActor } from "./sfu";
 
@@ -59,6 +61,7 @@ type Deps = {
   media?: Media;
   evidence?: MeetingEvidenceArchive;
   recording?: Pick<MeetingTrackRecording, "ready" | "collect">;
+  evidenceJobs?: EvidenceJobs;
   requireEvidence?: boolean;
   now?: () => number;
 };
@@ -191,7 +194,7 @@ export class RosterMeetingService {
   private readonly evidence?: MeetingEvidenceArchive;
   private readonly recording?: Deps["recording"];
   private readonly requireEvidence: boolean;
-  private readonly evidenceJobs = new Set<string>();
+  private readonly evidenceJobs?: EvidenceJobs;
   private readonly now: () => number;
   private readonly limits = new VerifyLimits();
   private readonly queues = new Map<string, Promise<unknown>>();
@@ -203,6 +206,7 @@ export class RosterMeetingService {
     this.media = deps.media;
     this.evidence = deps.evidence;
     this.recording = deps.recording;
+    this.evidenceJobs = deps.evidenceJobs;
     this.requireEvidence = deps.requireEvidence ?? false;
     this.media?.setRosterEventSink?.((event) => this.recordSfuEvent(event));
     this.now = deps.now ?? Date.now;
@@ -711,7 +715,7 @@ export class RosterMeetingService {
     });
   }
 
-  private async sealEvidence(workspace: string, meetingId: string, media: ReadonlyMap<string, Uint8Array>) {
+  private async sealEvidence(workspace: string, meetingId: string, media: ReadonlyMap<string, EvidenceArtifact>) {
     const evidence = this.evidence;
     if (!evidence) throw noRoom();
     return this.withWorkspace(workspace, async () => {
@@ -740,8 +744,8 @@ export class RosterMeetingService {
   }
 
   async queueEvidence(workspace: string, meetingId: string) {
-    const { evidence, recording } = this;
-    if (!evidence || !recording) throw unavailable();
+    const { evidence, recording, evidenceJobs } = this;
+    if (!evidence || !recording || !evidenceJobs) throw unavailable();
     const meeting = await this.requireMeeting(await this.getSession(workspace), meetingId);
     const endedAt = toIsoDateTimeString(meeting.ended_at);
     if (!meeting.room_id || !endedAt || meeting.status !== "closed") throw conflict();
@@ -749,25 +753,49 @@ export class RosterMeetingService {
       await evidence.status(workspace, meetingId);
       return;
     }
-    const key = JSON.stringify([workspace, meetingId]);
-    if (this.evidenceJobs.has(key)) return;
-    this.evidenceJobs.add(key);
-    const roomId = meeting.room_id;
-    void (async () => {
-      try {
-        if (!await this.media?.flushRosterEvents?.(roomId, 10_000)) throw new Error("会议事件尚未写入");
-        const events = await evidence.events(workspace, meetingId);
-        const start = events.find(({ id, kind }) => id === roomId && kind === "recording-started");
-        if (!start) throw new Error("会议缺少录制起始事件");
-        const expected = events.flatMap((event) => event.kind === "track-published" ? [event.id.slice(0, -":published".length)] : []);
-        const files = await recording.collect(roomId, meetingId, Date.parse(start.at), Date.parse(endedAt), expected);
-        await this.sealEvidence(workspace, meetingId, files);
-      } catch {
-        console.error("[meeting-evidence] 会议存证封存失败", { workspace, meetingId });
-      } finally {
-        this.evidenceJobs.delete(key);
+    const end = (await evidence.events(workspace, meetingId)).find(({ kind }) => kind === "recording-ended");
+    await evidenceJobs.enqueue({ kind: "roster", workspace, meeting: String(meeting.id), room: meeting.room_id,
+      actor: (end?.payload as { actor?: string } | undefined)?.actor ?? "", at: endedAt });
+    this.wakeEvidence();
+  }
+
+  private wakeEvidence() {
+    void this.evidenceJobs?.resume().catch(() => console.error("[meeting-evidence] 无法读取封存队列"));
+  }
+
+  async finalizeEvidence({ workspace, meeting: meetingId, room, actor, at }: EvidenceJob) {
+    const { evidence, recording } = this;
+    if (!evidence || !recording) throw unavailable();
+    if (await evidence.hasRoot(workspace, meetingId)) {
+      await evidence.publish(workspace, meetingId);
+      return;
+    }
+    const endedAt = await this.withWorkspace(workspace, async () => {
+      const db = await this.getSession(workspace);
+      const meeting = await this.requireMeeting(db, meetingId);
+      if (meeting.room_id !== room) throw conflict();
+      if (meeting.status !== "closed" || !meeting.ended_at) {
+        await db.query("UPDATE $id SET status = 'closed', ended_at = ended_at ?? $at;",
+          { id: meeting.id, at: new DateTime(new Date(at)) });
       }
-    })();
+      await this.media?.endRoster(workspace, room);
+      const closed = await this.requireMeeting(db, meetingId);
+      if (!closed.archived_at && closed.attendance_sheet && closed.vote_sheet) await this.writeArchive(db, workspace, closed);
+      return toIsoDateTimeString(closed.ended_at)!;
+    });
+    if (this.media?.flushRosterEvents && !await this.media.flushRosterEvents(room, 10_000)) {
+      throw new Error("会议事件尚未写入");
+    }
+    const events = await evidence.events(workspace, meetingId);
+    if (!events.some(({ kind }) => kind === "recording-ended")) {
+      await this.appendEvidence(workspace, meetingId, `${room}:end`, "recording-ended",
+        Date.parse(endedAt), { actor, room });
+    }
+    const start = events.find(({ id, kind }) => id === room && kind === "recording-started");
+    if (!start) throw new Error("会议缺少录制起始事件");
+    const expected = events.flatMap((event) => event.kind === "track-published" ? [event.id.slice(0, -":published".length)] : []);
+    const files = await recording.collect(room, meetingId, Date.parse(start.at), Date.parse(endedAt), expected);
+    await this.sealEvidence(workspace, meetingId, files);
   }
 
   moderation(actor: Actor, meetingId: string, command?: RosterMeetingCommand) {
@@ -902,23 +930,29 @@ export class RosterMeetingService {
   async end(actor: Actor, meetingId: string) {
     this.assertEnabled();
     const database = actor.workspace;
-    const shouldSeal = await this.withWorkspace(database, async () => {
-      const db = await this.getSession(database);
-      const meeting = await this.requireMeeting(db, meetingId);
-      if (meeting.room_id && this.media?.hasRosterRoom(database, meeting.room_id)) this.media.assertRosterHost(actor, meeting.room_id);
-      await db.query("UPDATE $id SET status = 'closed';", { id: meeting.id });
-      if (meeting.room_id) await this.media?.endRoster(database, meeting.room_id);
-      await db.query("UPDATE $id SET ended_at = ended_at ?? time::now();", { id: meeting.id });
-      if (this.evidence && meeting.room_id && meeting.status !== "closed") {
-        const closed = await this.requireMeeting(db, meetingId);
-        await this.appendEvidence(database, String(meeting.id), `${meeting.room_id}:end`, "recording-ended",
-          dateTimeTimestamp(closed.ended_at), { actor: actor.subject, room: meeting.room_id });
-      }
-      if (meeting.attendance_sheet && meeting.vote_sheet) {
-        await this.writeArchive(db, database, await this.requireMeeting(db, meetingId));
-      }
-      return Boolean(this.evidence && meeting.room_id && meeting.status !== "closed");
-    });
-    if (shouldSeal) await this.queueEvidence(database, meetingId);
+    try {
+      await this.withWorkspace(database, async () => {
+        const db = await this.getSession(database);
+        const meeting = await this.requireMeeting(db, meetingId);
+        if (meeting.room_id && this.media?.hasRosterRoom(database, meeting.room_id)) this.media.assertRosterHost(actor, meeting.room_id);
+        const at = dateTimeTimestamp(meeting.ended_at) || this.now();
+        if (this.evidence && meeting.room_id && meeting.status !== "closed") {
+          if (!this.evidenceJobs) throw unavailable();
+          await this.evidenceJobs.enqueue({ kind: "roster", workspace: database, meeting: String(meeting.id),
+            room: meeting.room_id, actor: actor.subject, at: new Date(at).toISOString() });
+        }
+        await db.query("UPDATE $id SET status = 'closed';", { id: meeting.id });
+        if (meeting.room_id) await this.media?.endRoster(database, meeting.room_id);
+        await db.query("UPDATE $id SET ended_at = ended_at ?? $at;", { id: meeting.id, at: new DateTime(new Date(at)) });
+        if (this.evidence && meeting.room_id && meeting.status !== "closed") {
+          const closed = await this.requireMeeting(db, meetingId);
+          await this.appendEvidence(database, String(meeting.id), `${meeting.room_id}:end`, "recording-ended",
+            dateTimeTimestamp(closed.ended_at), { actor: actor.subject, room: meeting.room_id });
+        }
+        if (meeting.attendance_sheet && meeting.vote_sheet) {
+          await this.writeArchive(db, database, await this.requireMeeting(db, meetingId));
+        }
+      });
+    } finally { this.wakeEvidence(); }
   }
 }

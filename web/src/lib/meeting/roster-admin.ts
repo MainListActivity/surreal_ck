@@ -23,10 +23,10 @@ export function createRosterAdminApi(slug: string, getToken: () => Promise<strin
   const base = `/api/workspaces/${encodeURIComponent(slug)}/roster-meetings`;
   const meetingPath = (id: string) => `/${encodeURIComponent(id)}`;
   const passPath = (meeting: string, id: string) => `${meetingPath(meeting)}/passes/${encodeURIComponent(id)}`;
-  async function request(path: string, method?: "POST" | "PUT" | "DELETE", body?: unknown) {
+  async function request(path: string, method?: "POST" | "PUT" | "DELETE", body?: unknown, streaming?: boolean) {
     const token = await getToken();
     if (!token) throw new RosterRequestError(401, "请重新登录后再管理名册会议");
-    return rosterRequest(base + path, { token, method, body, fetcher });
+    return rosterRequest(base + path, { token, method, body, fetcher, streaming });
   }
   async function json<T>(path: string, method?: "POST", body?: unknown) {
     return (await request(path, method, body)).json() as Promise<T>;
@@ -52,7 +52,7 @@ export function createRosterAdminApi(slug: string, getToken: () => Promise<strin
       const path = `${meetingPath(id)}/evidence`;
       const { url } = await json<{ url: string }>(`${path}/grant`, "POST");
       if (!url.startsWith(`${base}${path}/download?`)) throw new Error("会议存证下载链接无效");
-      return (await request(url.slice(base.length))).blob();
+      return request(url.slice(base.length), undefined, undefined, true);
     },
     moderation: (id: string) => json<RosterMeetingModeration>(`${meetingPath(id)}/moderation`),
     moderate: (id: string, command: RosterMeetingCommand) =>

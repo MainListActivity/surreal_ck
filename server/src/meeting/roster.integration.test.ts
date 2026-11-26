@@ -1,15 +1,23 @@
 import { expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { loadTemplateScripts } from "@surreal-ck/shared/workspace-template";
 import { Hono } from "hono";
+import { EgressClient } from "livekit-server-sdk";
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
 import { DateTime, RecordId, Surreal, Table } from "surrealdb";
 import { handleError } from "../middleware/error";
 import { createMeetingRosterRoutes } from "../routes/meeting-roster";
+import { createMeetingSfuRoutes } from "../routes/meeting-sfu";
 import { MeetingEvidenceArchive } from "./evidence-archive";
+import { recordingBrowser } from "./evidence-browser-fixture";
+import { privateEvidenceDirectory } from "./evidence-filesystem";
 import { MeetingEvidenceLedger, verifyEvidenceArtifact } from "./evidence-ledger";
+import { MeetingTrackRecording } from "./evidence-recording";
 import { EvidenceVault, deriveEvidenceWorkspaceKey } from "./evidence-vault";
 import { RosterMeetingService } from "./roster";
-import type { RosterSfuEvent, SfuActor } from "./sfu";
+import { PrivateMeetingSfu, type RosterSfuEvent, type SfuActor } from "./sfu";
 
 const binary = process.env.SURREAL_BINARY;
 const slug = "fixture";
@@ -19,7 +27,7 @@ const admin = `/api/workspaces/${slug}/roster-meetings`;
 const pub = "/api/meeting/roster";
 const pepper = "x".repeat(32);
 
-test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等候、吊销与数据隔离", async () => {
+async function withFork(run: (fixture: { root: Surreal; member: Surreal; owner: Surreal; login: () => Promise<void> }) => Promise<void>) {
   const reserve = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
   const port = reserve.port;
   reserve.stop(true);
@@ -71,6 +79,25 @@ test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等�
       CREATE user:fixture SET email = "member@example.test", kind = "human", is_admin = false;
       DEFINE ACCESS member_record ON DATABASE TYPE RECORD SIGNIN (SELECT * FROM user:fixture) DURATION FOR SESSION 1h;
     `).collect();
+    await run({ root, member, owner, async login() {
+      await member.connect(url, { namespace: "main", database });
+      await member.signin({ namespace: "main", database, access: "member_record", variables: {} });
+      await owner.connect(url);
+      await owner.authenticate(await new SignJWT({
+        ns: "main", db: database, ac: "admin", RL: ["Owner"], email: "owner@example.test",
+      }).setSubject("evidence-owner").setIssuer(issuer).setExpirationTime("120s").setIssuedAt()
+        .setProtectedHeader({ alg: "ES256", kid: "fixture" }).sign(keys.privateKey));
+      await owner.use({ namespace: "main", database });
+    } });
+  } finally {
+    await Promise.allSettled([member.close(), owner.close(), root.close()]);
+    proc.kill();
+    jwks.stop(true);
+  }
+}
+
+test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等候、吊销与数据隔离",
+  () => withFork(async ({ root, member, owner, login }) => {
     const drops: Array<{ room: string; subject: string }> = [];
     const rooms = new Set<string>();
     const calls: SfuActor[] = [];
@@ -359,8 +386,7 @@ test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等�
     await root.query("UPDATE roster_meeting_pass SET expires_at = $past WHERE status = 'active';",
       { past: new DateTime(new Date(Date.now() - 1000)) }).collect();
     expect(await (await verify(expiring, "1234", "192.0.2.8")).json()).toEqual(error);
-    await member.connect(url, { namespace: "main", database });
-    await member.signin({ namespace: "main", database, access: "member_record", variables: {} });
+    await login();
     expect(await member.query(`
       SELECT pass_hash, code_hash FROM roster_meeting_pass; SELECT * FROM roster_meeting;
       SELECT * FROM roster_meeting_event; SELECT * FROM roster_meeting_ballot;
@@ -372,12 +398,6 @@ test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等�
     expect(await member.update(ballots).merge({ choice: "changed" })).toEqual([]);
     expect(await member.delete(ballots)).toEqual([]);
 
-    await owner.connect(url);
-    await owner.authenticate(await new SignJWT({
-      ns: "main", db: database, ac: "admin", RL: ["Owner"], email: "owner@example.test",
-    }).setSubject("evidence-owner").setIssuer(issuer).setExpirationTime("120s").setIssuedAt()
-      .setProtectedHeader({ alg: "ES256", kid: "fixture" }).sign(keys.privateKey));
-    await owner.use({ namespace: "main", database });
     expect((await owner.select(events)).length).toBeGreaterThan(0);
     expect((await owner.select(ballots)).length).toBeGreaterThan(0);
     await expect(Promise.resolve(owner.update(events).merge({ actor: "changed" }))).rejects.toThrow("readonly");
@@ -410,13 +430,30 @@ test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等�
     expect(tampered?.ballots).toContain("投影被修改");
     expect(() => verifyEvidenceArtifact(artifact, Buffer.from(tampered!.ballots))).toThrow("不匹配");
     expect(await ledger.readVerifiedArtifact(scope, artifact)).toEqual(Buffer.from(projection.ballots));
+    const [actions] = await root.query<[string[]]>("SELECT VALUE action FROM roster_meeting_audit;").collect();
+    expect(actions).toEqual(expect.arrayContaining(["issued", "revoked", "verify_ok", "verify_failed", "replaced", "kicked", "rejected_concurrent"]));
+  }), 30_000);
+
+test.skipIf(!binary)("真实 fork：会议存证投影拒绝改删且独立核验发现投影丢失",
+  () => withFork(async ({ root, member, owner, login }) => {
+    await login();
+    const objects = new Map<string, Uint8Array>();
+    const vault = new EvidenceVault({
+      read: async (key) => objects.get(key) ?? null,
+      create: async (key, content) => {
+        if (objects.has(key)) return false;
+        objects.set(key, content);
+        return true;
+      },
+    }, deriveEvidenceWorkspaceKey(crypto.getRandomValues(new Uint8Array(32))));
     const archive = new MeetingEvidenceArchive(vault, "fixture archive key", 90,
       async () => ({ query: (sql, vars) => root.query(sql, vars).collect() }));
-    const evidenceMeeting = `${room}:evidence`;
+    const evidenceMeeting = "roster_meeting:fixture";
     const evidenceStatus = await archive.seal(database, evidenceMeeting, new Date().toISOString(), {}, new Map());
     expect(evidenceStatus.root).toMatch(/^[0-9a-f]{64}$/u);
     const evidenceApp = new Hono().onError(handleError).route("/", createMeetingRosterRoutes({
-      service, evidence: archive, origin,
+      service: new RosterMeetingService({ getPepper: () => pepper, resolveWorkspace: async () => ({ dbName: database }) }),
+      evidence: archive, origin,
       requireUser: () => async (c, next) => {
         const [subject, db, ac] = (c.req.header("authorization") ?? "").split("|");
         c.set("user", { subject: subject ?? "", rawToken: "", raw: { db, ac } });
@@ -445,11 +482,131 @@ test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等�
     }
     await owner.query("REMOVE EVENT meeting_evidence_archive_immutable ON TABLE meeting_evidence_archive; DELETE meeting_evidence_archive;").collect();
     await expect(archive.status(database, evidenceMeeting)).rejects.toMatchObject({ status: 409 });
-    const [actions] = await root.query<[string[]]>("SELECT VALUE action FROM roster_meeting_audit;").collect();
-    expect(actions).toEqual(expect.arrayContaining(["issued", "revoked", "verify_ok", "verify_failed", "replaced", "kicked", "rejected_concurrent"]));
-  } finally {
-    await Promise.allSettled([member.close(), owner.close(), root.close()]);
-    proc.kill();
-    jwks.stop(true);
-  }
-}, 30_000);
+  }), 30_000);
+
+const { M13_TEST_BROWSER: chrome, M13_TEST_WEBHOOK_PORT: hookPort, M13_TEST_ENDPOINT: endpoint,
+  M13_TEST_KEY: key, M13_TEST_SECRET: secret, M13_TEST_SPOOL: spool } = process.env;
+
+test.skipIf(!binary || !chrome || !hookPort || !endpoint || !key || !secret || !spool)(
+  "真实名册存证：共享屏幕、重新入会、点名、表决异议与视频时间轴相差不超过两秒",
+  () => withFork(async ({ root }) => {
+    const directory = await mkdtemp(join(tmpdir(), "meeting-alignment-"));
+    const vault = new EvidenceVault(privateEvidenceDirectory(directory), deriveEvidenceWorkspaceKey(Buffer.alloc(32, 7)));
+    const query = async () => ({ query: (sql: string, vars?: Record<string, unknown>) => root.query(sql, vars).collect() });
+    const archive = new MeetingEvidenceArchive(vault, "fixture", 60, query);
+    const recording = new MeetingTrackRecording(spool!, new EgressClient(endpoint!, key!, secret!));
+    const signalUrl = "http://127.0.0.1:" + hookPort;
+    const media = new PrivateMeetingSfu({ privateUrl: endpoint!, signalUrl, key: key!, secret: secret!, maxSeats: 8 },
+      undefined, Date.now, recording.start.bind(recording));
+    let service: RosterMeetingService;
+    const jobs = archive.finalization((job) => service.finalizeEvidence(job));
+    service = new RosterMeetingService({ media, evidence: archive, recording, evidenceJobs: jobs, getSession: query,
+      getPepper: () => pepper, resolveWorkspace: async () => ({ dbName: database }) });
+    const routes = createMeetingSfuRoutes({ service: media,
+      config: { NODE_ENV: "test", MEETING_SFU_PRIVATE_URL: endpoint!, MEETING_SFU_SIGNAL_URL: signalUrl,
+        MEETING_SFU_KEY: key!, MEETING_SFU_SECRET: secret!, MEETING_SFU_MAX_SEATS: 8 },
+      workspaceScope: { async resolveCollaborationScope() { return { kind: "forbidden" }; } },
+    }).onError(handleError);
+    const hook = Bun.serve({ hostname: "127.0.0.1", port: Number(hookPort), fetch: routes.fetch });
+    const host = { workspace: database, subject: "fixture-host", name: "主持人", expiresAt: Date.now() + 180_000, workspaceAdmin: true };
+    let browser: Awaited<ReturnType<typeof recordingBrowser>> | undefined;
+    let roomId: string | undefined;
+    const waitFor = async <T>(get: () => Promise<T | undefined>, description: string) => {
+      for (let i = 0; i < 100; i++) {
+        const result = await get();
+        if (result) return result;
+        await Bun.sleep(100);
+      }
+      throw new Error(description);
+    };
+    try {
+      browser = await recordingBrowser(chrome!, join(directory, "chrome"));
+      const { evaluate } = browser;
+      const meeting = (await service.create(database, host.subject, { title: "存证时间轴", scheduled_at: new Date().toISOString(),
+        sheet_id: "sheet:roster", display_field: "name", check_field: "check", check_mode: "suffix4", admission: "direct", concurrency: "replace" })).id;
+      const room = await service.start(host, meeting);
+      roomId = room.id;
+      const [first, second] = await service.issue(database, slug, meeting, ["test_roster:first", "test_roster:second"], host.subject);
+      const guest = await service.verify({ pass: first!.pass, code: first!.code, check: "1234" }, "192.0.2.1");
+      const secondGuest = await service.verify({ pass: second!.pass, code: second!.code, check: "5678" }, "192.0.2.2");
+      const hostGrant = await media.credentials(host, room.id, true);
+      const guestGrant = await service.credentials(guest.cookie, true);
+      const secondGrant = await service.credentials(secondGuest.cookie, true);
+      await evaluate(`(async () => {
+        window.connect = async (token) => { const room = new lk.Room(); await room.connect(${JSON.stringify(endpoint)}, token); return room; };
+        window.host = await connect(${JSON.stringify(hostGrant.token)});
+        window.guest = await connect(${JSON.stringify(guestGrant.token)});
+        window.other = await connect(${JSON.stringify(secondGrant.token)});
+        const canvas = document.createElement("canvas");
+        canvas.width = 320; canvas.height = 180; document.body.append(canvas);
+        window.color = "red";
+        const paint = () => { const ctx = canvas.getContext("2d"); ctx.fillStyle = color; ctx.fillRect(0, 0, 320, 180); };
+        paint();
+        setInterval(paint, 25);
+        await host.localParticipant.publishTrack(canvas.captureStream(25).getVideoTracks()[0], { source: lk.Track.Source.ScreenShare });
+        const audio = new AudioContext();
+        const tone = new OscillatorNode(audio, { frequency: 440 });
+        const sink = audio.createMediaStreamDestination();
+        tone.connect(sink); tone.start();
+        await host.localParticipant.publishTrack(sink.stream.getAudioTracks()[0], { source: lk.Track.Source.Microphone });
+      })()`);
+      const events = () => archive.events(database, meeting);
+      const event = (kind: string) => waitFor(async () => (await events()).find((item) => item.kind === kind), `缺少事件 ${kind}`);
+      const screen = await waitFor(async () => (await events()).find((item) => item.kind === "track-published"
+        && (item.payload as { source: number }).source === 3), "缺少屏幕共享轨道事件");
+      await event("joined");
+      await Bun.sleep(2200);
+      await evaluate(`(async () => { await guest.disconnect(); window.guest = await connect(${JSON.stringify(guestGrant.token)}); })()`);
+      const reconnect = await waitFor(async () => {
+        const joined = (await events()).filter(({ kind }) => kind === "joined");
+        return joined.length >= 3 ? joined.at(-1) : undefined;
+      }, "缺少重新入会事件");
+      await evaluate('window.color = "lime"');
+      await Bun.sleep(800);
+      await service.raiseHand(guest.cookie);
+      const target = (await service.moderation(host, meeting)).participants.find(({ raisedAt }) => raisedAt)!;
+      await service.moderation(host, meeting, { action: "allow", identity: target.id });
+      const allowed = await event("allowed");
+      await evaluate('window.color = "blue"');
+      await Bun.sleep(800);
+      const poll = await service.openPoll(host, meeting, { title: "议题", deadline: new Date(Date.now() + 60_000).toISOString(),
+        options: [{ key: "yes", label: "同意" }, { key: "no", label: "反对" }], allowChange: false });
+      await service.vote(guest.cookie, poll.id, { option: "no", note: "记录异议" });
+      const voted = await event("ballot");
+      await evaluate('window.color = "white"');
+      await Bun.sleep(900);
+      await service.end(host, meeting);
+      await jobs.resume();
+      const { token, root: trustedRoot } = await archive.grant(database, meeting, host.subject);
+      const tar = join(directory, "archive.tar");
+      const writer = Bun.file(tar).writer();
+      for await (const chunk of await archive.download(database, meeting, host.subject, token)) writer.write(chunk);
+      await writer.end();
+      expect(Bun.spawnSync(["tar", "-xf", tar, "-C", directory]).exitCode).toBe(0);
+      expect(Bun.spawnSync(["python3", "../scripts/verify-meeting-evidence.py", directory, "--trusted-root", trustedRoot]).exitCode).toBe(0);
+      const sample = Bun.spawnSync(["ffmpeg", "-v", "error", "-i", join(directory, "archive.mp4"), "-an", "-vf",
+        "crop=2:2:480:270,fps=25,scale=1:1", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"]);
+      expect(sample.exitCode).toBe(0);
+      const start = Date.parse((await event("recording-started")).at);
+      const predicates = [
+        (r: number, g: number, b: number) => r > 150 && g < 60 && b < 60,
+        (r: number, g: number, b: number) => r < 60 && g > 150 && b < 60,
+        (r: number, g: number, b: number) => r < 60 && g < 60 && b > 150,
+        (r: number, g: number, b: number) => r > 150 && g > 150 && b > 150,
+      ];
+      for (const [index, marker] of [screen, reconnect, allowed, voted].entries()) {
+        let offset = 0;
+        while (offset < sample.stdout.length && !predicates[index]!(sample.stdout[offset]!, sample.stdout[offset + 1]!, sample.stdout[offset + 2]!)) offset += 3;
+        expect(offset).toBeLessThan(sample.stdout.length);
+        const difference = Math.abs(start + (offset / 3) * 40 - Date.parse(marker.at));
+        console.info(`M13 视频对齐 ${marker.kind}: ${difference} ms`);
+        expect(difference).toBeLessThanOrEqual(2000);
+      }
+    } finally {
+      browser?.close();
+      if (roomId) await media.endRoster(database, roomId).catch(() => undefined);
+      hook.stop(true);
+      media.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }), 60_000);

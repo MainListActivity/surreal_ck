@@ -83,9 +83,10 @@ function resolveConfig(config: Config) {
   return { privateUrl: privateUrl.origin, signalUrl: signalUrl.origin, appOrigin: appUrl ? appUrl.origin : undefined, key, secret, maxSeats };
 }
 
-export function createPrivateMeetingSfu(config: Config = env, recordTrack?: ConstructorParameters<typeof PrivateMeetingSfu>[3]): PrivateMeetingSfu | undefined {
+export function createPrivateMeetingSfu(config: Config = env, recordTrack?: ConstructorParameters<typeof PrivateMeetingSfu>[3],
+  startDaily?: ConstructorParameters<typeof PrivateMeetingSfu>[4]): PrivateMeetingSfu | undefined {
   const resolved = resolveConfig(config);
-  return resolved && new PrivateMeetingSfu(resolved, undefined, undefined, recordTrack);
+  return resolved && new PrivateMeetingSfu(resolved, undefined, undefined, recordTrack, startDaily);
 }
 
 function validate<T>(schema: z.ZodType<T>, value: unknown): T {
@@ -230,7 +231,9 @@ export function createMeetingSfuRoutes({
       return c.json(await requireSfu().invite(actor, roomId, input.subject, input.role), 201);
     })
     .get(`${apiPath}/rooms/:roomId/recording`, requireUser(), authenticate, (c) =>
-      c.json({ recording: requireSfu().recording(actors.get(c.req.raw)!, requireRoomId(c.req.param("roomId"))) }))
+      c.json(requireSfu().recordingState(actors.get(c.req.raw)!, requireRoomId(c.req.param("roomId")))))
+    .post(`${apiPath}/rooms/:roomId/recording`, requireUser(), authenticate, async (c) =>
+      c.json(await requireSfu().startDailyRecording(actors.get(c.req.raw)!, requireRoomId(c.req.param("roomId")))))
     .post(`${apiPath}/rooms/:roomId/credentials`, requireUser(), bodyLimit({ maxSize: 256 }), authenticate, async (c) => {
       const actor = actors.get(c.req.raw)!;
       const consent = z.strictObject({ consent: z.literal(true) }).safeParse(await c.req.json().catch(() => null)).success;

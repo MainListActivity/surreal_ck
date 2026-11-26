@@ -37,15 +37,17 @@ export function rosterVerifyMessage(error: unknown): string {
 
 export async function rosterRequest(path: string, options: {
   method?: "GET" | "POST" | "PUT" | "DELETE"; body?: unknown; token?: string; fetcher?: typeof fetch;
-  credentials?: "same-origin" | "include";
+  credentials?: "same-origin" | "include"; streaming?: boolean;
 } = {}): Promise<Response> {
   const { method = "GET", body, token, fetcher = fetch, credentials = "same-origin" } = options;
+  const controller = options.streaming ? new AbortController() : undefined;
+  const timeout = controller && setTimeout(() => controller.abort(), 10_000);
   const response = await fetcher(path, {
     method, credentials: token ? "omit" : credentials, cache: "no-store",
     headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
     body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(10_000),
-  });
+    signal: controller?.signal ?? AbortSignal.timeout(10_000),
+  }).finally(() => clearTimeout(timeout));
   if (!response.ok) {
     const data = await response.json().catch(() => null) as { error?: { message?: string } } | null;
     throw new RosterRequestError(response.status, data?.error?.message ?? "名册会议请求失败");

@@ -308,7 +308,20 @@
             <p role="alert">请立即下载并离线备份存证包；未归档证据不会自动删除。</p>
           {/if}
           <button disabled={busy} onclick={() => void run(async () => {
-            const blob = await api.downloadEvidence(current.id);
+            const picker = (window as Window & { showSaveFilePicker?: (options: { suggestedName: string }) =>
+              Promise<{ createWritable(): Promise<WritableStream<Uint8Array>> }> }).showSaveFilePicker;
+            if (picker) {
+              const file = await picker.call(window, { suggestedName: "meeting-evidence.tar" }).catch((cause: unknown) => {
+                if (cause instanceof DOMException && cause.name === "AbortError") return;
+                throw cause;
+              });
+              if (!file) return;
+              const stream = (await api.downloadEvidence(current.id)).body;
+              if (!stream) throw new Error("会议存证下载响应为空");
+              await stream.pipeTo(await file.createWritable());
+              return;
+            }
+            const blob = await (await api.downloadEvidence(current.id)).blob();
             const link = document.createElement("a");
             const url = URL.createObjectURL(blob);
             link.href = url;
