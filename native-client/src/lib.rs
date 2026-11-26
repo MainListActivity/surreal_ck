@@ -590,6 +590,29 @@ pub fn Collaboration() -> impl IntoElement {
             move || first_screen::members_empty(&identity.get()).1,
         )))
         .child(ui::card().child(identity_panel));
+    #[cfg(feature = "experimental-enterprise-meeting")]
+    let meeting_diagnostics =
+        {
+            let meeting = meeting_bridge.state();
+            view()
+                .style_when(move || meeting.get().room.is_none(), |style| style.hidden())
+                .child(text("会议选路"))
+                .child(text(move || {
+                    let current = meeting.get();
+                    let mut lines = Vec::new();
+                    if current.managed_ice_unavailable {
+                        lines.push("托管 ICE 配置不可用；新连接仅尝试直连。".to_owned());
+                    }
+                    if let Some(room) = current.room {
+                        lines.extend(room.members.iter().filter(|member| !member.is_local).map(
+                            |member| format!("{}：{}", member.display_name, member.edge.label()),
+                        ));
+                    }
+                    lines.join("\n")
+                }))
+        };
+    #[cfg(not(feature = "experimental-enterprise-meeting"))]
+    let meeting_diagnostics = view();
     // 开发者诊断：手动 P2P、STUN/TURN、连接指纹、媒体与文件调试。安全能力保留，只是不在首屏。
     let diagnostics_page = view()
         .gap_3()
@@ -603,6 +626,7 @@ pub fn Collaboration() -> impl IntoElement {
                 .font_weight(FontWeight::BOLD),
         )
         .child(ui::note(|| first_screen::DIAGNOSTICS_NOTICE.to_owned()))
+        .child(meeting_diagnostics)
         .child(text(move || status.get()).text_color(move || theme().muted_foreground))
         .child(verification.panel(verification_commands, busy))
         .child(

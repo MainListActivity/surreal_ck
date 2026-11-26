@@ -20,6 +20,85 @@ use surreal_ck_peer_transport::{
 use tokio::sync::Mutex;
 
 #[tokio::test]
+#[ignore = "requires isolated coturn on 127.0.0.1 with fixture credentials"]
+async fn meeting_edge_uses_only_coturn_relay_and_observes_selected_relay() {
+    let port: u16 = std::env::var("M04_COTURN_TEST_PORT")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let route = Route::RelayFallback {
+        urls: vec![format!("turn:127.0.0.1:{port}?transport=udp")],
+        username: "fixture-user".into(),
+        credential: "fixture-password".into(),
+    };
+    let a = JoinId::new("a").unwrap();
+    let b = JoinId::new("b").unwrap();
+    let attempt = Attempt {
+        edge: EdgeKey::new(RoomId::new("room").unwrap(), a.clone(), b.clone()).unwrap(),
+        attempt_no: 2,
+        nonce: [0; 16],
+        route: RouteKind::Relay,
+        expires_at: Instant::now() + Duration::from_secs(35),
+    };
+    let mut settings = SettingEngine::default();
+    settings.set_include_loopback_candidate(true);
+    let mut first = MeetingEdge::new(attempt.clone(), a, route.clone(), vec![], settings.clone())
+        .await
+        .unwrap();
+    let mut second = MeetingEdge::new(attempt, b, route, vec![], settings)
+        .await
+        .unwrap();
+    let mut first_events = first.take_events().unwrap();
+    let mut second_events = second.take_events().unwrap();
+    let offer = first.offer().await.unwrap();
+    let hash = offer_hash(&offer);
+    let answer = second.answer(offer.clone()).await.unwrap();
+    for description in [&offer, &answer] {
+        let candidates: Vec<_> = description
+            .sdp
+            .lines()
+            .filter(|line| line.starts_with("a=candidate:"))
+            .collect();
+        assert!(!candidates.is_empty());
+        assert!(candidates.iter().all(|line| line.contains(" typ relay")));
+    }
+    first.accept_answer(answer, hash).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        for edge in [&first, &second] {
+            while edge.connection_state() != RTCPeerConnectionState::Connected {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert_eq!(edge.stats().await.route, ObservedRoute::Relay);
+            edge.media().set_enabled(Source::Microphone, true);
+            edge.media()
+                .send(
+                    Source::Microphone,
+                    Bytes::from_static(include_bytes!("fixtures/test.opus.packet")),
+                    Duration::from_millis(20),
+                )
+                .await
+                .unwrap();
+        }
+        for events in [&mut first_events, &mut second_events] {
+            loop {
+                match events.recv().await {
+                    Some(Event::Frame {
+                        source: Source::Microphone,
+                        ..
+                    }) => break,
+                    Some(_) => {}
+                    None => panic!("relay media event channel closed"),
+                }
+            }
+        }
+    })
+    .await
+    .expect("coturn relay did not establish two-way media");
+    first.close().await.unwrap();
+    second.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn meeting_mesh_three_edges_survive_member_departure() {
     tokio::time::timeout(Duration::from_secs(40), async {
         let router = Arc::new(Mutex::new(
