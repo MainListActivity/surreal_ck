@@ -1,4 +1,5 @@
 """开发候选不会放松正式发布批准或完整性检查。"""
+from datetime import datetime, timedelta, timezone
 import importlib.util
 import json
 import os
@@ -22,7 +23,10 @@ class DevelopmentMediaTests(unittest.TestCase):
         self.addCleanup(reader.stop)
 
     def test_exact_candidate_only(self):
-        with patch.dict(os.environ, {'GITHUB_EVENT_NAME':'push', 'GITHUB_REF':'refs/heads/feat/native-collaboration-bootstrap'}):
+        locks = [self.lock, *self.lock.get('additional_candidates', [])]
+        first_expiry = min(datetime.fromisoformat(lock['expires_at']) for lock in locks)
+        with patch.dict(os.environ, {'GITHUB_EVENT_NAME':'push', 'GITHUB_REF':'refs/heads/feat/native-collaboration-bootstrap'}), patch.object(builder.media, 'datetime', wraps=datetime) as clock:
+            clock.now.return_value = first_expiry - timedelta(seconds=1)
             result = builder.media.development_candidate(self.lock['manifest_sha256'], 'windows', 'x86_64')
             self.assertEqual(result['source_commit'], self.lock['source_commit'])
             for digest, platform, arch in [('0'*64,'windows','x86_64'),(self.lock['manifest_sha256'],'macos','x86_64'),(self.lock['manifest_sha256'],'windows','aarch64')]:
@@ -38,7 +42,6 @@ class DevelopmentMediaTests(unittest.TestCase):
                 builder.media_config(context | {'SURREAL_MEDIA_RUNTIME_MODE':'development-candidate'})
 
     def test_expiration_fails_closed(self):
-        from datetime import datetime, timezone
         with patch.object(builder.media, 'datetime') as clock:
             clock.now.return_value = datetime(2100,1,1,tzinfo=timezone.utc)
             clock.fromisoformat.side_effect = datetime.fromisoformat
