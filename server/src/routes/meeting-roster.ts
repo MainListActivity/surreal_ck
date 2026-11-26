@@ -7,6 +7,7 @@ import type { AppBindings } from "../hono-types";
 import { HttpError } from "../http-error";
 import { MAX_ROSTER_BATCH, rosterDenied, RosterMeetingService } from "../meeting/roster";
 import { archiveConfigSchema } from "../meeting/roster-archive";
+import type { MeetingEvidenceArchive } from "../meeting/evidence-archive";
 import { renderVoteReceipt } from "../meeting/roster-receipt-pdf";
 import { castVoteSchema, openPollSchema } from "../meeting/roster-votes";
 import { requireOidc } from "../middleware/oidc";
@@ -51,6 +52,7 @@ type Options = {
   trustedProxy?: boolean;
   requireUser?: () => MiddlewareHandler<AppBindings>;
   sourceIp?: (c: Context<AppBindings>) => string;
+  evidence?: MeetingEvidenceArchive;
 };
 
 function csvCell(value: string): string {
@@ -158,14 +160,18 @@ export function createMeetingRosterRoutes(options: Options = {}) {
   app.post(publicPath + "/verify", requireOrigin, async (c) => {
     const parsed = verifyBody.safeParse(await json(c, 2048));
     const result = await service.verify(parsed.success ? parsed.data : { pass: "", code: "" },
-      options.sourceIp?.(c) ?? clientIp(c, proxy));
+      options.sourceIp?.(c) ?? clientIp(c, proxy), c.req.header("user-agent"));
     setCookie(c, cookieName, result.cookie, {
       path: publicPath, secure: true, httpOnly: true, sameSite: "Strict", maxAge: result.maxAge,
     });
-    return c.json({ state: result.state, title: result.title, name: result.name, check_label: result.check_label });
+    return c.json({ state: result.state, title: result.title, name: result.name, check_label: result.check_label, recording: result.recording });
   });
   app.get(publicPath + "/session", async (c) => c.json(await service.session(getCookie(c, cookieName))));
-  app.post(publicPath + "/credentials", requireOrigin, async (c) => c.json(await service.credentials(getCookie(c, cookieName))));
+  app.post(publicPath + "/credentials", requireOrigin, async (c) => {
+    const confirmation = await json(c, 256);
+    const consent = z.strictObject({ consent: z.literal(true) }).safeParse(confirmation).success;
+    return c.json(await service.credentials(getCookie(c, cookieName), consent));
+  });
   app.post(publicPath + "/raise-hand", requireOrigin, async (c) => {
     await service.raiseHand(getCookie(c, cookieName));
     return c.body(null, 204);
@@ -182,7 +188,36 @@ export function createMeetingRosterRoutes(options: Options = {}) {
     });
   });
 
+  const evidencePath = adminPath + "/:meeting/evidence";
+  app.use(evidencePath + "/*", (c, next) => {
+    if (!c.req.header("authorization")) throw new HttpError(403, "meeting-evidence-denied", "无权下载会议存证包");
+    return next();
+  });
   app.use(adminPath + "/:meeting/*", headers, oidc, admin);
+  const evidence = () => {
+    if (!options.evidence) throw new HttpError(503, "meeting-evidence-unavailable", "会议存证服务尚未启用");
+    return options.evidence;
+  };
+  app.get(evidencePath + "/status", async (c) =>
+    c.json(await evidence().status(database(c), param(c, "meeting"))));
+  app.post(evidencePath + "/finalize", async (c) => {
+    await service.queueEvidence(database(c), param(c, "meeting"));
+    return c.body(null, 202);
+  });
+  app.post(evidencePath + "/grant", async (c) => {
+    const meeting = param(c, "meeting");
+    const { token, ...grant } = await evidence().grant(database(c), meeting, c.var.user.subject);
+    const path = evidencePath.replace(":slug", encodeURIComponent(param(c, "slug")))
+      .replace(":meeting", encodeURIComponent(meeting)) + "/download";
+    return c.json({ ...grant, url: `${path}?ticket=${encodeURIComponent(token)}` });
+  });
+  app.get(evidencePath + "/download", async (c) => {
+    const blob = await evidence().download(database(c), param(c, "meeting"), c.var.user.subject, c.req.query("ticket") ?? "");
+    return new Response(blob, { headers: {
+      "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff",
+      "Content-Type": "application/x-tar", "Content-Disposition": 'attachment; filename="meeting-evidence.tar"',
+    } });
+  });
   app.get(adminPath, headers, oidc, admin, async (c) => c.json({ meetings: await service.list(database(c)) }));
   app.post(adminPath, headers, oidc, admin, async (c) => c.json(await service.create(database(c), c.var.user.subject, await input(c, createBody)), 201));
   app.get(adminPath + "/:meeting/passes", async (c) => c.json({

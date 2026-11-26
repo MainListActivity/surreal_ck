@@ -17,15 +17,16 @@ export type RosterPass = {
   lease_state?: "waiting" | "admitted" | "kicked"; generation: number;
 };
 export type RosterWaiting = { id: string; name: string; generation: number };
+export type EvidenceStatus = { root: string; sealedAt: string; retainUntil: string; backupReminder: boolean };
 
 export function createRosterAdminApi(slug: string, getToken: () => Promise<string | null> = refresh, fetcher?: typeof fetch) {
   const base = `/api/workspaces/${encodeURIComponent(slug)}/roster-meetings`;
   const meetingPath = (id: string) => `/${encodeURIComponent(id)}`;
   const passPath = (meeting: string, id: string) => `${meetingPath(meeting)}/passes/${encodeURIComponent(id)}`;
-  async function request(path: string, method?: "POST" | "PUT" | "DELETE", body?: unknown) {
+  async function request(path: string, method?: "POST" | "PUT" | "DELETE", body?: unknown, streaming?: boolean) {
     const token = await getToken();
     if (!token) throw new RosterRequestError(401, "请重新登录后再管理名册会议");
-    return rosterRequest(base + path, { token, method, body, fetcher });
+    return rosterRequest(base + path, { token, method, body, fetcher, streaming });
   }
   async function json<T>(path: string, method?: "POST", body?: unknown) {
     return (await request(path, method, body)).json() as Promise<T>;
@@ -45,6 +46,18 @@ export function createRosterAdminApi(slug: string, getToken: () => Promise<strin
     saveArchiveConfig: (id: string, input: RosterArchiveSheets & { weightField?: string }) =>
       request(`${meetingPath(id)}/archive-config`, "PUT", input),
     archive: (id: string) => json<RosterArchiveSheets>(`${meetingPath(id)}/archive`, "POST"),
+    evidenceStatus: (id: string) => json<EvidenceStatus>(`${meetingPath(id)}/evidence/status`),
+    finalizeEvidence: (id: string) => request(`${meetingPath(id)}/evidence/finalize`, "POST"),
+    downloadEvidence: async (id: string) => {
+      const path = `${meetingPath(id)}/evidence`;
+      const { url } = await json<{ url: string }>(`${path}/grant`, "POST");
+      const origin = "https://meeting.invalid";
+      const grant = typeof url === "string" && url.startsWith("/") && !url.startsWith("//") ? new URL(url, origin) : null;
+      if (grant?.origin !== origin || grant.pathname !== `${base}${path}/download` || !grant.search || grant.hash) {
+        throw new Error("会议存证下载链接无效");
+      }
+      return request(`${path}/download${grant.search}`, undefined, undefined, true);
+    },
     moderation: (id: string) => json<RosterMeetingModeration>(`${meetingPath(id)}/moderation`),
     moderate: (id: string, command: RosterMeetingCommand) =>
       json<RosterMeetingModeration>(`${meetingPath(id)}/moderation`, "POST", command),

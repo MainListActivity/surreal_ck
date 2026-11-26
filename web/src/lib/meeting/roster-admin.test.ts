@@ -41,3 +41,28 @@ test("主持人客户端按会议读写表决与归档配置", async () => {
   expect(requests[1]?.init?.body).toBe(JSON.stringify(poll));
   expect(requests[3]?.init?.body).toBe(JSON.stringify(config));
 });
+
+test.each(["%E2%9F%A82fixture%E2%9F%A9", "⟨2fixture⟩"])("存证下载识别带括号的会议编号（%s）并返回流", async (grantId) => {
+  const path = "/api/workspaces/fixture/roster-meetings/roster_meeting%3A%E2%9F%A82fixture%E2%9F%A9/evidence";
+  const content = new Response("tar");
+  const requests: [string, string | undefined][] = [];
+  const api = createRosterAdminApi("fixture", async () => "fixture-token", Object.assign(async (url: unknown, init?: RequestInit) => {
+    requests.push([String(url), init?.method]);
+    expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer fixture-token");
+    return init?.method === "POST"
+      ? Response.json({ url: path.replace("%E2%9F%A82fixture%E2%9F%A9", grantId) + "/download?ticket=fixture" })
+      : content;
+  }, { preconnect: () => {} }));
+  expect(await api.downloadEvidence("roster_meeting:⟨2fixture⟩")).toBe(content);
+  expect(content.bodyUsed).toBe(false);
+  expect(requests).toEqual([[path + "/grant", "POST"], [path + "/download?ticket=fixture", "GET"]]);
+});
+
+test("存证下载拒绝其它工作区的票据链接", async () => {
+  const fetcher = Object.assign(async (_url: unknown, init?: RequestInit) => {
+    if (init?.method !== "POST") throw new Error("不应发送下载请求");
+    return Response.json({ url: "/api/workspaces/other/roster-meetings/roster_meeting%3A⟨2fixture⟩/evidence/download?ticket=fixture" });
+  }, { preconnect: () => {} });
+  const api = createRosterAdminApi("fixture", async () => "fixture-token", fetcher);
+  await expect(api.downloadEvidence("roster_meeting:⟨2fixture⟩")).rejects.toThrow("会议存证下载链接无效");
+});

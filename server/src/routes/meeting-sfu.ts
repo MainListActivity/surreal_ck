@@ -83,9 +83,10 @@ function resolveConfig(config: Config) {
   return { privateUrl: privateUrl.origin, signalUrl: signalUrl.origin, appOrigin: appUrl ? appUrl.origin : undefined, key, secret, maxSeats };
 }
 
-export function createPrivateMeetingSfu(config: Config = env): PrivateMeetingSfu | undefined {
+export function createPrivateMeetingSfu(config: Config = env, recordTrack?: ConstructorParameters<typeof PrivateMeetingSfu>[3],
+  startDaily?: ConstructorParameters<typeof PrivateMeetingSfu>[4]): PrivateMeetingSfu | undefined {
   const resolved = resolveConfig(config);
-  return resolved && new PrivateMeetingSfu(resolved);
+  return resolved && new PrivateMeetingSfu(resolved, undefined, undefined, recordTrack, startDaily);
 }
 
 function validate<T>(schema: z.ZodType<T>, value: unknown): T {
@@ -197,6 +198,7 @@ export function createMeetingSfuRoutes({
         if (!event) return c.body(null, 403);
         const roomId = sfu.observeLiveKitPresence(event);
         if (roomId && !await sfu.flushRosterEvents(roomId)) return c.body(null, 503);
+        await sfu.observeRecording(event);
         return c.body(null, 204);
       },
     )
@@ -228,8 +230,17 @@ export function createMeetingSfuRoutes({
       }
       return c.json(await requireSfu().invite(actor, roomId, input.subject, input.role), 201);
     })
-    .post(`${apiPath}/rooms/:roomId/credentials`, requireUser(), authenticate, async (c) =>
-      c.json(await requireSfu().credentials(actors.get(c.req.raw)!, requireRoomId(c.req.param("roomId")))))
+    .get(`${apiPath}/rooms/:roomId/recording`, requireUser(), authenticate, (c) =>
+      c.json(requireSfu().recordingState(actors.get(c.req.raw)!, requireRoomId(c.req.param("roomId")))))
+    .post(`${apiPath}/rooms/:roomId/recording`, requireUser(), authenticate, async (c) =>
+      c.json(await requireSfu().startDailyRecording(actors.get(c.req.raw)!, requireRoomId(c.req.param("roomId")))))
+    .delete(`${apiPath}/rooms/:roomId/recording`, requireUser(), authenticate, async (c) =>
+      c.json(await requireSfu().stopDailyRecording(actors.get(c.req.raw)!, requireRoomId(c.req.param("roomId")))))
+    .post(`${apiPath}/rooms/:roomId/credentials`, requireUser(), bodyLimit({ maxSize: 256 }), authenticate, async (c) => {
+      const actor = actors.get(c.req.raw)!;
+      const consent = z.strictObject({ consent: z.literal(true) }).safeParse(await c.req.json().catch(() => null)).success;
+      return c.json(await requireSfu().credentials(actor, requireRoomId(c.req.param("roomId")), consent));
+    })
     .post(`${apiPath}/rooms/:roomId/participants/:identity/stop-publishing`, requireUser(), authenticate, async (c) => {
       await requireSfu().stopPublishing(actors.get(c.req.raw)!, requireRoomId(c.req.param("roomId")), c.req.param("identity"));
       return c.body(null, 204);

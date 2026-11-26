@@ -112,7 +112,7 @@
     {onopenquota}
   />
 
-  <div class="workspace-content">
+  <div class="workspace-content" class:meeting-content={page === "meeting"}>
     {#if page === "home"}
       <HomeScreen
         {query}
@@ -190,5 +190,9 @@
     min-width: 0;
     flex-direction: column;
     overflow: hidden;
+  }
+
+  .meeting-content {
+    overflow-y: auto;
   }
 </style>

@@ -127,7 +127,8 @@ export async function participantPolls(db: RosterQuery, meeting: VotingMeeting, 
   });
 }
 
-export async function castVote(db: RosterQuery, meeting: VotingMeeting, pass: Identity, name: string, id: string, input: Vote) {
+export async function castVote(db: RosterQuery, meeting: VotingMeeting, pass: Identity, name: string, id: string, input: Vote,
+  onSaved?: (ballot: Ballot, version: string) => Promise<void>) {
   const poll = await requirePoll(db, meeting, id);
   if (!poll.options.some((option) => option.key === input.option)) throw badChoice();
   const subject = pass.roster_row;
@@ -178,6 +179,7 @@ export async function castVote(db: RosterQuery, meeting: VotingMeeting, pass: Id
   const [saved] = rows<Ballot>(await db.query("SELECT * FROM $ballot;", { ballot }));
   const result = saved ?? await latestBallot(db, poll.id, subject);
   if (!result) throw notFound();
+  await onSaved?.(result, poll.version);
   return publicBallot(result);
 }
 

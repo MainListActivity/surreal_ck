@@ -96,18 +96,23 @@ test("checks the live lease again when a preauthorized upgrade races a demotion 
   }
 });
 
-function rosterTelemetryFixture() {
+function rosterTelemetryFixture(recordTrack?: ConstructorParameters<typeof PrivateMeetingSfu>[3],
+  startDaily?: ConstructorParameters<typeof PrivateMeetingSfu>[4]) {
   let now = Date.now();
+  const participants: ParticipantInfo[] = [];
   const service = new PrivateMeetingSfu(
     { privateUrl: privateAddress, signalUrl: signalAddress, key, secret, maxSeats: 4 },
     {
       createRoom: async ({ name }) => new Room({ name }),
       listRooms: async () => [],
+      listParticipants: async () => participants,
       deleteRoom: async () => {},
       removeParticipant: async () => {},
       updateParticipant: async () => new ParticipantInfo(),
     },
     () => now,
+    recordTrack,
+    startDaily,
   );
   const host = { workspace: "workspace1", subject: "roster-host", name: "主持人", workspaceAdmin: true, expiresAt: now + 300_000 };
   const pass = "roster_meeting_pass:fixture";
@@ -124,8 +129,114 @@ function rosterTelemetryFixture() {
   };
   const body = (event: string, roomId: string, identity: string, sid: string, at = Math.floor(now / 1000) * 1000) =>
     JSON.stringify({ event, room: { name: `ck-meeting-${roomId}` }, participant: { identity, sid }, createdAt: String(at / 1000) });
-  return { service, host, pass, guest, app, webhook, body, post, now: () => now, advance: () => { now += 1000; } };
+  return { service, host, pass, guest, app, webhook, body, post, participants, now: () => now, advance: () => { now += 1000; } };
 }
+
+test("受控房间要求主持人与访客确认，只有受控房间派发已签名轨道录制事件", async () => {
+  const tracks: string[] = [];
+  const { service, host, guest, now, post, app, body } = rosterTelemetryFixture(async (_room, track) => { tracks.push(track); });
+  const events: { id: string; kind: string; at: number; subject: string }[] = [];
+  try {
+    const managed = await service.startRoster(host, 2, undefined, {
+      append: async (id, kind, at, { subject }) => { events.push({ id, kind, at, subject }); },
+    });
+    const endpoint = `/api/meeting/sfu/rooms/${managed.id}`;
+    const headers = { Authorization: "roster-host|workspace1", "Content-Type": "application/json" };
+    expect(await (await app.request(endpoint + "/recording", { headers })).json()).toEqual({ recording: true, consentRequired: true });
+    expect((await app.request(endpoint + "/recording", { method: "DELETE", headers })).status).toBe(403);
+    expect((await app.request(endpoint + "/credentials", { method: "POST", headers })).status).toBe(403);
+    await expect(service.rosterCredentials(guest, managed.id, "guest")).rejects.toMatchObject({ status: 403 });
+    expect(events).toEqual([]);
+    const verified = await app.request(endpoint + "/credentials", { method: "POST", headers, body: '{"consent":true}' });
+    expect(verified.status).toBe(200);
+    const hostGrant = await verified.json() as MeetingSfuCredentials;
+    await service.rosterCredentials(guest, managed.id, "guest", true);
+    await service.rosterCredentials(guest, managed.id, "guest", true);
+    expect(events.map(({ kind, subject, at }) => ({ kind, subject, at }))).toEqual([
+      { kind: "consent", subject: host.subject, at: now() },
+      { kind: "consent", subject: guest.subject, at: now() },
+    ]);
+    const publish = (room: string, identity: string) => JSON.stringify({
+      ...JSON.parse(body("track_published", room, identity, "PA_test")), track: { sid: "TR_test", type: "VIDEO", source: "SCREEN_SHARE" },
+    });
+    expect((await post(publish(managed.id, decodeJwt(hostGrant.token).sub!))).status).toBe(204);
+    expect(tracks).toEqual(["TR_test"]);
+    await service.endRoster(host.workspace, managed.id);
+    const daily = await service.create(host, 2);
+    expect(service.recording(host, daily.id)).toBe(false);
+    const dailyGrant = await service.credentials(host, daily.id);
+    expect((await post(publish(daily.id, decodeJwt(dailyGrant.token).sub!))).status).toBe(204);
+    expect(tracks).toEqual(["TR_test"]);
+  } finally {
+    service.close();
+  }
+});
+
+test("仅主持人可开启及停止日常录制；停止后排队封存且不允许重新开启", async () => {
+  const started: string[] = [];
+  const events: string[] = [];
+  const closed: number[] = [];
+  let woken = 0;
+  let stopped = 0;
+  let readyToStop = false;
+  const { service, app, host, post, body, participants, now, advance } = rosterTelemetryFixture(
+    async (_room, track) => { started.push(track); },
+    async () => ({
+      append: async (id) => { events.push(id); },
+      close: async (at) => { closed.push(at); },
+      canStop: async () => readyToStop,
+      stop: async () => { stopped++; expect(closed).toEqual([now()]); },
+      resume: () => { woken++; },
+    }),
+  );
+  try {
+    const room = await service.create(host, 2);
+    const guest = { ...host, subject: "invitee" };
+    await service.invite(host, room.id, guest.subject, "speaker");
+    const grant = await service.credentials(host, room.id);
+    const identity = decodeJwt(grant.token).sub!;
+    participants.push(new ParticipantInfo({ identity, tracks: [{ sid: "TR_existing", type: TrackType.AUDIO }] }));
+    const endpoint = `/api/meeting/sfu/rooms/${room.id}/recording`;
+    const request = (method: string, subject: string) => app.request(endpoint,
+      { method, headers: { Authorization: `${subject}|workspace1` } });
+    expect(await (await request("GET", guest.subject)).json()).toEqual({ recording: false, consentRequired: false });
+    expect((await request("POST", guest.subject)).status).toBe(403);
+    expect(started).toEqual([]);
+    expect(await (await request("POST", host.subject)).json()).toEqual({ recording: true, consentRequired: false });
+    await service.credentials(guest, room.id);
+    expect((await post(JSON.stringify({
+      ...JSON.parse(body("track_published", room.id, identity, "PA_test")), track: { sid: "TR_new", type: "VIDEO", source: "SCREEN_SHARE" },
+    }))).status).toBe(204);
+    expect(started).toEqual(["TR_existing", "TR_new"]);
+    expect(events).toEqual(["TR_existing:published", "TR_new:published"]);
+    expect((await request("DELETE", guest.subject)).status).toBe(403);
+    expect((await request("DELETE", host.subject)).status).toBe(409);
+    expect(closed).toEqual([]);
+    readyToStop = true;
+    advance();
+    const stopAt = now();
+    const stoppedState = { recording: false, consentRequired: false, stopped: true };
+    expect(await (await request("DELETE", host.subject)).json()).toEqual(stoppedState);
+    expect(await (await request("GET", guest.subject)).json()).toEqual(stoppedState);
+    expect((await request("POST", host.subject)).status).toBe(409);
+    expect((await post(JSON.stringify({
+      ...JSON.parse(body("track_published", room.id, identity, "PA_test")), track: { sid: "TR_after", type: "VIDEO", source: "SCREEN_SHARE" },
+    }))).status).toBe(204);
+    expect(started).toEqual(["TR_existing", "TR_new"]);
+    expect(events).toEqual(["TR_existing:published", "TR_new:published"]);
+    await service.end(host, room.id);
+    expect(closed).toEqual([stopAt]);
+    expect(stopped).toBe(1);
+    expect(woken).toBe(1);
+
+    const another = await service.create(host, 2);
+    await service.startDailyRecording(host, another.id);
+    advance();
+    await service.end(host, another.id);
+    expect(closed).toEqual([stopAt, now()]);
+    expect(woken).toBe(2);
+  } finally { service.close(); }
+});
 
 test("名册出席仅来自签名媒体事件，同一参与者 SID 的信令恢复不重复签到", async () => {
   const { service, host, pass, guest, app, webhook, body, post, now, advance } = rosterTelemetryFixture();

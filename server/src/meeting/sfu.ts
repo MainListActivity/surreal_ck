@@ -10,7 +10,7 @@ import {
   type RosterMeetingModeration,
 } from "@surreal-ck/shared";
 import { jwtVerify } from "jose";
-import { AccessToken, RoomServiceClient, TrackSource, type VideoGrant, type WebhookEvent } from "livekit-server-sdk";
+import { AccessToken, RoomServiceClient, TrackSource, type TrackInfo, type VideoGrant, type WebhookEvent } from "livekit-server-sdk";
 import { HttpError } from "../http-error";
 
 const ROOM_PREFIX = "ck-meeting-";
@@ -47,12 +47,23 @@ type Room = MeetingSfuRoom & {
   host: string;
   closing: boolean;
   managed: boolean;
+  recording?: RoomRecording;
+  dailyRecording?: Awaited<ReturnType<DailyRecording>>;
+  dailyTracks?: Map<string, { at: number; payload: Parameters<RoomRecording["append"]>[3] }>;
   locked: boolean;
   focus: RosterMeetingFocus;
   nextHand: number;
   participants: Map<string, SfuParticipant>;
   bySubject: Map<string, SfuParticipant>;
 };
+export type RoomRecording = {
+  append: (id: string, kind: string, at: number, payload: {
+    subject: string; name: string; role: string; track?: string; source?: number;
+  }) => Promise<void>;
+};
+export type DailyRecording = (workspace: string, room: string, host: string, at: number) =>
+  Promise<RoomRecording & { close(at: number): Promise<void>; canStop(): Promise<boolean>; stop(): Promise<void>; resume(): void }>;
+type PublishedTrackSink = (room: string, track: string, audio: boolean, at: number) => Promise<void>;
 type SfuParticipant = MeetingSfuParticipant & {
   leaseUntil: number;
   pendingRemoval: boolean;
@@ -62,9 +73,11 @@ type SfuParticipant = MeetingSfuParticipant & {
   handOrder?: number;
   speaking?: boolean;
   entered?: boolean;
+  recordingConsent?: boolean;
 };
 
-type Admin = Pick<RoomServiceClient, "createRoom" | "listRooms" | "deleteRoom" | "removeParticipant" | "updateParticipant">;
+type Admin = Pick<RoomServiceClient, "createRoom" | "listRooms" | "deleteRoom" | "removeParticipant" | "updateParticipant">
+  & Partial<Pick<RoomServiceClient, "listParticipants">>;
 type Config = { privateUrl: string; signalUrl: string; key: string; secret: string; maxSeats: number };
 export type SignalLease = { roomId: string; identity: string; publisher: boolean; microphoneOnly: boolean; screenOnly?: boolean };
 
@@ -116,6 +129,8 @@ export class PrivateMeetingSfu {
     private readonly config: Config,
     admin?: Admin,
     private readonly now = Date.now,
+    private readonly recordTrack?: PublishedTrackSink,
+    private readonly startDaily?: DailyRecording,
   ) {
     this.signalUrl = new URL(MEETING_SFU_SIGNAL_PATH, config.signalUrl).toString();
     this.admin = admin ?? new RoomServiceClient(config.privateUrl, config.key, config.secret, { requestTimeout: 3 });
@@ -213,6 +228,40 @@ export class PrivateMeetingSfu {
     return presence.roomId;
   }
 
+  observeRecording(event: WebhookEvent) {
+    const name = event.room?.name;
+    if (!name?.startsWith(ROOM_PREFIX)) return;
+    const room = this.rooms.get(name.slice(ROOM_PREFIX.length));
+    if (!room?.recording) return;
+    return room.managed ? this.recordEvent(room, event) : this.serial(() => this.recordEvent(room, event));
+  }
+
+  private async recordEvent(room: Room, event: WebhookEvent) {
+    const participant = event.participant;
+    if (!room.recording || !participant) return;
+    const person = room.participants.get(participant.identity);
+    if (!person) return;
+    const at = Number(event.createdAt) * 1000;
+    if (!Number.isSafeInteger(at) || at <= 0) throw unavailable();
+    if (event.event === "track_published" && event.track) {
+      if (!room.closing) await this.recordPublished(room, person, event.track, at);
+    } else if (!person.externalSession && (event.event === "participant_joined" || event.event === "participant_left")) {
+      await room.recording.append(`${participant.sid}:${event.event}`, event.event, at,
+        { subject: person.memberSubject, name: person.name, role: person.role });
+    }
+  }
+
+  private async recordPublished(room: Room, person: SfuParticipant, track: TrackInfo, at: number) {
+    if (!this.recordTrack || !room.recording) throw unavailable();
+    const prior = room.dailyTracks?.get(track.sid);
+    const payload = prior?.payload ??
+      { subject: person.memberSubject, name: person.name, role: person.role, track: track.sid, source: track.source };
+    if (prior) at = prior.at;
+    else room.dailyTracks?.set(track.sid, { at, payload });
+    await room.recording.append(`${track.sid}:published`, "track-published", at, payload);
+    await this.recordTrack(ROOM_PREFIX + room.id, track.sid, track.type === 0, at);
+  }
+
   private serial<T>(operation: () => Promise<T>): Promise<T> {
     const next = this.queue.then(operation);
     this.queue = next.catch(() => undefined);
@@ -266,7 +315,11 @@ export class PrivateMeetingSfu {
   private async closeRoom(room: Room): Promise<void> {
     room.closing = true;
     for (const participant of room.participants.values()) participant.closeSignal?.();
-    await this.deleteRoom(ROOM_PREFIX + room.id);
+    const daily = room.recording && room.dailyRecording;
+    await daily?.close(this.now());
+    if (daily) room.recording = undefined;
+    try { await this.deleteRoom(ROOM_PREFIX + room.id); }
+    finally { daily?.resume(); }
     const at = this.now();
     for (const participant of room.participants.values()) this.retireRoster(participant.id, at);
     this.rooms.delete(room.id);
@@ -298,11 +351,12 @@ export class PrivateMeetingSfu {
     return this.createRoom(actor, seats, false);
   }
 
-  startRoster(actor: SfuActor, seats: number, endsAt?: number) {
-    return this.createRoom(actor, seats, true, endsAt);
+  startRoster(actor: SfuActor, seats: number, endsAt?: number, recording?: RoomRecording) {
+    if (recording && !this.recordTrack) throw unavailable();
+    return this.createRoom(actor, seats, true, endsAt, recording);
   }
 
-  private createRoom(actor: SfuActor, seats: number, managed: boolean, endsAt = Infinity) {
+  private createRoom(actor: SfuActor, seats: number, managed: boolean, endsAt = Infinity, recording?: RoomRecording) {
     return this.serial(async () => {
       await this.initialize();
       if (Math.min(actor.expiresAt, endsAt) <= this.now()) throw expired();
@@ -313,7 +367,7 @@ export class PrivateMeetingSfu {
       const room: Room = {
         id, seats, topology: "sfu", workspace: actor.workspace, host: actor.subject,
         expiresAt: Math.min(endsAt, this.now() + ROOM_SECONDS * 1000), closing: false, managed, locked: false, focus: "auto",
-        nextHand: 0, participants: new Map(), bySubject: new Map(),
+        nextHand: 0, participants: new Map(), bySubject: new Map(), recording,
       };
       this.addParticipant(room, actor.subject, actor.name, "host");
       // 先保留容量；若上游创建请求超时，后台删除可能已创建的房间后才释放。
@@ -365,23 +419,84 @@ export class PrivateMeetingSfu {
     return [...room.participants.values()].map(participantView);
   }
 
-  credentials(actor: SfuActor, roomId: string): Promise<MeetingSfuCredentials> {
+  recording(actor: SfuActor, roomId: string): boolean {
+    const room = this.access(actor, roomId);
+    if (!room.bySubject.has(actor.subject)) throw denied();
+    return Boolean(room.recording);
+  }
+
+  recordingState(actor: SfuActor, roomId: string) {
+    const room = this.access(actor, roomId);
+    const recording = this.recording(actor, roomId);
+    return { recording, consentRequired: recording && room.managed,
+      ...(room.dailyRecording && !recording ? { stopped: true } : {}) };
+  }
+
+  startDailyRecording(actor: SfuActor, roomId: string) {
+    return this.serial(async () => {
+      const room = this.access(actor, roomId, true);
+      if (room.managed) throw denied();
+      if (room.dailyRecording && !room.recording) {
+        throw new HttpError(409, "meeting-sfu-recording-stopped", "本场录制已停止，不能重新开启；如需再次录制，请创建新会议");
+      }
+      if (!this.startDaily || !this.recordTrack || !this.admin.listParticipants) throw unavailable();
+      const at = this.now();
+      if (!room.dailyRecording) {
+        room.recording = room.dailyRecording = await this.startDaily(room.workspace, room.id, actor.subject, at);
+        room.dailyTracks = new Map();
+      }
+      const participants = await this.upstream(() => this.admin.listParticipants!(ROOM_PREFIX + roomId));
+      await Promise.all(participants.flatMap(({ identity, tracks }) => {
+        const person = room.participants.get(identity);
+        return person ? tracks.map((track) => this.recordPublished(room, person, track, at)) : [];
+      }));
+      return this.recordingState(actor, roomId);
+    });
+  }
+
+  stopDailyRecording(actor: SfuActor, roomId: string) {
+    return this.serial(async () => {
+      const room = this.access(actor, roomId, true);
+      if (room.managed) throw denied();
+      const daily = room.dailyRecording;
+      if (daily) {
+        if (room.recording) {
+          if (!await this.upstream(() => daily.canStop())) {
+            throw new HttpError(409, "meeting-sfu-recording-starting", "录制轨道正在启动，请稍后重试停止录制");
+          }
+          await daily.close(this.now());
+          room.recording = undefined;
+        }
+        try { await this.upstream(() => daily.stop()); }
+        finally { daily.resume(); }
+      }
+      return this.recordingState(actor, roomId);
+    });
+  }
+
+  credentials(actor: SfuActor, roomId: string, consent = false): Promise<MeetingSfuCredentials> {
     return this.serial(async () => {
       const room = this.access(actor, roomId);
       const participant = room.bySubject.get(actor.subject);
       if (!participant || participant.externalSession || (room.managed
         && participant.role !== "cohost" && !actor.workspaceAdmin)) throw denied();
       if (room.locked && participant.role === "cohost" && !participant.entered) throw rosterRoomLocked();
-      return this.mintCredentials(room, participant, actor);
+      return this.mintCredentials(room, participant, actor, consent);
     });
   }
 
-  private async mintCredentials(room: Room, participant: SfuParticipant, actor: SfuActor): Promise<MeetingSfuCredentials> {
+  private async mintCredentials(room: Room, participant: SfuParticipant, actor: SfuActor, consent: boolean): Promise<MeetingSfuCredentials> {
     if (participant.revoked || participant.pendingRemoval) throw denied();
     const now = this.now();
     const leaseExpiresAt = Math.min(actor.expiresAt, room.expiresAt, now + LEASE_MS);
     const ttl = Math.min(JOIN_TOKEN_SECONDS, Math.floor((leaseExpiresAt - now) / 1000));
     if (ttl < 1) throw expired();
+    if (room.managed && room.recording && !participant.recordingConsent) {
+      if (!consent) throw new HttpError(403, "meeting-recording-consent-required", "入场前必须确认会议存证录制告知");
+      await room.recording.append(`${participant.id}:consent`, "consent", now,
+        { subject: actor.subject, name: actor.name, role: participant.role });
+      participant.recordingConsent = true;
+    }
     participant.name = actor.name;
     const jwt = new AccessToken(this.config.key, this.config.secret, {
       identity: participant.id, name: participant.name,
@@ -402,10 +517,13 @@ export class PrivateMeetingSfu {
     return this.hasRosterRoom(workspace, roomId) && this.rooms.get(roomId)?.locked === true;
   }
 
-  rosterCredentials(actor: SfuActor, roomId: string, session: string): Promise<MeetingSfuCredentials> {
+  rosterCredentials(actor: SfuActor, roomId: string, session: string, consent = false): Promise<MeetingSfuCredentials> {
     return this.serial(async () => {
       const room = this.access(actor, roomId);
       if (!room.managed) throw denied();
+      if (room.recording && !consent) {
+        throw new HttpError(403, "meeting-recording-consent-required", "入场前必须确认会议存证录制告知");
+      }
       let participant = room.bySubject.get(actor.subject);
       if (participant && !participant.externalSession) throw denied();
       if (room.locked && (!participant?.entered || participant.externalSession !== session)) throw rosterRoomLocked();
@@ -423,7 +541,7 @@ export class PrivateMeetingSfu {
           });
         }
       }
-      return this.mintCredentials(room, participant, actor);
+      return this.mintCredentials(room, participant, actor, consent);
     });
   }
 
