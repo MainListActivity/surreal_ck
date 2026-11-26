@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { link, mkdir, open, readdir, readFile, realpath, stat, unlink } from "node:fs/promises";
+import { accessSync, constants, mkdirSync, realpathSync, statSync } from "node:fs";
+import { link, mkdir, open, readdir, readFile, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { EvidenceObjects } from "./evidence-vault";
 
@@ -8,31 +9,37 @@ function hasCode(error: unknown, code: string): boolean {
 }
 
 export function privateEvidenceDirectory(path: string): EvidenceObjects {
-  if (!isAbsolute(path) || resolve(path) === "/") throw new Error("会议存证目录必须独立配置为绝对路径");
-  let root: Promise<string> | undefined;
-  async function locate(key: string): Promise<string> {
+  const directory = resolve(path);
+  if (!isAbsolute(path) || directory === "/") throw new Error("MEETING_EVIDENCE_DIR 必须配置为独立的绝对路径");
+  let root: string;
+  try {
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    root = realpathSync(directory);
+    const info = statSync(root);
+    if (root === "/" || !info.isDirectory() || (info.mode & 0o7777) !== 0o700) {
+      throw new Error("会议存证目录必须是独立目录，且权限为 0700");
+    }
+    accessSync(root, constants.R_OK | constants.W_OK | constants.X_OK);
+  } catch (cause) {
+    throw new Error(`无法初始化 MEETING_EVIDENCE_DIR（${directory}）：请确认目录可由服务进程读写且权限为 0700`, { cause });
+  }
+  function locate(key: string): string {
     if (!key.split("/").every((part) => /^[a-zA-Z0-9_.-]+$/u.test(part) && part !== "." && part !== "..")) {
       throw new Error("会议存证文件名无效");
     }
-    root ??= (async () => {
-      const base = await realpath(path);
-      const info = await stat(base);
-      if (!info.isDirectory() || (info.mode & 0o077) !== 0) throw new Error("会议存证目录必须为进程私有");
-      return base;
-    })();
-    return join(await root, key);
+    return join(root, key);
   }
   return {
     async list(key) {
-      try { return (await readdir(await locate(key), { withFileTypes: true })).filter((entry) => entry.isFile()).map(({ name }) => name); }
+      try { return (await readdir(locate(key), { withFileTypes: true })).filter((entry) => entry.isFile()).map(({ name }) => name); }
       catch (error) { if (hasCode(error, "ENOENT")) return []; throw error; }
     },
     async read(key) {
-      try { return await readFile(await locate(key)); }
+      try { return await readFile(locate(key)); }
       catch (error) { if (hasCode(error, "ENOENT")) return null; throw error; }
     },
     async create(key, bytes) {
-      const target = await locate(key);
+      const target = locate(key);
       const parent = dirname(target);
       await mkdir(parent, { recursive: true, mode: 0o700 });
       const temporary = join(parent, `.${randomUUID()}.tmp`);
