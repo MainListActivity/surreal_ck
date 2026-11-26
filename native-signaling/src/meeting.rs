@@ -89,6 +89,28 @@ mod tests {
         assert!(actors[0].edge_completed(&survivor));
     }
     #[tokio::test]
+    async fn newer_authenticated_relay_offer_can_replace_answered_direct_round() {
+        let (_, mut actors) = group(2).await;
+        actors.sort_by_key(|actor| actor.local_join().unwrap().to_owned());
+        let (left, right) = actors.split_at_mut(1);
+        let (a, b) = (&mut left[0], &mut right[0]);
+        let peer = b.local_join().unwrap().to_owned();
+        pair(a, b).await;
+        assert!(b.edge_completed(a.local_join().unwrap()));
+        assert!(a.next_edge_attempt(&peer).is_err());
+        a.fail_edge(&peer).unwrap();
+        assert_eq!(a.next_edge_attempt(&peer).unwrap(), 2);
+        a.start_edge(&peer, Route::Relay, &sdp("offer"))
+            .await
+            .unwrap();
+        let offer = b.poll_offers().await.unwrap().remove(0);
+        assert_eq!(offer.attempt(), 2);
+        assert_eq!(offer.route(), Route::Relay);
+        b.answer(&offer, &sdp("answer")).await.unwrap();
+        assert_eq!(a.poll_answers().await.unwrap().len(), 1);
+        assert!(b.poll_offers().await.unwrap().is_empty());
+    }
+    #[tokio::test]
     async fn retry_and_wrong_bindings() {
         let (_, mut actors) = group(3).await;
         actors.sort_by_key(|a| a.local_join().unwrap().to_owned());
@@ -543,18 +565,24 @@ impl<R: MeetingRpc> Meeting<R> {
             .map(|m| m.member.clone())
             .ok_or(Error::Binding)
     }
-    pub async fn start_edge(&mut self, peer: &str, route: Route, offer: &str) -> Result<Attempt> {
+    pub fn next_edge_attempt(&self, peer: &str) -> Result<u32> {
         let (room, local) = self.binding()?;
         if local.as_str() >= peer {
             return Err(Error::Binding);
         }
+        self.peer(peer)?;
+        match self.edges.get(&EdgeKey::new(&room, &local, peer)) {
+            Some(state) if state.inflight.is_some() || state.completed => Err(Error::Busy),
+            Some(state) => state.last.checked_add(1).ok_or(Error::Busy),
+            None => Ok(1),
+        }
+    }
+    pub async fn start_edge(&mut self, peer: &str, route: Route, offer: &str) -> Result<Attempt> {
+        let number = self.next_edge_attempt(peer)?;
+        let (room, local) = self.binding()?;
         let member = self.peer(peer)?;
         let edge = EdgeKey::new(&room, &local, peer);
         let state = self.edges.entry(edge.clone()).or_insert_with(Edge::new);
-        if state.inflight.is_some() || state.completed {
-            return Err(Error::Busy);
-        }
-        let number = state.last.checked_add(1).ok_or(Error::Busy)?;
         if number == 1 && route != Route::Direct {
             return Err(Error::Binding);
         }
@@ -622,7 +650,7 @@ impl<R: MeetingRpc> Meeting<R> {
             }
             let key = EdgeKey::new(&room, &local, &row.sender_join);
             let e = self.edges.entry(key.clone()).or_insert_with(Edge::new);
-            if e.completed
+            if (e.completed && row.route != Route::Relay)
                 || row.attempt <= e.seen
                 || e.nonces.contains(&row.nonce)
                 || e.nonces.len() >= 64
