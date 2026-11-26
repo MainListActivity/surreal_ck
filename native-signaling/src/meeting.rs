@@ -616,7 +616,13 @@ impl<R: MeetingRpc> Meeting<R> {
         state.last = number;
         state.inflight = Some((attempt.clone(), row.clone()));
         let posted = self.rpc.post_offer(&row).await?;
-        let posted = rpc::validate_post_protocol(posted, &row, self.rpc.database(), false, self.rpc.is_v2())?;
+        let posted = rpc::validate_post_protocol(
+            posted,
+            &row,
+            self.rpc.database(),
+            false,
+            self.rpc.is_v2(),
+        )?;
         state.inflight = Some((attempt.clone(), posted));
         Ok(attempt)
     }
@@ -630,7 +636,8 @@ impl<R: MeetingRpc> Meeting<R> {
         Ok(())
     }
     fn incoming_valid(&self, r: &SdpRow, room: &str, local: &str) -> bool {
-        r.validate_protocol(self.rpc.database(), self.rpc.is_v2()).is_ok()
+        r.validate_protocol(self.rpc.database(), self.rpc.is_v2())
+            .is_ok()
             && r.room == room
             && r.recipient == self.rpc.member_id()
             && r.recipient_join == local
@@ -705,7 +712,9 @@ impl<R: MeetingRpc> Meeting<R> {
         }
         let mut out = Vec::new();
         for row in rows {
-            if row.validate_protocol(self.rpc.database(), self.rpc.is_v2()).is_err()
+            if row
+                .validate_protocol(self.rpc.database(), self.rpc.is_v2())
+                .is_err()
                 || row.room != room
                 || row.sender != self.rpc.member_id()
                 || row.sender_join != local

@@ -272,12 +272,21 @@ pub fn valid_code(s: &str) -> bool {
 }
 pub fn valid_v2_code(s: &str) -> bool {
     s.strip_prefix("V2").is_some_and(|room| {
-        room.len() == 64 && room.bytes().all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(&b))
+        room.len() == 64
+            && room
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(&b))
     })
 }
 fn v2_principal(s: &str, guests: bool) -> bool {
     s.strip_prefix("member:")
-        .or_else(|| if guests { s.strip_prefix("guest:") } else { None })
+        .or_else(|| {
+            if guests {
+                s.strip_prefix("guest:")
+            } else {
+                None
+            }
+        })
         .is_some_and(valid_hex)
 }
 pub fn member_key(s: &str) -> Result<&str> {
@@ -351,8 +360,11 @@ impl Snapshot {
             return Err(E::MeetingBinding);
         }
         for m in &self.members {
-            if (if v2 { !v2_principal(&m.member, true) } else { member_key(&m.member).is_err() })
-                || !valid_hex(&m.join_id)
+            if (if v2 {
+                !v2_principal(&m.member, true)
+            } else {
+                member_key(&m.member).is_err()
+            }) || !valid_hex(&m.join_id)
                 || m.lease_expires_unix <= self.server_unix
                 || !members.insert(&m.member)
                 || !joins.insert(&m.join_id)
@@ -414,7 +426,9 @@ impl SdpRow {
 pub trait MeetingRpc {
     fn database(&self) -> &str;
     fn member_id(&self) -> &str;
-    fn is_v2(&self) -> bool { false }
+    fn is_v2(&self) -> bool {
+        false
+    }
     async fn capability(&mut self) -> Result<()>;
     async fn create(&mut self, nonce: &str) -> Result<Snapshot>;
     async fn invite(&mut self, room: &str, recipients: &[String]) -> Result<InviteResult>;
@@ -508,7 +522,13 @@ fn decode<T: serde::de::DeserializeOwned>(v: Value) -> Result<T> {
 pub fn validate_post(got: SdpRow, sent: &SdpRow, db: &str, answer: bool) -> Result<SdpRow> {
     validate_post_protocol(got, sent, db, answer, false)
 }
-pub fn validate_post_protocol(got: SdpRow, sent: &SdpRow, db: &str, answer: bool, v2: bool) -> Result<SdpRow> {
+pub fn validate_post_protocol(
+    got: SdpRow,
+    sent: &SdpRow,
+    db: &str,
+    answer: bool,
+    v2: bool,
+) -> Result<SdpRow> {
     got.validate_protocol(db, v2)?;
     if got.workspace != sent.workspace
         || got.room != sent.room
@@ -679,14 +699,20 @@ impl MeetingConnection {
     async fn v2_command(&self, op: &str, mut vars: Value) -> Result<Value> {
         self.session.ensure_current()?;
         vars["op"] = Value::String(op.into());
-        let url = crate::transport::endpoint(&self.session.origin.api_base, "/api/meeting/v2/member");
+        let url =
+            crate::transport::endpoint(&self.session.origin.api_base, "/api/meeting/v2/member");
         let session = self.session.clone();
         let transport = self.transport.clone();
         let payload = vars.to_string();
-        let result = timeout(Duration::from_secs(2), tokio::task::spawn_blocking(move || {
-            transport.json(&url, session.access_token(), &payload)
-        })).await.map_err(|_| E::MeetingUnavailable)?
-            .map_err(|_| E::MeetingUnavailable)?;
+        let result = timeout(
+            Duration::from_secs(2),
+            tokio::task::spawn_blocking(move || {
+                transport.json(&url, session.access_token(), &payload)
+            }),
+        )
+        .await
+        .map_err(|_| E::MeetingUnavailable)?
+        .map_err(|_| E::MeetingUnavailable)?;
         let result = result.map_err(|error| match error {
             E::Http(401 | 403 | 404) => E::MeetingNotFound,
             E::Http(409) if op == "snapshot" || op == "renew" => E::MeetingExpired,
@@ -705,7 +731,9 @@ impl MeetingRpc for MeetingConnection {
     fn member_id(&self) -> &str {
         MeetingConnection::member_id(self)
     }
-    fn is_v2(&self) -> bool { self.v2_member.is_some() }
+    fn is_v2(&self) -> bool {
+        self.v2_member.is_some()
+    }
     async fn capability(&mut self) -> Result<()> {
         let v = self
             .run(
@@ -738,7 +766,9 @@ impl MeetingRpc for MeetingConnection {
         Ok(s)
     }
     async fn invite(&mut self, room: &str, recipients: &[String]) -> Result<InviteResult> {
-        if self.is_v2() { return Err(E::MeetingDenied); }
+        if self.is_v2() {
+            return Err(E::MeetingDenied);
+        }
         if !valid_hex(room)
             || recipients.len() > 20
             || recipients.iter().collect::<HashSet<_>>().len() != recipients.len()
@@ -803,12 +833,17 @@ impl MeetingRpc for MeetingConnection {
         }
         if valid_v2_code(code) {
             let info = self.v2_command("capability", json!({})).await?;
-            let member = info.get("member").and_then(Value::as_str)
-                .filter(|m| v2_principal(m, false)).ok_or(E::MeetingBinding)?;
+            let member = info
+                .get("member")
+                .and_then(Value::as_str)
+                .filter(|m| v2_principal(m, false))
+                .ok_or(E::MeetingBinding)?;
             if info.get("version").and_then(Value::as_str) != Some("meeting_v2") {
                 return Err(E::MeetingUnavailable);
             }
-            let value = self.v2_command("join", json!({"code":code,"join_id":join_id})).await?;
+            let value = self
+                .v2_command("join", json!({"code":code,"join_id":join_id}))
+                .await?;
             let s: Snapshot = decode(value)?;
             s.validate_protocol(&self.database, member, true)?;
             if s.local_join.as_deref() != Some(join_id) || s.room.code != code {
@@ -837,7 +872,10 @@ impl MeetingRpc for MeetingConnection {
     async fn snapshot(&mut self, room: &str, join_id: &str) -> Result<Snapshot> {
         self.bound(room, join_id)?;
         if self.is_v2() {
-            return self.snap(self.v2_command("snapshot", json!({"room":room,"join_id":join_id})).await?);
+            return self.snap(
+                self.v2_command("snapshot", json!({"room":room,"join_id":join_id}))
+                    .await?,
+            );
         }
         self.guard(1, 1)?;
         let v = self
@@ -852,7 +890,10 @@ impl MeetingRpc for MeetingConnection {
     async fn renew(&mut self, room: &str, join_id: &str) -> Result<Snapshot> {
         self.bound(room, join_id)?;
         if self.is_v2() {
-            return self.snap(self.v2_command("renew", json!({"room":room,"join_id":join_id})).await?);
+            return self.snap(
+                self.v2_command("renew", json!({"room":room,"join_id":join_id}))
+                    .await?,
+            );
         }
 
         let v = self
@@ -867,7 +908,8 @@ impl MeetingRpc for MeetingConnection {
     async fn leave(&mut self, room: &str, join_id: &str) -> Result<()> {
         self.bound(room, join_id)?;
         if self.is_v2() {
-            self.v2_command("leave", json!({"room":room,"join_id":join_id})).await?;
+            self.v2_command("leave", json!({"room":room,"join_id":join_id}))
+                .await?;
             return Ok(());
         }
 
@@ -886,7 +928,8 @@ impl MeetingRpc for MeetingConnection {
     async fn end(&mut self, room: &str, join_id: &str) -> Result<()> {
         self.bound(room, join_id)?;
         if self.is_v2() {
-            self.v2_command("end", json!({"room":room,"join_id":join_id})).await?;
+            self.v2_command("end", json!({"room":room,"join_id":join_id}))
+                .await?;
             return Ok(());
         }
 
@@ -905,7 +948,10 @@ impl MeetingRpc for MeetingConnection {
     async fn poll_offers(&mut self, room: &str, join_id: &str) -> Result<Vec<SdpRow>> {
         self.bound(room, join_id)?;
         if self.is_v2() {
-            return self.rows(self.v2_command("poll_offers", json!({"room":room,"join_id":join_id})).await?);
+            return self.rows(
+                self.v2_command("poll_offers", json!({"room":room,"join_id":join_id}))
+                    .await?,
+            );
         }
         self.guard(2, 1)?;
         let v = self
@@ -920,7 +966,10 @@ impl MeetingRpc for MeetingConnection {
     async fn poll_answers(&mut self, room: &str, join_id: &str) -> Result<Vec<SdpRow>> {
         self.bound(room, join_id)?;
         if self.is_v2() {
-            return self.rows(self.v2_command("poll_answers", json!({"room":room,"join_id":join_id})).await?);
+            return self.rows(
+                self.v2_command("poll_answers", json!({"room":room,"join_id":join_id}))
+                    .await?,
+            );
         }
         self.guard(3, 1)?;
         let v = self
