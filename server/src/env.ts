@@ -18,6 +18,12 @@ const EnvSchema = z.object({
   TURN_URLS: iceUrls(/^turns?:(?:[a-zA-Z0-9.-]+|\[[0-9a-fA-F:.]+\])(?::\d+)?(?:\?transport=(?:udp|tcp))?$/u, "Expected a TURN URL"),
   STUN_URLS: iceUrls(/^stun:(?:[a-zA-Z0-9.-]+|\[[0-9a-fA-F:.]+\])(?::\d+)?$/u, "Expected a STUN URL"),
   TURN_CREDENTIAL_TTL_SECONDS: z.coerce.number().int().min(1).max(900).default(600),
+  MEETING_SFU_PRIVATE_URL: z.preprocess((v) => v === "" ? undefined : v, z.url().optional()),
+  MEETING_SFU_SIGNAL_URL: z.preprocess((v) => v === "" ? undefined : v, z.url().optional()),
+  MEETING_SFU_APP_ORIGIN: z.preprocess((v) => v === "" ? undefined : v, z.url().optional()),
+  MEETING_SFU_KEY: z.preprocess((v) => v === "" ? undefined : v, z.string().min(8).optional()),
+  MEETING_SFU_SECRET: z.preprocess((v) => v === "" ? undefined : v, z.string().min(32).optional()),
+  MEETING_SFU_MAX_SEATS: z.coerce.number().int().min(1).max(30).default(30),
 
   SURREAL_URL: z.string().min(1),
   SURREAL_NS: z.string().min(1).default("main"),
