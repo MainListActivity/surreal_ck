@@ -454,7 +454,7 @@ impl<R: MeetingRpc> Meeting<R> {
         Ok((s.room.id.clone(), self.local.clone().ok_or(Error::Binding)?))
     }
     fn apply(&mut self, s: Snapshot, expected_join: Option<&str>) -> Result<Vec<EdgeKey>> {
-        s.validate(self.rpc.database(), self.rpc.member_id())?;
+        s.validate_protocol(self.rpc.database(), self.rpc.member_id(), self.rpc.is_v2())?;
         if let Some(old) = &self.snapshot {
             if old.workspace != s.workspace
                 || old.room.id != s.room.id
@@ -507,7 +507,7 @@ impl<R: MeetingRpc> Meeting<R> {
         Ok(self.rpc.invitations().await?)
     }
     pub async fn join(&mut self, code: &str) -> Result<()> {
-        if !rpc::valid_code(code) {
+        if !rpc::valid_code(code) && !rpc::valid_v2_code(code) {
             return Err(Error::Binding);
         }
         if self.local.is_some() {
@@ -616,7 +616,13 @@ impl<R: MeetingRpc> Meeting<R> {
         state.last = number;
         state.inflight = Some((attempt.clone(), row.clone()));
         let posted = self.rpc.post_offer(&row).await?;
-        let posted = rpc::validate_post(posted, &row, self.rpc.database(), false)?;
+        let posted = rpc::validate_post_protocol(
+            posted,
+            &row,
+            self.rpc.database(),
+            false,
+            self.rpc.is_v2(),
+        )?;
         state.inflight = Some((attempt.clone(), posted));
         Ok(attempt)
     }
@@ -630,7 +636,8 @@ impl<R: MeetingRpc> Meeting<R> {
         Ok(())
     }
     fn incoming_valid(&self, r: &SdpRow, room: &str, local: &str) -> bool {
-        r.validate(self.rpc.database()).is_ok()
+        r.validate_protocol(self.rpc.database(), self.rpc.is_v2())
+            .is_ok()
             && r.room == room
             && r.recipient == self.rpc.member_id()
             && r.recipient_join == local
@@ -694,7 +701,7 @@ impl<R: MeetingRpc> Meeting<R> {
         row.answer_hash = Some(hash);
         e.completed = true;
         let posted = self.rpc.post_answer(&row).await?;
-        rpc::validate_post(posted, &row, self.rpc.database(), true)?;
+        rpc::validate_post_protocol(posted, &row, self.rpc.database(), true, self.rpc.is_v2())?;
         Ok(())
     }
     pub async fn poll_answers(&mut self) -> Result<Vec<AuthenticatedMeetingAnswer>> {
@@ -705,7 +712,9 @@ impl<R: MeetingRpc> Meeting<R> {
         }
         let mut out = Vec::new();
         for row in rows {
-            if row.validate(self.rpc.database()).is_err()
+            if row
+                .validate_protocol(self.rpc.database(), self.rpc.is_v2())
+                .is_err()
                 || row.room != room
                 || row.sender != self.rpc.member_id()
                 || row.sender_join != local

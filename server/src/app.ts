@@ -28,6 +28,7 @@ import { createClaimsPortalRoutes } from "./routes/claims-portal";
 import { ClaimsPortalService } from "./claims-portal/service";
 import { createSessionRoutes } from "./routes/session";
 import { createMeetingIceRoutes } from "./routes/meeting-ice";
+import { createMeetingV2Routes } from "./routes/meeting-v2";
 import { createMeetingSfuRoutes } from "./routes/meeting-sfu";
 import { createWorkspaceRoutes } from "./routes/workspaces";
 import {
@@ -467,6 +468,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     .route("/", createInternalIdpRoutes(workspaceScope))
     .route("/", createSessionRoutes(workspaceScope, idpTokenScopeAdapter, options.requireUser))
     .route("/", createMeetingIceRoutes({ workspaceScope, requireUser: options.requireUser }))
+    .route("/", createMeetingV2Routes({ workspaceScope, requireUser: options.requireUser }))
     .route("/", createMeetingSfuRoutes({ workspaceScope, requireUser: options.requireUser }))
     .route("/", createInternalAiIdentityRoutes({ db: async () => getRootDatabaseSession("_system"), requireUser: options.requireUser?.() }))
     .route("/", createContentReaderRoutes({

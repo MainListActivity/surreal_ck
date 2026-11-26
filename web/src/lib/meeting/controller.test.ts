@@ -12,6 +12,32 @@ const ME = "5".repeat(64);
 const LOW = "1".repeat(64);
 const HIGH = "9".repeat(64);
 
+test("访客失去授权心跳时主动关闭已有媒体边", async () => {
+  const base = harness();
+  base.setMembers([ME, HIGH]);
+  const snapshot = await base.rpc.snapshot("room", ME);
+  const edges: FakeEdge[] = [];
+  const controller = new MeetingController({
+    rpc: { ...base.rpc, snapshot: () => new Promise(() => undefined) },
+    fetchIce: async () => ({ direct: [], relay: [], expiresAtMs: Infinity }),
+    createEdge: (options) => {
+      const edge = new FakeEdge(options);
+      edges.push(edge);
+      return edge;
+    },
+    localTrack: () => null,
+    randomId: () => ME,
+    authorizationLeaseMs: 50,
+    autoTick: false,
+  });
+  await controller.attach(snapshot, Date.now());
+  await controller.tick();
+  expect(edges).toHaveLength(1);
+  await Bun.sleep(75);
+  expect(controller.view.phase).toBe("removed");
+  expect(edges[0]?.closed).toBe(true);
+});
+
 class FakeEdge implements MeetingEdgeLike {
   state: EdgeState = "new";
   chatOpen = false;
