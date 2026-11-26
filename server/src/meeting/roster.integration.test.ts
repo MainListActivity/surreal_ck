@@ -1,9 +1,12 @@
 import { expect, test } from "bun:test";
 import { loadTemplateScripts } from "@surreal-ck/shared/workspace-template";
 import { Hono } from "hono";
-import { DateTime, Surreal } from "surrealdb";
+import { SignJWT, exportJWK, generateKeyPair } from "jose";
+import { DateTime, RecordId, Surreal, Table } from "surrealdb";
 import { handleError } from "../middleware/error";
 import { createMeetingRosterRoutes } from "../routes/meeting-roster";
+import { MeetingEvidenceLedger, verifyEvidenceArtifact } from "./evidence-ledger";
+import { EvidenceVault, deriveEvidenceWorkspaceKey } from "./evidence-vault";
 import { RosterMeetingService } from "./roster";
 import type { RosterSfuEvent, SfuActor } from "./sfu";
 
@@ -20,10 +23,18 @@ test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等�
   const port = reserve.port;
   reserve.stop(true);
   const password = crypto.randomUUID();
+  const keys = await generateKeyPair("ES256");
+  const publicKey = await exportJWK(keys.publicKey);
+  const jwks = Bun.serve({
+    hostname: "127.0.0.1", port: 0,
+    fetch: () => Response.json({ keys: [{ ...publicKey, kid: "fixture", alg: "ES256", use: "sig" }] }),
+  });
+  const issuer = `http://127.0.0.1:${jwks.port}`;
   const proc = Bun.spawn([binary!, "start", "--allow-all", "--bind", `127.0.0.1:${port}`, "--user", "test", "--pass", password, "memory"],
     { stdout: "ignore", stderr: "ignore" });
   const root = new Surreal();
   const member = new Surreal();
+  const owner = new Surreal();
   const url = `ws://127.0.0.1:${port}/rpc`;
   try {
     let ready = false;
@@ -33,7 +44,7 @@ test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等�
     }
     if (!ready) throw new Error("公司 fork 未启动");
     await root.connect(url, { authentication: { username: "test", password }, namespace: "main", database });
-    const migrations = await loadTemplateScripts({ oidcJwksUrl: "https://fixture.invalid/jwks" });
+    const migrations = await loadTemplateScripts({ oidcJwksUrl: `${issuer}/jwks` });
     for (const migration of migrations) await root.query(migration.sql).collect();
     await root.query(`
       UPDATE workspace_resource_quota:current SET plan = resource_quota_plan:max;
@@ -353,10 +364,55 @@ test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等�
       SELECT pass_hash, code_hash FROM roster_meeting_pass; SELECT * FROM roster_meeting;
       SELECT * FROM roster_meeting_event; SELECT * FROM roster_meeting_ballot;
     `).collect()).toEqual([[], [], [], []]);
+    const events = new Table("roster_meeting_event");
+    const ballots = new Table("roster_meeting_ballot");
+    expect(await member.update(events).merge({ actor: "changed" })).toEqual([]);
+    expect(await member.delete(events)).toEqual([]);
+    expect(await member.update(ballots).merge({ choice: "changed" })).toEqual([]);
+    expect(await member.delete(ballots)).toEqual([]);
+
+    await owner.connect(url);
+    await owner.authenticate(await new SignJWT({
+      ns: "main", db: database, ac: "admin", RL: ["Owner"], email: "owner@example.test",
+    }).setSubject("evidence-owner").setIssuer(issuer).setExpirationTime("120s").setIssuedAt()
+      .setProtectedHeader({ alg: "ES256", kid: "fixture" }).sign(keys.privateKey));
+    await owner.use({ namespace: "main", database });
+    expect((await owner.select(events)).length).toBeGreaterThan(0);
+    expect((await owner.select(ballots)).length).toBeGreaterThan(0);
+    await expect(Promise.resolve(owner.update(events).merge({ actor: "changed" }))).rejects.toThrow("readonly");
+    await expect(Promise.resolve(owner.delete(events))).rejects.toThrow("append only");
+    await expect(Promise.resolve(owner.update(ballots).merge({ choice: "changed" }))).rejects.toThrow("readonly");
+    await expect(Promise.resolve(owner.delete(ballots))).rejects.toThrow("append only");
+    await expect(Promise.resolve(root.update(ballots).merge({ choice: "changed" }))).rejects.toThrow("readonly");
+
+    const exported = await owner.select<{ id: RecordId; ballots: string }>(new Table("ent_test_votes"));
+    const projection = exported.find((row) => row.ballots.includes("本人书面异议"))!;
+    const objects = new Map<string, Uint8Array>();
+    const ledger = new MeetingEvidenceLedger(new EvidenceVault({
+      read: async (key) => objects.get(key) ?? null,
+      create: async (key, content) => {
+        if (objects.has(key)) return false;
+        objects.set(key, content);
+        return true;
+      },
+    }, deriveEvidenceWorkspaceKey(crypto.getRandomValues(new Uint8Array(32)))));
+    const scope = { workspace: database, meeting: "fixture" };
+    const rootHash = await ledger.seal(scope, new Date().toISOString(), null, new Map([
+      ["votes.json", Buffer.from(projection.ballots)],
+    ]));
+    const manifest = await ledger.verifiedManifest(scope, rootHash.toString("hex"));
+    const artifact = manifest.files.find(({ path }) => path === "votes.json")!;
+    verifyEvidenceArtifact(artifact, Buffer.from(projection.ballots));
+    await owner.update(projection.id).merge({ ballots: projection.ballots.replace("本人书面异议", "投影被修改") });
+    const tampered = await owner.select<{ ballots: string }>(projection.id);
+    expect(tampered?.ballots).toContain("投影被修改");
+    expect(() => verifyEvidenceArtifact(artifact, Buffer.from(tampered!.ballots))).toThrow("不匹配");
+    expect(await ledger.readVerifiedArtifact(scope, artifact)).toEqual(Buffer.from(projection.ballots));
     const [actions] = await root.query<[string[]]>("SELECT VALUE action FROM roster_meeting_audit;").collect();
     expect(actions).toEqual(expect.arrayContaining(["issued", "revoked", "verify_ok", "verify_failed", "replaced", "kicked", "rejected_concurrent"]));
   } finally {
-    await Promise.allSettled([member.close(), root.close()]);
+    await Promise.allSettled([member.close(), owner.close(), root.close()]);
     proc.kill();
+    jwks.stop(true);
   }
 }, 30_000);
