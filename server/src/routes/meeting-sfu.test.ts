@@ -143,6 +143,7 @@ test("受控房间要求主持人与访客确认，只有受控房间派发已�
     const endpoint = `/api/meeting/sfu/rooms/${managed.id}`;
     const headers = { Authorization: "roster-host|workspace1", "Content-Type": "application/json" };
     expect(await (await app.request(endpoint + "/recording", { headers })).json()).toEqual({ recording: true, consentRequired: true });
+    expect((await app.request(endpoint + "/recording", { method: "DELETE", headers })).status).toBe(403);
     expect((await app.request(endpoint + "/credentials", { method: "POST", headers })).status).toBe(403);
     await expect(service.rosterCredentials(guest, managed.id, "guest")).rejects.toMatchObject({ status: 403 });
     expect(events).toEqual([]);
@@ -171,16 +172,20 @@ test("受控房间要求主持人与访客确认，只有受控房间派发已�
   }
 });
 
-test("日常会议默认不录制，仅主持人可手动录制已有与新发布的轨道，结束后排队封存", async () => {
+test("仅主持人可开启及停止日常录制；停止后排队封存且不允许重新开启", async () => {
   const started: string[] = [];
   const events: string[] = [];
   const closed: number[] = [];
   let woken = 0;
-  const { service, app, host, post, body, participants } = rosterTelemetryFixture(
+  let stopped = 0;
+  let readyToStop = false;
+  const { service, app, host, post, body, participants, now, advance } = rosterTelemetryFixture(
     async (_room, track) => { started.push(track); },
     async () => ({
       append: async (id) => { events.push(id); },
       close: async (at) => { closed.push(at); },
+      canStop: async () => readyToStop,
+      stop: async () => { stopped++; expect(closed).toEqual([now()]); },
       resume: () => { woken++; },
     }),
   );
@@ -204,9 +209,32 @@ test("日常会议默认不录制，仅主持人可手动录制已有与新发�
     }))).status).toBe(204);
     expect(started).toEqual(["TR_existing", "TR_new"]);
     expect(events).toEqual(["TR_existing:published", "TR_new:published"]);
+    expect((await request("DELETE", guest.subject)).status).toBe(403);
+    expect((await request("DELETE", host.subject)).status).toBe(409);
+    expect(closed).toEqual([]);
+    readyToStop = true;
+    advance();
+    const stopAt = now();
+    const stoppedState = { recording: false, consentRequired: false, stopped: true };
+    expect(await (await request("DELETE", host.subject)).json()).toEqual(stoppedState);
+    expect(await (await request("GET", guest.subject)).json()).toEqual(stoppedState);
+    expect((await request("POST", host.subject)).status).toBe(409);
+    expect((await post(JSON.stringify({
+      ...JSON.parse(body("track_published", room.id, identity, "PA_test")), track: { sid: "TR_after", type: "VIDEO", source: "SCREEN_SHARE" },
+    }))).status).toBe(204);
+    expect(started).toEqual(["TR_existing", "TR_new"]);
+    expect(events).toEqual(["TR_existing:published", "TR_new:published"]);
     await service.end(host, room.id);
-    expect(closed).toHaveLength(1);
+    expect(closed).toEqual([stopAt]);
+    expect(stopped).toBe(1);
     expect(woken).toBe(1);
+
+    const another = await service.create(host, 2);
+    await service.startDailyRecording(host, another.id);
+    advance();
+    await service.end(host, another.id);
+    expect(closed).toEqual([stopAt, now()]);
+    expect(woken).toBe(2);
   } finally { service.close(); }
 });
 

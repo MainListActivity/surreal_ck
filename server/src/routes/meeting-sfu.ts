@@ -234,6 +234,8 @@ export function createMeetingSfuRoutes({
       c.json(requireSfu().recordingState(actors.get(c.req.raw)!, requireRoomId(c.req.param("roomId")))))
     .post(`${apiPath}/rooms/:roomId/recording`, requireUser(), authenticate, async (c) =>
       c.json(await requireSfu().startDailyRecording(actors.get(c.req.raw)!, requireRoomId(c.req.param("roomId")))))
+    .delete(`${apiPath}/rooms/:roomId/recording`, requireUser(), authenticate, async (c) =>
+      c.json(await requireSfu().stopDailyRecording(actors.get(c.req.raw)!, requireRoomId(c.req.param("roomId")))))
     .post(`${apiPath}/rooms/:roomId/credentials`, requireUser(), bodyLimit({ maxSize: 256 }), authenticate, async (c) => {
       const actor = actors.get(c.req.raw)!;
       const consent = z.strictObject({ consent: z.literal(true) }).safeParse(await c.req.json().catch(() => null)).success;

@@ -51,8 +51,12 @@ export function createRosterAdminApi(slug: string, getToken: () => Promise<strin
     downloadEvidence: async (id: string) => {
       const path = `${meetingPath(id)}/evidence`;
       const { url } = await json<{ url: string }>(`${path}/grant`, "POST");
-      if (!url.startsWith(`${base}${path}/download?`)) throw new Error("会议存证下载链接无效");
-      return request(url.slice(base.length), undefined, undefined, true);
+      const origin = "https://meeting.invalid";
+      const grant = typeof url === "string" && url.startsWith("/") && !url.startsWith("//") ? new URL(url, origin) : null;
+      if (grant?.origin !== origin || grant.pathname !== `${base}${path}/download` || !grant.search || grant.hash) {
+        throw new Error("会议存证下载链接无效");
+      }
+      return request(`${path}/download${grant.search}`, undefined, undefined, true);
     },
     moderation: (id: string) => json<RosterMeetingModeration>(`${meetingPath(id)}/moderation`),
     moderate: (id: string, command: RosterMeetingCommand) =>

@@ -448,7 +448,7 @@ test.skipIf(!binary)("真实 fork：会议存证投影拒绝改删且独立核�
     }, deriveEvidenceWorkspaceKey(crypto.getRandomValues(new Uint8Array(32))));
     const archive = new MeetingEvidenceArchive(vault, "fixture archive key", 90,
       async () => ({ query: (sql, vars) => root.query(sql, vars).collect() }));
-    const evidenceMeeting = "roster_meeting:fixture";
+    const evidenceMeeting = "roster_meeting:⟨2fixture⟩";
     const evidenceStatus = await archive.seal(database, evidenceMeeting, new Date().toISOString(), {}, new Map());
     expect(evidenceStatus.root).toMatch(/^[0-9a-f]{64}$/u);
     const evidenceApp = new Hono().onError(handleError).route("/", createMeetingRosterRoutes({
@@ -466,6 +466,7 @@ test.skipIf(!binary)("真实 fork：会议存证投影拒绝改删且独立核�
     });
     expect(grant.status).toBe(200);
     const { url: download } = await grant.json() as { url: string };
+    expect(download.startsWith(evidencePath + "/download?ticket=")).toBe(true);
     for (const authorization of ["", `member|${database}|participant`, "host|other_workspace|admin"]) {
       expect((await evidenceApp.request(download, { headers: { authorization } })).status).toBe(403);
     }

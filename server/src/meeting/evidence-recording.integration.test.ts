@@ -36,11 +36,17 @@ test.skipIf(!cli || !spool || !endpoint || !key || !secret)("真实 Track Egress
     if (tracks.length < 2) throw new Error(await diagnostics);
     expect(tracks).toHaveLength(2);
     await Promise.all(tracks.map((track) => recording.start(roomName, track.sid, track.type === 0, Date.now())));
+    for (let retry = 0; retry < 24 && !await recording.canStop(room); retry++) await Bun.sleep(500);
+    expect(await recording.canStop(room)).toBe(true);
+    await Bun.sleep(1500);
+    const end = Date.now();
+    await recording.stop(room);
+    expect(bot.exitCode).toBeNull();
+    expect((await api.listParticipants(roomName)).length).toBeGreaterThan(0);
     expect(await bot.exited).toBe(0);
     const loadOutput = await videoOutput;
     if (subscribers !== "0") console.info(loadOutput.split("\n").filter((line) => line.includes("Total")).join("\n"));
     await api.deleteRoom(roomName);
-    const end = Date.now();
     const artifacts = await recording.collect(room, "m13-test", start, end, tracks.map(({ sid }) => sid));
     expect([...artifacts.keys()].filter((name) => name.includes("-audio."))).toHaveLength(1);
     expect([...artifacts.keys()].filter((name) => name.includes("-video."))).toHaveLength(1);

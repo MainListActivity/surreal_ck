@@ -83,11 +83,13 @@ async function request<T>(path: string, method: "GET" | "POST" | "DELETE" = "GET
 }
 
 const roomPath = (id: string) => `/rooms/${encodeURIComponent(id)}`;
+export type MeetingRecordingState = { recording: boolean; consentRequired: boolean; stopped?: boolean };
 export const meetingSfuApi = {
   availability: () => request<{ enabled: boolean; maxSeats: number }>("/availability"),
   create: (seats: number) => request<MeetingSfuRoom>("/rooms", "POST", { seats, mode: "daily", large: true }),
-  recording: (id: string) => request<{ recording: boolean; consentRequired: boolean }>(`${roomPath(id)}/recording`),
-  startRecording: (id: string) => request<{ recording: boolean }>(`${roomPath(id)}/recording`, "POST"),
+  recording: (id: string) => request<MeetingRecordingState>(`${roomPath(id)}/recording`),
+  startRecording: (id: string) => request<MeetingRecordingState>(`${roomPath(id)}/recording`, "POST"),
+  stopRecording: (id: string) => request<MeetingRecordingState>(`${roomPath(id)}/recording`, "DELETE"),
   credentials: (id: string, consent = false) =>
     request<MeetingSfuCredentials>(`${roomPath(id)}/credentials`, "POST", consent ? { consent } : undefined),
   list: (id: string) => request<MeetingSfuParticipant[]>(`${roomPath(id)}/participants`),

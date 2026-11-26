@@ -62,7 +62,7 @@ export type RoomRecording = {
   }) => Promise<void>;
 };
 export type DailyRecording = (workspace: string, room: string, host: string, at: number) =>
-  Promise<RoomRecording & { close(at: number): Promise<void>; resume(): void }>;
+  Promise<RoomRecording & { close(at: number): Promise<void>; canStop(): Promise<boolean>; stop(): Promise<void>; resume(): void }>;
 type PublishedTrackSink = (room: string, track: string, audio: boolean, at: number) => Promise<void>;
 type SfuParticipant = MeetingSfuParticipant & {
   leaseUntil: number;
@@ -228,13 +228,19 @@ export class PrivateMeetingSfu {
     return presence.roomId;
   }
 
-  async observeRecording(event: WebhookEvent) {
+  observeRecording(event: WebhookEvent) {
     const name = event.room?.name;
-    const participant = event.participant;
-    if (!name?.startsWith(ROOM_PREFIX) || !participant) return;
+    if (!name?.startsWith(ROOM_PREFIX)) return;
     const room = this.rooms.get(name.slice(ROOM_PREFIX.length));
-    const person = room?.participants.get(participant.identity);
-    if (!room?.recording || !person) return;
+    if (!room?.recording) return;
+    return room.managed ? this.recordEvent(room, event) : this.serial(() => this.recordEvent(room, event));
+  }
+
+  private async recordEvent(room: Room, event: WebhookEvent) {
+    const participant = event.participant;
+    if (!room.recording || !participant) return;
+    const person = room.participants.get(participant.identity);
+    if (!person) return;
     const at = Number(event.createdAt) * 1000;
     if (!Number.isSafeInteger(at) || at <= 0) throw unavailable();
     if (event.event === "track_published" && event.track) {
@@ -309,9 +315,11 @@ export class PrivateMeetingSfu {
   private async closeRoom(room: Room): Promise<void> {
     room.closing = true;
     for (const participant of room.participants.values()) participant.closeSignal?.();
-    await room.dailyRecording?.close(this.now());
+    const daily = room.recording && room.dailyRecording;
+    await daily?.close(this.now());
+    if (daily) room.recording = undefined;
     try { await this.deleteRoom(ROOM_PREFIX + room.id); }
-    finally { room.dailyRecording?.resume(); }
+    finally { daily?.resume(); }
     const at = this.now();
     for (const participant of room.participants.values()) this.retireRoster(participant.id, at);
     this.rooms.delete(room.id);
@@ -420,13 +428,17 @@ export class PrivateMeetingSfu {
   recordingState(actor: SfuActor, roomId: string) {
     const room = this.access(actor, roomId);
     const recording = this.recording(actor, roomId);
-    return { recording, consentRequired: recording && room.managed };
+    return { recording, consentRequired: recording && room.managed,
+      ...(room.dailyRecording && !recording ? { stopped: true } : {}) };
   }
 
   startDailyRecording(actor: SfuActor, roomId: string) {
     return this.serial(async () => {
       const room = this.access(actor, roomId, true);
       if (room.managed) throw denied();
+      if (room.dailyRecording && !room.recording) {
+        throw new HttpError(409, "meeting-sfu-recording-stopped", "本场录制已停止，不能重新开启；如需再次录制，请创建新会议");
+      }
       if (!this.startDaily || !this.recordTrack || !this.admin.listParticipants) throw unavailable();
       const at = this.now();
       if (!room.dailyRecording) {
@@ -438,6 +450,26 @@ export class PrivateMeetingSfu {
         const person = room.participants.get(identity);
         return person ? tracks.map((track) => this.recordPublished(room, person, track, at)) : [];
       }));
+      return this.recordingState(actor, roomId);
+    });
+  }
+
+  stopDailyRecording(actor: SfuActor, roomId: string) {
+    return this.serial(async () => {
+      const room = this.access(actor, roomId, true);
+      if (room.managed) throw denied();
+      const daily = room.dailyRecording;
+      if (daily) {
+        if (room.recording) {
+          if (!await this.upstream(() => daily.canStop())) {
+            throw new HttpError(409, "meeting-sfu-recording-starting", "录制轨道正在启动，请稍后重试停止录制");
+          }
+          await daily.close(this.now());
+          room.recording = undefined;
+        }
+        try { await this.upstream(() => daily.stop()); }
+        finally { daily.resume(); }
+      }
       return this.recordingState(actor, roomId);
     });
   }

@@ -16,6 +16,8 @@ export function dailyRecording(evidence: MeetingEvidenceArchive, recording: Meet
       async close(time) {
         await jobs.enqueue({ kind: "daily", workspace, meeting, room, actor, at: new Date(time).toISOString() });
       },
+      canStop: () => recording.canStop(room),
+      stop: () => recording.stop(room),
       resume: () => void jobs.resume().catch(() => console.error("[meeting-evidence] 无法读取封存队列")),
     };
   };

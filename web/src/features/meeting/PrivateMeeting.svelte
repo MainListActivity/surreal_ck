@@ -7,7 +7,7 @@
   import { loadMemberRows } from "../../lib/members-data";
   import { getSurreal } from "../../lib/surreal";
   import { fetchMeetingIce } from "../../lib/meeting/ice";
-  import { meetingSfuApi, selectedMeetingSubscriptions, SfuRequestError } from "../../lib/meeting/sfu";
+  import { meetingSfuApi, selectedMeetingSubscriptions, SfuRequestError, type MeetingRecordingState } from "../../lib/meeting/sfu";
 
   let { initialRoom, initialSeats, maxSeats, onback, rosterManaged = false }: {
     initialRoom: string; initialSeats: number; maxSeats: number; onback: () => void; rosterManaged?: boolean;
@@ -17,6 +17,7 @@
   let roomId = $state("");
   let consentRoom = $state("");
   let recording = $state(false);
+  let recordingStopped = $state(false);
   let consentRequired = $state(false);
   let role = $state<MeetingSfuRole>("listener");
   const canSpeak = $derived(role === "host" || role === "speaker");
@@ -43,6 +44,7 @@
   let attempt = 0;
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
   let recordingTimer: ReturnType<typeof setInterval> | undefined;
+  let recordingRevision = 0;
 
   $effect(() => { inputId = initialRoom; });
   $effect(() => { seats = Math.min(Math.max(1, initialSeats || 10), maxSeats || 10); });
@@ -108,8 +110,7 @@
   async function enter(id: string, connectionAttempt = ++attempt, retry = false) {
     const state = await meetingSfuApi.recording(id);
     if (destroyed || attempt !== connectionAttempt) return;
-    recording = state.recording;
-    consentRequired = state.consentRequired;
+    applyRecording(state);
     if (consentRequired && consentRoom !== id) {
       roomId = id;
       return;
@@ -175,9 +176,10 @@
     status = "connected";
     reconcile(current);
     refreshTimer = setInterval(() => { void refreshLease(); }, 30_000);
-    if (!state.recording) recordingTimer = setInterval(() => {
+    if (!state.consentRequired) recordingTimer = setInterval(() => {
+      const revision = recordingRevision;
       void meetingSfuApi.recording(id).then((state) => {
-        if (room === current) recording = state.recording;
+        if (room === current && revision === recordingRevision) applyRecording(state);
       }).catch(() => undefined);
     }, 2_000);
     if (role === "host") {
@@ -185,6 +187,21 @@
       void loadMemberRows(getSurreal()).then((rows) => {
         if (room === current) contacts = rows.flatMap(({ subject, ...member }) => subject ? [{ ...member, subject }] : []);
       }).catch(() => undefined);
+    }
+  }
+
+  function applyRecording(state: MeetingRecordingState) {
+    recording = state.recording;
+    recordingStopped = state.stopped === true;
+    consentRequired = state.consentRequired;
+  }
+
+  async function changeRecording(active: boolean) {
+    const current = room;
+    const state = await (active ? meetingSfuApi.startRecording(roomId) : meetingSfuApi.stopRecording(roomId));
+    if (room === current) {
+      recordingRevision++;
+      applyRecording(state);
     }
   }
 
@@ -316,11 +333,20 @@
       {/each}
     </div>
     <div class="controls">
-      {#if role === "host" && !rosterManaged && !recording}
-        <button disabled={busy} onclick={() => {
-          if (!window.confirm("启用后将录制当前及后续音视频，直至会议结束。确认启用录制？")) return;
-          void run(async () => { recording = (await meetingSfuApi.startRecording(roomId)).recording; });
-        }}>开始录制</button>
+      {#if role === "host" && !consentRequired}
+        {#if recording}
+          <button disabled={busy} onclick={() => {
+            if (window.confirm("停止后将封存本场录制，且不可再次开启。确定停止录制？")) void run(() => changeRecording(false));
+          }}>停止录制</button>
+        {:else if recordingStopped}
+          <span>本场录制已停止，不可再次开启</span>
+        {:else if !rosterManaged}
+          <button disabled={busy} onclick={() => {
+            if (window.confirm("启用后将录制当前及后续音视频，直至手动停止或会议结束。确认启用录制？")) {
+              void run(() => changeRecording(true));
+            }
+          }}>开始录制</button>
+        {/if}
       {/if}
       {#if needsAudio}
         <button onclick={() => void run(() => room?.startAudio() ?? Promise.resolve())}>开启声音</button>

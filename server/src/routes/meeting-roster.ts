@@ -205,8 +205,10 @@ export function createMeetingRosterRoutes(options: Options = {}) {
     return c.body(null, 202);
   });
   app.post(evidencePath + "/grant", async (c) => {
-    const { token, ...grant } = await evidence().grant(database(c), param(c, "meeting"), c.var.user.subject);
-    const path = `${c.req.path.slice(0, -"grant".length)}download`;
+    const meeting = param(c, "meeting");
+    const { token, ...grant } = await evidence().grant(database(c), meeting, c.var.user.subject);
+    const path = evidencePath.replace(":slug", encodeURIComponent(param(c, "slug")))
+      .replace(":meeting", encodeURIComponent(meeting)) + "/download";
     return c.json({ ...grant, url: `${path}?ticket=${encodeURIComponent(token)}` });
   });
   app.get(evidencePath + "/download", async (c) => {

@@ -49,14 +49,32 @@ export class MeetingTrackRecording {
     return operation;
   }
 
-  private async synthesize(room: string, meeting: string, start: number, end: number, expected: readonly string[]) {
+  async stop(id: string) {
+    await this.stopTracks(`ck-meeting-${id}`);
+  }
+
+  async canStop(id: string) {
+    return !(await this.tracks(`ck-meeting-${id}`)).some(({ status }) => status === EgressStatus.EGRESS_STARTING);
+  }
+
+  private async tracks(room: string) {
     if (!roomPattern.test(room)) throw new Error("会议室标识无效");
     await Promise.all([...this.requests].filter(([key]) => key.startsWith(room + "/")).map(([, request]) => request));
-    let tracks = await this.egress.listEgress({ roomName: room });
-    await Promise.all(tracks.filter(({ status }) => active(status) && status !== EgressStatus.EGRESS_ENDING)
+    return this.egress.listEgress({ roomName: room });
+  }
+
+  private async stopTracks(room: string) {
+    const stopping = (status: EgressStatus) => active(status) && status !== EgressStatus.EGRESS_ENDING;
+    const tracks = await this.tracks(room);
+    await Promise.all(tracks.filter(({ status }) => stopping(status))
       .map(({ egressId }) => this.egress.stopEgress(egressId).catch(async (error) => {
-        if ((await this.egress.listEgress({ egressId })).some(({ status }) => active(status))) throw error;
+        if ((await this.egress.listEgress({ egressId })).some(({ status }) => stopping(status))) throw error;
       })));
+    return tracks;
+  }
+
+  private async synthesize(room: string, meeting: string, start: number, end: number, expected: readonly string[]) {
+    let tracks = await this.stopTracks(room);
     for (let retry = 0; retry < 30 && tracks.some(({ status }) => active(status)); retry++) {
       await Bun.sleep(1000);
       tracks = await this.egress.listEgress({ roomName: room });
