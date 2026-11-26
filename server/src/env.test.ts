@@ -11,6 +11,40 @@ const requiredEnv = {
   IDP_HOOK_SECRET: "test-hook-secret",
 };
 
+describe("loadEnv meeting ICE", () => {
+  test("启动不要求 TURN 配置，签发默认不超过十分钟", () => {
+    const loaded = loadEnv({ ...requiredEnv, TURN_SHARED_SECRET: "" });
+    expect(loaded.TURN_SHARED_SECRET).toBeUndefined();
+    expect(loaded.TURN_URLS).toEqual([]);
+    expect(loaded.STUN_URLS).toEqual([]);
+    expect(loaded.TURN_CREDENTIAL_TTL_SECONDS).toBe(600);
+  });
+
+  test("解析逗号分隔的服务器，接受 900 秒上限", () => {
+    const loaded = loadEnv({
+      ...requiredEnv,
+      TURN_SHARED_SECRET: "fixture-turn-secret",
+      TURN_URLS: " turn:turn.example.test:3478?transport=udp, turns:turn.example.test:5349 ",
+      STUN_URLS: "stun:turn.example.test:3478",
+      TURN_CREDENTIAL_TTL_SECONDS: "900",
+    });
+    expect(loaded.TURN_URLS).toEqual(["turn:turn.example.test:3478?transport=udp", "turns:turn.example.test:5349"]);
+    expect(loaded.STUN_URLS).toEqual(["stun:turn.example.test:3478"]);
+    expect(loaded.TURN_CREDENTIAL_TTL_SECONDS).toBe(900);
+  });
+
+  test("拒绝超过 900 秒的 TTL 及错误协议", () => {
+    const exitCodeBefore = process.exitCode;
+    try {
+      expect(() => loadEnv({ ...requiredEnv, TURN_CREDENTIAL_TTL_SECONDS: "901" })).toThrow();
+      expect(() => loadEnv({ ...requiredEnv, TURN_URLS: "stun:turn.example.test" })).toThrow();
+      expect(() => loadEnv({ ...requiredEnv, STUN_URLS: "https://turn.example.test" })).toThrow();
+    } finally {
+      process.exitCode = exitCodeBefore ?? 0;
+    }
+  });
+});
+
 describe("loadEnv template pack selection", () => {
   test("未配置模板包时返回空选择", () => {
     expect(loadEnv(requiredEnv).WORKSPACE_TEMPLATE_PACKS).toEqual([]);
