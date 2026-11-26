@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>原生会议 WebRTC 互通</title>
+<pre id="report">等待媒体</pre>
+<script type="module">
+const sources = ['microphone', 'camera', 'screen'];
+const limit = 49152;
+const params = new URLSearchParams(location.search);
+const mailbox = params.get('mailbox') || location.origin;
+const role = params.get('role');
+const pc = new RTCPeerConnection({ iceServers: [] });
+const diagnostics = {};
+const rendered = Object.fromEntries(sources.map(source => [source, 0]));
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+function sections(sdp) {
+  return sdp.split(/(?=^m=)/m).slice(1).map(section => ({
+    kind: /^m=(\S+)/.exec(section)?.[1],
+    mid: /^a=mid:(\S+)/m.exec(section)?.[1],
+    source: /^a=msid:\S+\s+(\S+)/m.exec(section)?.[1],
+    direction: /^a=(sendrecv|recvonly|sendonly|inactive)$/m.exec(section)?.[1],
+  }));
+}
+
+function describe(raw) {
+  const { sdp } = JSON.parse(raw);
+  return {
+    bytes: new TextEncoder().encode(raw).length,
+    media: sections(sdp),
+    candidates: [...new Set([...sdp.matchAll(/^a=candidate:\S+ \d+ (\S+) \d+ (\S+) \d+ typ (\S+)/gmi)]
+      .map(([, protocol, address, type]) => `${protocol}/${address}/${type}`))],
+  };
+}
+
+pc.ontrack = ({ track, transceiver }) => {
+  const source = sections(pc.remoteDescription.sdp).find(part => part.mid === transceiver.mid)?.source;
+  if (!sources.includes(source) || track.kind !== 'video') return;
+  const video = Object.assign(document.createElement('video'), {
+    srcObject: new MediaStream([track]), muted: true, autoplay: true, playsInline: true,
+  });
+  function frame() {
+    rendered[source]++;
+    video.requestVideoFrameCallback(frame);
+  }
+  document.body.append(video);
+  video.requestVideoFrameCallback(frame);
+};
+
+function preferCodec(transceiver, kind) {
+  const mime = kind === 'audio' ? 'audio/opus' : 'video/VP8';
+  const codecs = RTCRtpReceiver.getCapabilities(kind).codecs.filter(codec => codec.mimeType === mime);
+  if (!codecs.length) throw new Error(`Chrome 不支持 ${mime}`);
+  transceiver.setCodecPreferences(codecs);
+}
+
+async function fetchDescription(kind) {
+  const until = performance.now() + 20000;
+  while (performance.now() < until) {
+    const response = await fetch(`${mailbox}/${kind}`);
+    if (response.ok) {
+      const raw = await response.text();
+      diagnostics.native = describe(raw);
+      return JSON.parse(raw);
+    }
+    if (response.status !== 404) throw new Error(`GET /${kind}：${response.status}`);
+    await sleep(100);
+  }
+  throw new Error(`等待 /${kind} 超时`);
+}
+
+async function postDescription(description, byMid) {
+  await pc.setLocalDescription(description);
+  const until = performance.now() + 15000;
+  while (pc.iceGatheringState !== 'complete' && performance.now() < until) await sleep(50);
+  if (pc.iceGatheringState !== 'complete') throw new Error('Chrome ICE 收集超时');
+  const { type, sdp } = pc.localDescription;
+  if (!/^a=candidate:/m.test(sdp)) throw new Error('Chrome 未收集到 ICE candidate');
+  const raw = JSON.stringify({ type, sdp: sdp.split(/(?=^m=)/m).map(section => {
+    const mid = /^a=mid:(\S+)/m.exec(section)?.[1];
+    const source = byMid.get(mid);
+    if (!source) return section;
+    // Chrome 也可能在 SSRC 属性里携带原始 track id。
+    return section.replace(/^(a=(?:ssrc:\d+ )?msid:\S+)[ \t]+\S+/gm, `$1 ${source}`);
+  }).join('') });
+  diagnostics.browser = describe(raw);
+  if (diagnostics.browser.bytes > limit || /[^\x00-\x7f]/.test(raw)) throw new Error('Chrome SDP 超出会议信令限制');
+  const response = await fetch(`${mailbox}/${type}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: raw,
+  });
+  if (!response.ok) throw new Error(`POST /${type}：${response.status} ${await response.text()}`);
+}
+
+async function start() {
+  if (!['offerer', 'answerer'].includes(role)) throw new Error('需要 ?role=offerer 或 ?role=answerer');
+  const devices = await navigator.mediaDevices.getUserMedia({
+    audio: true, video: { width: 320, height: 240, frameRate: 15 },
+  });
+  const canvas = Object.assign(document.createElement('canvas'), { width: 320, height: 240 });
+  const context = canvas.getContext('2d');
+  let frame = 0;
+  function draw() {
+    context.fillStyle = `hsl(${frame++ % 360} 85% 45%)`;
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = '#fff';
+    context.font = '24px sans-serif';
+    context.fillText(`Chrome screen ${frame}`, 16, 50);
+  }
+  draw();
+  setInterval(draw, 1000 / 15);
+  const tracks = {
+    microphone: devices.getAudioTracks()[0],
+    camera: devices.getVideoTracks()[0],
+    screen: canvas.captureStream(15).getVideoTracks()[0],
+  };
+  const outgoing = new MediaStream(Object.values(tracks));
+  const byMid = new Map();
+  if (role === 'offerer') {
+    const transceivers = sources.map(source => {
+      const track = tracks[source];
+      const transceiver = pc.addTransceiver(track, { direction: 'sendrecv', streams: [outgoing] });
+      preferCodec(transceiver, track.kind);
+      return transceiver;
+    });
+    const offer = await pc.createOffer();
+    sections(offer.sdp).forEach(({ mid }, index) => byMid.set(mid, sources[index]));
+    if (transceivers.length !== byMid.size) throw new Error('实体媒体段不等于三个 transceiver');
+    await postDescription(offer, byMid);
+    await pc.setRemoteDescription(await fetchDescription('answer'));
+  } else {
+    const offer = await fetchDescription('offer');
+    await pc.setRemoteDescription(offer);
+    const mids = new Map(sections(offer.sdp).map(({ mid, source }) => [mid, source]));
+    for (const transceiver of pc.getTransceivers()) {
+      const source = mids.get(transceiver.mid);
+      if (!tracks[source]) throw new Error(`原生 offer 的 mid ${transceiver.mid} 缺少约定 track id`);
+      const track = tracks[source];
+      await transceiver.sender.replaceTrack(track);
+      transceiver.sender.setStreams(outgoing);
+      transceiver.direction = 'sendrecv';
+      preferCodec(transceiver, track.kind);
+      byMid.set(transceiver.mid, source);
+    }
+    if (byMid.size !== sources.length) throw new Error('原生 offer 未协商三个媒体段');
+    await postDescription(await pc.createAnswer(), byMid);
+  }
+  for (const transceiver of pc.getTransceivers()) {
+    if (transceiver.currentDirection !== 'sendrecv') throw new Error(`mid ${transceiver.mid} 非双向媒体`);
+  }
+}
+
+async function report() {
+  const stats = await pc.getStats();
+  const received = Object.fromEntries(sources.map(source => [source, 0]));
+  const sent = { ...received };
+  const codecs = {};
+  const remote = new Map(sections(pc.remoteDescription?.sdp || '').map(({ mid, source }) => [mid, source]));
+  const local = new Map(diagnostics.browser?.media.map(({ mid, source }) => [mid, source]));
+  for (const item of stats.values()) {
+    if (item.type === 'inbound-rtp' && sources.includes(remote.get(item.mid))) {
+      const source = remote.get(item.mid);
+      received[source] += source === 'microphone' ? item.packetsReceived : item.framesDecoded || 0;
+      codecs[source] = stats.get(item.codecId)?.mimeType;
+    }
+    if (item.type === 'outbound-rtp' && sources.includes(local.get(item.mid))) {
+      const source = local.get(item.mid);
+      sent[source] += source === 'microphone' ? item.packetsSent : item.framesEncoded || 0;
+    }
+  }
+  const pair = [...stats.values()].find(item => item.type === 'transport' && item.selectedCandidatePairId);
+  const selected = stats.get(pair?.selectedCandidatePairId);
+  return {
+    connected: pc.connectionState === 'connected', state: pc.connectionState,
+    received, sent, rendered, codecs,
+    ice: {
+      local: stats.get(selected?.localCandidateId)?.candidateType,
+      remote: stats.get(selected?.remoteCandidateId)?.candidateType,
+    },
+    sdp: diagnostics,
+  };
+}
+
+window.interopReport = report;
+window.interopReady = start().catch(error => {
+  document.querySelector('#report').textContent = error.stack;
+  throw error;
+});
+window.interopReady.then(() => {
+  setInterval(async () => {
+    document.querySelector('#report').textContent = JSON.stringify(await report(), null, 2);
+  }, 500);
+}, () => {});
+</script>
+</html>
