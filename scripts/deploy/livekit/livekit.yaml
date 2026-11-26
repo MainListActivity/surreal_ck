@@ -1,0 +1,14 @@
+port: 7880
+bind_addresses: ["__PRIVATE_IPV4__"]
+rtc:
+  use_external_ip: false
+  node_ip: "__PUBLIC_IPV4__"
+  tcp_port: 7881
+  udp_port: 7882-7889
+  stun_servers: ["__MANAGED_STUN_HOSTPORT__"]
+room:
+  auto_create: false
+  max_participants: 30
+  enable_remote_unmute: false
+logging:
+  level: warn

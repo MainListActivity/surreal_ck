@@ -28,11 +28,13 @@
     "@surreal-ck/shared": "workspace:*",
     "hono": "^4.12.14",
     "jose": "^6.1.3",
+    "livekit-server-sdk": "2.15.2",
     "pdfkit": "0.17.2",
     "surrealdb": "2.2.2",
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@livekit/protocol": "1.39.3",
     "@types/pdfkit": "0.17.7",
     "bun-types": "^1.3.12"
   }

@@ -17,6 +17,7 @@ export * from "./citation-status";
 export * from "./legal-retrieval";
 export * from "./discover";
 export * from "./meeting-ice";
+export * from "./meeting-sfu";
 export * from "./platform-content";
 export * from "./product-entitlement";
 export * from "./rollout";
