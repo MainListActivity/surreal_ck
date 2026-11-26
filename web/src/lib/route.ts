@@ -25,6 +25,7 @@ export type WorkspacePage =
   | "templates"
   | "dashboard"
   | "office"
+  | "meeting"
   | "admin"
   | "admin-console"
   | "settings"
@@ -51,6 +52,7 @@ const WORKSPACE_PAGES: readonly WorkspacePage[] = [
   "templates",
   "dashboard",
   "office",
+  "meeting",
   "admin",
   "admin-console",
   "settings",

@@ -6,6 +6,7 @@
   import AdminConsoleScreen from "./AdminConsoleScreen.svelte";
   import HomeScreen from "./HomeScreen.svelte";
   import OfficeScreen from "./OfficeScreen.svelte";
+  import MeetingScreen from "../features/meeting/MeetingScreen.svelte";
   import ContentEntryScreen from "./ContentEntryScreen.svelte";
   import TemplatesScreen from "./TemplatesScreen.svelte";
   import PlaceholderScreen from "./PlaceholderScreen.svelte";
@@ -143,6 +144,8 @@
       <DashboardScreen />
     {:else if page === "office"}
       <OfficeScreen {slug} />
+    {:else if page === "meeting"}
+      <MeetingScreen />
     {:else if page === "admin"}
       <WorkspaceSettingsScreen />
     {:else if page === "admin-console"}
