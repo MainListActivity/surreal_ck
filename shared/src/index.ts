@@ -16,6 +16,7 @@ export * from "./content-search";
 export * from "./citation-status";
 export * from "./legal-retrieval";
 export * from "./discover";
+export * from "./meeting-ice";
 export * from "./platform-content";
 export * from "./product-entitlement";
 export * from "./rollout";

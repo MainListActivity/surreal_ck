@@ -1,9 +1,23 @@
 import { z } from "zod";
 
+function iceUrls(pattern: RegExp, message: string) {
+  return z.string().default("")
+    .transform((value) => value.split(",").map((url) => url.trim()).filter(Boolean))
+    .pipe(z.array(z.string().regex(pattern, message)));
+}
+
 const EnvSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   HOST: z.string().min(1).default("0.0.0.0"),
   PORT: z.coerce.number().int().positive().max(65535).default(8080),
+
+  TURN_SHARED_SECRET: z.preprocess(
+    (value) => typeof value === "string" && value.trim() === "" ? undefined : value,
+    z.string().min(1).optional(),
+  ),
+  TURN_URLS: iceUrls(/^turns?:(?:[a-zA-Z0-9.-]+|\[[0-9a-fA-F:.]+\])(?::\d+)?(?:\?transport=(?:udp|tcp))?$/u, "Expected a TURN URL"),
+  STUN_URLS: iceUrls(/^stun:(?:[a-zA-Z0-9.-]+|\[[0-9a-fA-F:.]+\])(?::\d+)?$/u, "Expected a STUN URL"),
+  TURN_CREDENTIAL_TTL_SECONDS: z.coerce.number().int().min(1).max(900).default(600),
 
   SURREAL_URL: z.string().min(1),
   SURREAL_NS: z.string().min(1).default("main"),
