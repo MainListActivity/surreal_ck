@@ -16,6 +16,7 @@
   let seats = $state(10);
   let roomId = $state("");
   let role = $state<MeetingSfuRole>("listener");
+  const canSpeak = $derived(role === "host" || role === "speaker");
   let status = $state<"idle" | "connected" | "reconnecting">("idle");
   let busy = $state(false);
   let error = $state("");
@@ -162,8 +163,8 @@
     status = "connected";
     reconcile(current);
     refreshTimer = setInterval(() => { void refreshLease(); }, 30_000);
-    if (role === "host" && !rosterManaged) {
-      void refreshAttendees();
+    if (role === "host") {
+      if (!rosterManaged) void refreshAttendees();
       void loadMemberRows(getSurreal()).then((rows) => {
         if (room === current) contacts = rows.flatMap(({ subject, ...member }) => subject ? [{ ...member, subject }] : []);
       }).catch(() => undefined);
@@ -210,12 +211,12 @@
   function device(kind: "mic" | "camera" | "screen") {
     return run(async () => {
       const current = room;
-      if (!current) return;
+      if (!current || (kind === "screen" ? role === "listener" : !canSpeak)) return;
       const local = current.localParticipant;
       try {
         if (kind === "mic") await local.setMicrophoneEnabled(!mic);
         if (kind === "camera") await local.setCameraEnabled(!camera);
-        if (kind === "screen") await local.setScreenShareEnabled(!screen);
+        if (kind === "screen") await local.setScreenShareEnabled(!screen, role === "cohost" ? { audio: false } : undefined);
       } catch {
         throw new Error("无法启用设备，请检查浏览器权限及主持人授权");
       } finally {
@@ -274,7 +275,7 @@
     </form>
     {/if}
   {:else}
-    <p aria-live="polite">{status === "reconnecting" ? "网络变化，正在自动重连…" : "已连接 · 私有媒体"}{role === "listener" ? " · 只听" : ""}</p>
+    <p aria-live="polite">{status === "reconnecting" ? "网络变化，正在自动重连…" : "已连接 · 私有媒体"}{role === "listener" ? " · 只听" : role === "cohost" ? " · 协办人（仅可共享屏幕）" : ""}</p>
     <div class="media">
       {#each tracks as track (track)}
         {#if track.kind === Track.Kind.Video}
@@ -289,19 +290,34 @@
         <button onclick={() => void run(() => room?.startAudio() ?? Promise.resolve())}>开启声音</button>
       {/if}
       <button aria-pressed={audioOnly} onclick={() => void run(toggleAudio)}>{audioOnly ? "恢复视频接收" : "纯音频省流模式"}</button>
-      {#if role !== "listener"}
+      {#if canSpeak}
         <button disabled={busy} onclick={() => device("mic")}>{mic ? "关闭麦克风" : "开启麦克风"}</button>
         <button disabled={busy || audioOnly} onclick={() => device("camera")}>{camera ? "关闭摄像头" : "开启摄像头"}</button>
-        {#if typeof navigator !== "undefined" && typeof navigator.mediaDevices?.getDisplayMedia === "function"}
-          <button disabled={busy || audioOnly} onclick={() => device("screen")}>{screen ? "停止共享" : "共享屏幕"}</button>
-        {/if}
+      {/if}
+      {#if role !== "listener" && typeof navigator !== "undefined" && typeof navigator.mediaDevices?.getDisplayMedia === "function"}
+        <button disabled={busy || audioOnly} onclick={() => device("screen")}>{screen ? "停止共享" : "共享屏幕"}</button>
       {/if}
       <button onclick={disconnect}>离开</button>
       {#if role === "host" && !rosterManaged}
         <button disabled={busy} onclick={() => void run(async () => { await meetingSfuApi.end(roomId); disconnect(); })}>结束大会</button>
       {/if}
     </div>
-    {#if role === "host" && !rosterManaged}
+    {#if role === "host" && rosterManaged}
+      <form onsubmit={(event) => { event.preventDefault(); void run(async () => {
+        await meetingSfuApi.invite(roomId, inviteSubject, "cohost");
+        feedback = "已授权协办人共享屏幕";
+      }); }}>
+        <label>协办人 <select required bind:value={inviteSubject}>
+          <option value="">选择工作区成员</option>
+          {#each contacts as contact (contact.subject)}
+            <option value={contact.subject}>{contact.display_name || contact.email}</option>
+          {/each}
+        </select></label>
+        <button disabled={busy}>指定协办人（仅共享屏幕）</button>
+        <button type="button" onclick={() => void run(copyInvite)}>复制协办入场链接</button>
+        <span>大会编号：{roomId}</span>
+      </form>
+    {:else if role === "host"}
       <form onsubmit={(event) => { event.preventDefault(); void run(async () => {
         await meetingSfuApi.invite(roomId, inviteSubject, inviteRole);
         await refreshAttendees();

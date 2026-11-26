@@ -39,7 +39,8 @@
           continue;
         }
         publications.push(publication);
-        candidates.push({ id: publication.trackSid, identity: person.identity, source: publication.source, host: person.metadata === "host" });
+        candidates.push({ id: publication.trackSid, identity: person.identity, source: publication.source,
+          host: person.metadata === "host", cohost: person.metadata === "cohost" });
       }
     }
     const wanted = selectedMeetingSubscriptions(candidates, current.activeSpeakers.map((speaker) => speaker.identity),

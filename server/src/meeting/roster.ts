@@ -622,7 +622,7 @@ export class RosterMeetingService {
       const [count] = statement<{ total: number }>(await db.query(
         "SELECT count() AS total FROM type::table($table) GROUP ALL;", { table: sheet.table_name },
       ));
-      const room = await media.startRoster(actor, Math.min(media.maxSeats, (count?.total ?? 0) + 1),
+      const room = await media.startRoster(actor, Math.min(media.maxSeats, (count?.total ?? 0) + 2),
         dateTimeTimestamp(meeting.ends_at) || undefined);
       try {
         const rows = statement(await db.query(

@@ -2,6 +2,14 @@ import { expect, test } from "bun:test";
 import { Track } from "livekit-client";
 import { selectedMeetingSubscriptions } from "./sfu";
 
+test("roster screen focus accepts a co-host share but prefers the host and never selects a co-host camera", () => {
+  const cohostShare = { id: "cohost-share", identity: "cohost", host: false, cohost: true, source: Track.Source.ScreenShare };
+  const cohostCamera = { ...cohostShare, id: "cohost-camera", source: Track.Source.Camera };
+  expect(selectedMeetingSubscriptions([cohostShare, cohostCamera], [], "mobile", "screen")).toEqual(new Set(["cohost-share"]));
+  expect(selectedMeetingSubscriptions([cohostShare, cohostCamera], [], "desktop", "speaker")).toEqual(new Set());
+  expect(selectedMeetingSubscriptions([cohostShare, ...publications], [], "mobile", "screen")).toEqual(new Set(["host-mic", "host-share"]));
+});
+
 const publications = [
   { id: "host-mic", identity: "host", host: true, source: Track.Source.Microphone },
   { id: "host-share", identity: "host", host: true, source: Track.Source.ScreenShare },

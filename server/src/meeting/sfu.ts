@@ -44,7 +44,7 @@ type SfuParticipant = MeetingSfuParticipant & {
 
 type Admin = Pick<RoomServiceClient, "createRoom" | "listRooms" | "deleteRoom" | "removeParticipant" | "updateParticipant">;
 type Config = { privateUrl: string; signalUrl: string; key: string; secret: string; maxSeats: number };
-export type SignalLease = { roomId: string; identity: string; publisher: boolean; microphoneOnly: boolean };
+export type SignalLease = { roomId: string; identity: string; publisher: boolean; microphoneOnly: boolean; screenOnly?: boolean };
 
 const denied = () => new HttpError(403, "meeting-sfu-denied", "没有权限进入或管理此大会");
 const full = () => new HttpError(409, "meeting-sfu-capacity", "私有会议容量已满，请减少预计人数或稍后重试");
@@ -58,7 +58,7 @@ function permissions(role: MeetingSfuRole) {
     canPublish: role !== "listener",
     canPublishData: false,
     canUpdateOwnMetadata: false,
-    ...(role === "listener" ? {} : { canPublishSources: [
+    ...(role === "listener" ? {} : role === "cohost" ? { canPublishSources: [TrackSource.SCREEN_SHARE] } : { canPublishSources: [
       TrackSource.MICROPHONE, TrackSource.CAMERA, TrackSource.SCREEN_SHARE, TrackSource.SCREEN_SHARE_AUDIO,
     ] }),
   };
@@ -230,7 +230,7 @@ export class PrivateMeetingSfu {
   invite(actor: SfuActor, roomId: string, subject: string, role: Exclude<MeetingSfuRole, "host">) {
     return this.serial(async () => {
       const room = this.access(actor, roomId, true);
-      if (room.managed) throw denied();
+      if (room.managed !== (role === "cohost") || (room.managed && (!actor.workspaceAdmin || subject.startsWith("roster:")))) throw denied();
       const existing = room.bySubject.get(subject);
       if (existing?.revoked || existing?.role === "host" || (existing && existing.role !== role)) throw denied();
       return participantView(existing ?? this.addParticipant(room, subject, "参会人", role));
@@ -247,7 +247,9 @@ export class PrivateMeetingSfu {
     return this.serial(async () => {
       const room = this.access(actor, roomId);
       const participant = room.bySubject.get(actor.subject);
-      if (!participant || participant.externalSession || (room.managed && !actor.workspaceAdmin)) throw denied();
+      if (!participant || participant.externalSession || (room.managed
+        && participant.role !== "cohost" && !actor.workspaceAdmin)) throw denied();
+      if (room.locked && participant.role === "cohost" && !participant.entered) throw rosterRoomLocked();
       return this.mintCredentials(room, participant, actor);
     });
   }
@@ -260,7 +262,8 @@ export class PrivateMeetingSfu {
     if (ttl < 1) throw expired();
     participant.name = actor.name;
     const jwt = new AccessToken(this.config.key, this.config.secret, {
-      identity: participant.id, name: participant.name, metadata: participant.role === "host" ? "host" : undefined, ttl,
+      identity: participant.id, name: participant.name,
+      metadata: participant.role === "host" || participant.role === "cohost" ? participant.role : undefined, ttl,
     });
     jwt.addGrant({ room: ROOM_PREFIX + room.id, roomJoin: true, ...permissions(participant.role) });
     const token = await jwt.toJwt();
@@ -447,11 +450,13 @@ export class PrivateMeetingSfu {
       const grant = payload.video as VideoGrant | undefined;
       if (grant?.roomJoin !== true || !grant.room?.startsWith(ROOM_PREFIX) || !payload.sub) return;
       const roomId = grant.room.slice(ROOM_PREFIX.length);
+      const participant = this.rooms.get(roomId)?.participants.get(payload.sub);
       const lease: SignalLease = {
         roomId,
         identity: payload.sub,
         publisher: grant.canPublish !== false || Boolean(grant.canPublishSources?.length),
-        microphoneOnly: Boolean(this.rooms.get(roomId)?.participants.get(payload.sub)?.externalSession),
+        microphoneOnly: Boolean(participant?.externalSession),
+        screenOnly: participant?.role === "cohost",
       };
       return this.findLease(lease) ? lease : undefined;
     } catch {
@@ -465,7 +470,7 @@ export class PrivateMeetingSfu {
     const participant = room.participants.get(identity);
     if (!participant || participant.revoked || participant.pendingRemoval || participant.leaseUntil <= this.now()
       || (participant.role === "listener" && publisher)) return;
-    if (room.locked && participant.externalSession && !participant.entered) return;
+    if (room.locked && (participant.externalSession || participant.role === "cohost") && !participant.entered) return;
     return participant;
   }
 

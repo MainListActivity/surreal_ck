@@ -24,19 +24,21 @@ const newRoom = z.strictObject({
 });
 const invitation = z.strictObject({
   subject: z.string().min(1).max(256),
-  role: z.enum(["listener", "speaker"]),
+  role: z.enum(["listener", "speaker", "cohost"]),
 });
 
-function allowsRosterSignal(data: string | ArrayBufferLike): boolean {
+function allowsRosterSignal(data: string | ArrayBufferLike, screenOnly = false): boolean {
   try {
     const { message } = typeof data === "string" ? SignalRequest.fromJsonString(data)
       : SignalRequest.fromBinary(new Uint8Array(data));
     if (message.case === "addTrack") {
+      if (screenOnly) return message.value.type === TrackType.VIDEO && message.value.source === TrackSource.SCREEN_SHARE;
       return message.value.type === TrackType.AUDIO && message.value.source === TrackSource.MICROPHONE;
     }
     if (message.case === "offer" || message.case === "answer") {
       return message.value.sdp.split(/\r?\nm=/u).slice(1).every((section) => {
-        if (!/^video\s+[^\s]+/iu.test(section) || /^video\s+0(?:[\s/]|$)/iu.test(section)) return true;
+        const media = screenOnly ? /^audio\s+/iu : /^video\s+/iu;
+        if (!media.test(section) || /^\w+\s+0(?:[\s/]|$)/iu.test(section)) return true;
         const directions = section.split(/\r?\n/u).filter((line) => /^a=(?:sendrecv|sendonly|recvonly|inactive)$/u.test(line));
         return directions.length === 1 && (directions[0] === "a=recvonly" || directions[0] === "a=inactive");
       });
@@ -270,7 +272,7 @@ export function createMeetingSfuRoutes({
           const size = typeof data === "string" ? data.length : data.byteLength;
           if (size > MAX_SIGNAL_FRAME || socket?.readyState !== WebSocket.OPEN || socket.bufferedAmount > MAX_SIGNAL_FRAME) {
             downstream.close(1008, "meeting-sfu-signal-limit");
-          } else if (!lease.microphoneOnly || allowsRosterSignal(data)) {
+          } else if (!(lease.microphoneOnly || lease.screenOnly) || allowsRosterSignal(data, lease.screenOnly)) {
             socket.send(data);
           }
         },

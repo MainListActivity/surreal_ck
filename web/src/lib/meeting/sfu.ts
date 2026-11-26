@@ -12,6 +12,7 @@ export type MeetingSubscription = {
   identity: string;
   source: Track.Source;
   host: boolean;
+  cohost?: boolean;
 };
 
 export function selectedMeetingSubscriptions(
@@ -27,7 +28,8 @@ export function selectedMeetingSubscriptions(
   const selected = new Set(audio.filter((item) => policy === "desktop" || item.identity === speaker).map((item) => item.id));
   if (policy !== "audio") {
     if (focus) {
-      const share = publications.find((item) => item.host && item.source === "screen_share");
+      const share = publications.filter((item) => (item.host || item.cohost) && item.source === "screen_share")
+        .sort((a, b) => Number(b.host) - Number(a.host) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))[0];
       const camera = publications.find((item) => item.host && item.source === "camera");
       const video = focus === "speaker" ? camera : focus === "screen" ? share : share ?? camera;
       if (video) {
@@ -86,7 +88,7 @@ export const meetingSfuApi = {
   create: (seats: number) => request<MeetingSfuRoom>("/rooms", "POST", { seats, mode: "daily", large: true }),
   credentials: (id: string) => request<MeetingSfuCredentials>(`${roomPath(id)}/credentials`, "POST"),
   list: (id: string) => request<MeetingSfuParticipant[]>(`${roomPath(id)}/participants`),
-  invite: (id: string, subject: string, role: "speaker" | "listener") =>
+  invite: (id: string, subject: string, role: "speaker" | "listener" | "cohost") =>
     request<MeetingSfuParticipant>(`${roomPath(id)}/participants`, "POST", { subject, role }),
   kick: (id: string, identity: string) => request<void>(`${roomPath(id)}/participants/${encodeURIComponent(identity)}`, "DELETE"),
   stopPublishing: (id: string, identity: string) =>

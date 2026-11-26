@@ -43,7 +43,7 @@ const topologyFixture = (service?: PrivateMeetingSfu) => createMeetingSfuRoutes(
     const [subject = "host", db = "workspace1"] = rawToken.split("|");
     c.set("user", {
       subject, rawToken,
-      raw: { db, ac: "participant", exp: Math.floor(Date.now() / 1000) + 600, name: subject },
+      raw: { db, ac: subject === "roster-host" ? "admin" : "participant", exp: Math.floor(Date.now() / 1000) + 600, name: subject },
     });
     await next();
   },
@@ -264,6 +264,46 @@ describe.skipIf(!binary)("Bun signal gate and real private LiveKit", () => {
       await media.endRoster(actor.workspace, room.id);
     }
   }, 15_000);
+
+  test("真实 LiveKit：协办授权仅适用于当前房间，只能发布屏幕视频", async () => {
+    const host = { workspace: "workspace1", subject: "roster-host", name: "主持人", workspaceAdmin: true, expiresAt: Date.now() + 60_000 };
+    const room = await media.startRoster(host, 2);
+    const path = `/rooms/${room.id}`;
+    const member = "assistant|workspace1";
+    const admin = "roster-host|workspace1";
+    const invite = { role: "cohost", subject: "assistant" };
+    try {
+      expect((await control(`${path}/credentials`, member, "POST")).status).toBe(403);
+      expect((await control(`${path}/participants`, member, "POST", invite)).status).toBe(403);
+      expect((await control(`${path}/participants`, admin, "POST", { ...invite, subject: "disabled" })).status).toBe(403);
+      expect((await control(`${path}/participants`, admin, "POST", invite)).status).toBe(201);
+      expect((await control(`${path}/credentials`, "assistant|other", "POST")).status).toBe(403);
+      expect((await control(`${path}/participants`, member)).status).toBe(403);
+      expect((await control(path, member, "DELETE")).status).toBe(403);
+      await expect(media.moderateRoster({ ...host, subject: "assistant" }, room.id, { action: "focus", focus: "screen" }))
+        .rejects.toMatchObject({ status: 403 });
+      await media.moderateRoster(host, room.id, { action: "lock", locked: true });
+      expect((await control(`${path}/credentials`, member, "POST")).status).toBe(423);
+      await media.moderateRoster(host, room.id, { action: "lock", locked: false });
+      const response = await control(`${path}/credentials`, member, "POST");
+      expect(response.status).toBe(200);
+      const credentials = await response.json() as MeetingSfuCredentials;
+      expect(credentials.role).toBe("cohost");
+      const signal = new SignalProbe(credentials);
+      try {
+        expect(await signal.find("join")).toBeDefined();
+        signal.addTrack(TrackSource.MICROPHONE, TrackType.AUDIO);
+        signal.addTrack(TrackSource.CAMERA);
+        signal.addTrack(TrackSource.SCREEN_SHARE_AUDIO, TrackType.AUDIO);
+        expect(await signal.find("trackPublished", 250)).toBeUndefined();
+        signal.addTrack(TrackSource.SCREEN_SHARE);
+        expect(await signal.find("trackPublished")).toBeDefined();
+        await media.endRoster(host.workspace, room.id);
+        expect(await media.authorizeSignal(credentials.token)).toBeUndefined();
+        expect((await control(`${path}/credentials`, member, "POST")).status).toBe(403);
+      } finally { signal.close(); }
+    } finally { await media.endRoster(host.workspace, room.id); }
+  }, 10_000);
 
   test("rejects forged/cross-workspace grants, enforces listener permission, and revokes active signals", async () => {
     const host = "host|workspace1";

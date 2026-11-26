@@ -2,7 +2,7 @@ export const LEGACY_MEETING_MESH_LIMIT = 4;
 export const PRIVATE_MEETING_MAX_SEATS = 30;
 export const MEETING_SFU_SIGNAL_PATH = "/api/meeting/sfu/signal";
 
-export type MeetingSfuRole = "host" | "speaker" | "listener";
+export type MeetingSfuRole = "host" | "speaker" | "listener" | "cohost";
 export type MeetingMode = "daily" | "controlled";
 
 export function selectMeetingTopology(mode: MeetingMode, seats: number, large = false): "mesh" | "sfu" {
