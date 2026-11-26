@@ -11,20 +11,20 @@
    [Service]
    LoadCredential=turnserver.conf:/etc/coturn/turnserver.conf
    ExecStart=
-   ExecStart=/usr/bin/turnserver -c %d/turnserver.conf --pidfile=
+   ExecStart=/usr/bin/turnserver -c ${CREDENTIALS_DIRECTORY}/turnserver.conf --pidfile=
    ```
 
 3. 复用 Caddy 为 `data.maplayer.top` 管理的 TLS 证书。默认 Caddy systemd 数据目录在 `/var/lib/caddy/.local/share/caddy/certificates/`，签发者和路径以主机的 Caddy 存储配置为准。由 root 的证书复制步骤将完整证书链和匹配私钥安装到 `/etc/coturn/tls/fullchain.pem`、`/etc/coturn/tls/privkey.pem`，均为 `root:turnserver` 0640；将 `/etc/coturn` 和 TLS 子目录设为 `root:turnserver` 0750，使服务能读取 TLS 文件，但不能读取 0600 的源配置或密钥文件。先验证证书包含该域名、链有效且两者公钥对应，再替换目标文件。将相同复制和校验步骤接到**现有**证书续期流程，安排重启 coturn 使其重新读盘；不新增定时器，也不给 coturn 访问整个 Caddy 私钥目录的权限。
-4. 在最终配置中为每个经批准的公网 IPv4 地址或连续网段增加 `allowed-peer-ip=<IPv4>` 或 `allowed-peer-ip=<起始 IPv4>-<结束 IPv4>`。模板默认拒绝所有对端；coturn 中 allow 优先于 deny，因此每项都必须核对，不能与特殊用途地址、私网、回环、云元数据或主机自身地址重叠，不能用全网段代替。验收只允许获准测试网络的公网出口，对称 NAT 出口变更时按授权更新。没有获准的目的地址时不得上线宣称公网可用。
-5. 配置 OCI NSG/安全列表和主机防火墙：允许获准客户端来源到 `3478/udp`、`3478/tcp`、`5349/tcp`，允许获准媒体对端来源到 `49160–49359/udp`。OCI 使用有状态规则，出口只允许获准的公网媒体对端（若 VNIC 仍有更宽的出口规则，用主机规则兜底）。不要开启 `5349/udp` 或中继 TCP。主机 iptables 规则按现有链插入到最终拒绝之前，保证不覆盖 SSH、HTTPS/WSS 和数据库规则；下例的 `CLIENT_CIDR`、`PEER_CIDR` 必须替换为获准 CIDR，每个批准网段分别应用：
+4. 本机只有一个 IPv4 中继地址，`relay-ip` 绑定 VNIC 私网 IP，`external-ip` 只写公网 IP。coturn 4.5.2 的 `公网/私网` 写法会自动把私网 IP 加入对端允许列表，绕过拒绝规则。最终配置只为经批准的公网 IPv4 地址或连续网段增加 `allowed-peer-ip=<IPv4>` 或 `allowed-peer-ip=<起始 IPv4>-<结束 IPv4>`。模板默认拒绝所有对端；coturn 中 allow 优先于 deny，因此每项都必须核对，不能与特殊用途地址、私网、回环、云元数据或主机自身地址重叠，不能用全网段代替。验收只允许获准测试网络的公网出口，对称 NAT 出口变更时按授权更新。没有获准的目的地址时不得上线宣称公网可用。
+5. 客户端可从任意网络入会，OCI NSG/安全列表和主机 IPv4 入站规则的来源均为 `0.0.0.0/0`：允许 `3478/udp`、`3478/tcp`、`5349/tcp` 和 `49160–49359/udp`。OCI 使用有状态规则；不要开启 `5349/udp` 或中继 TCP。公网入站放行不改变 TURN 对端允许列表：中继出口仍只允许获准的公网媒体对端（若 VNIC 有更宽的出口规则，用主机规则兜底）。用 `iptables -L INPUT -n --line-numbers` 核对最终 DROP 的行号，填入 `DROP_RULE`，将三条规则插在它之前，不改动已有 SSH、HTTPS/WSS 或数据库规则：
 
    ```sh
-   iptables -I INPUT -d 10.0.0.112 -s "$CLIENT_CIDR" -p udp --dport 3478 -j ACCEPT
-   iptables -I INPUT -d 10.0.0.112 -s "$CLIENT_CIDR" -p tcp -m multiport --dports 3478,5349 -j ACCEPT
-   iptables -I INPUT -d 10.0.0.112 -s "$PEER_CIDR" -p udp --dport 49160:49359 -j ACCEPT
+   iptables -I INPUT "$DROP_RULE" -s 0.0.0.0/0 -d 10.0.0.112 -p udp --dport 3478 -j ACCEPT
+   iptables -I INPUT "$((DROP_RULE + 1))" -s 0.0.0.0/0 -d 10.0.0.112 -p tcp -m multiport --dports 3478,5349 -j ACCEPT
+   iptables -I INPUT "$((DROP_RULE + 2))" -s 0.0.0.0/0 -d 10.0.0.112 -p udp --dport 49160:49359 -j ACCEPT
    ```
 
-   对本机 coturn 用户且源端口为 `49160:49359/udp` 的 OUTPUT 流量，在任何通用放行前先拒绝上述禁用地址（含主机自身公网 IP），再按批准的 `PEER_CIDR` 放行，最后拒绝剩余中继流量。例如每个批准网段的中继放行规则匹配 `-m owner --uid-owner turnserver -p udp --sport 49160:49359 -d "$PEER_CIDR" -j ACCEPT`；对应的兜底规则使用相同匹配（省略 `-d`），目标为 `REJECT`。按主机既有机制保存和复查规则及顺序。
+   对本机 coturn 用户且源端口为 `49160:49359/udp` 的 OUTPUT 流量，在任何通用放行前先拒绝上述禁用地址（含主机自身公网 IP），再按批准的 `PEER_CIDR` 放行，最后拒绝剩余中继流量。例如每个批准网段的中继放行规则匹配 `-m owner --uid-owner turnserver -p udp --sport 49160:49359 -d "$PEER_CIDR" -j ACCEPT`；对应的兜底规则使用相同匹配（省略 `-d`），目标为 `REJECT`。核对规则顺序和变更范围，将 `iptables-save` 的 IPv4 输出写入临时文件，经 `iptables-restore --test` 验证后替换 netfilter-persistent 的 `/etc/iptables/rules.v4`，再比对运行规则与保存文件。
 6. `systemctl daemon-reload` 后启用 `coturn.service`，检查监听与 TLS，再用批准的配置变更流程将同一密钥写入 `/etc/surreal-ck/server.env` 的 `TURN_SHARED_SECRET`；不要将密钥写到仓库、CLI 参数或前端环境。其余键如下：
 
    ```dotenv

@@ -1107,6 +1107,77 @@ fn participant_collaboration_session_is_reused_without_exchange() {
         .is_none());
     server.join().unwrap();
 }
+
+#[tokio::test]
+async fn meeting_ice_fetch_uses_current_bearer_and_maps_http_errors() {
+    let now = unix_now().unwrap();
+    let (pair, jwks) = signer();
+    let token = signed(&pair, access_claims(now));
+    let expected = token.clone();
+    let (origin, server) = crate::test_http::serve(5, move |request_no, request| {
+        assert!(request.starts_with("POST /api/meeting/ice-servers "));
+        assert!(request.lines().any(|line| {
+            line.split_once(": ").is_some_and(|(name, value)| {
+                name.eq_ignore_ascii_case("authorization")
+                    && value.strip_prefix("Bearer ") == Some(expected.as_str())
+            })
+        }));
+        if request_no == 0 {
+            crate::test_http::json(json!({
+                "iceServers": [
+                    {"urls": ["stun:turn.example.test"]},
+                    {"urls": ["turn:turn.example.test", "turns:turn.example.test"],
+                     "username": "fixture-user", "credential": "fixture-password"}
+                ],
+                "expiresAt": "2030-01-01T00:00:00.000Z",
+                "ttlSeconds": 600,
+            }))
+        } else if request_no == 4 {
+            crate::test_http::json(json!({
+                "iceServers": [], "expiresAt": "2030-01-01T00:00:00.000Z", "ttlSeconds": 600,
+            }))
+        } else {
+            let status = [401, 403, 503][request_no - 1];
+            format!("HTTP/1.1 {status} Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        }
+    });
+    let mut client = IdentityClient::new(config());
+    client.transport = HttpsTransport::local_fixture(origin);
+    let session = client
+        .establish(
+            Zeroizing::new(token),
+            &signed(&pair, id_claims(now)),
+            Some(120),
+            "expected-nonce",
+            &jwks,
+            now,
+        )
+        .unwrap();
+    let ice = client.meeting_ice_servers(&session).await.unwrap();
+    assert_eq!(ice.ice_servers[0].urls, ["stun:turn.example.test"]);
+    assert!(ice.ice_servers[0].username.is_none());
+    assert_eq!(ice.ice_servers[1].urls.len(), 2);
+    assert!(ice.ice_servers[1].username.is_some());
+    assert!(ice.ice_servers[1].credential.is_some());
+    assert_eq!(
+        ice.expires_at.duration_since(UNIX_EPOCH).unwrap().as_secs(),
+        1_893_456_000
+    );
+    assert!(!format!("{ice:?}").contains("fixture-"));
+    for expected in [
+        IdentityError::Token,
+        IdentityError::Forbidden,
+        IdentityError::MeetingUnavailable,
+        IdentityError::Response,
+    ] {
+        assert_eq!(
+            client.meeting_ice_servers(&session).await.unwrap_err(),
+            expected
+        );
+    }
+    server.join().unwrap();
+}
+
 #[test]
 fn collaboration_endpoint_rejection_leaves_admin_session_valid() {
     use crate::test_http;

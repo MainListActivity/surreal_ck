@@ -2,6 +2,7 @@
 //! 网络调用不自动打开浏览器、不保存令牌、不创建账号或注册回调。
 mod auth;
 mod discovery;
+mod ice;
 mod loopback;
 pub mod meeting;
 mod members;
@@ -14,6 +15,7 @@ pub use auth::{
     IdentityClient, IdentityConfig, LoginAttempt, Session, Workspace, WorkspaceList, WorkspaceRole,
 };
 pub use discovery::OidcTokenMode;
+pub use ice::{IceServer, IceServers};
 pub use loopback::LoopbackReceiver;
 pub use members::{load_members, Member, SurrealConfig};
 pub use signaling::{SignalBinding, SignalConnection, SignalRow, SignalStatus, SignalSummary};

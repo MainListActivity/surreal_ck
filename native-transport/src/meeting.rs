@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 use webrtc::{
     api::setting_engine::SettingEngine,
     ice::candidate::{CandidatePairState, CandidateType},
+    ice_transport::ice_connection_state::RTCIceConnectionState,
     peer_connection::{
         peer_connection_state::RTCPeerConnectionState,
         sdp::session_description::RTCSessionDescription,
@@ -321,6 +322,9 @@ impl MeetingEdge {
     }
     pub fn connection_state(&self) -> RTCPeerConnectionState {
         self.peer.connection().connection_state()
+    }
+    pub fn ice_connection_state(&self) -> RTCIceConnectionState {
+        self.peer.connection().ice_connection_state()
     }
     pub async fn stats(&self) -> EdgeStats {
         observe(&self.peer).await
