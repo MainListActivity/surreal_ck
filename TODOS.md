@@ -20,7 +20,7 @@
 
 ### 主线 1 — 全场景保密协同与会议（`.scratch/meeting-and-collaboration/`）
 
-依据：[`.scratch/meeting-and-collaboration/PRD.md`](.scratch/meeting-and-collaboration/PRD.md)，共 12 张可独立验证工单，按 4 个波次推进：
+依据：[`.scratch/meeting-and-collaboration/PRD.md`](.scratch/meeting-and-collaboration/PRD.md)，共 13 张可独立验证工单，按 4 个波次推进：
 
 - **波次 1（架构锁盘 + 原生客户端改版 + 公网互通）**：
   - `01-meeting-architecture-adr`（`ready-for-agent`）：全场景会议架构与外部参会安全 ADR（日常小会 P2P+托管TURN vs 外部正式大会私有 SFU、零注册/零 DB 凭证边界、隐私与录制红线）
@@ -34,10 +34,11 @@
   - `07-sfu-private-media-plane`（`ready-for-agent`，依赖 `01`、`04`、`05`）：自托管私有 SFU 媒体平面（支撑 50–200 人大会、移动端纯音频省流与容量压测）
   - `08-roster-verified-external-meeting`（`ready-for-agent`，依赖 `01`、`07`）：名册核验型外部正式会议（支撑债权人会议，批量签发个人链接/访问码、单活互踢、单人吊销，法律术语留模板包）
   - `09-host-order-controls-and-hand-raise`（`ready-for-agent`，依赖 `07`、`08`）：主持人秩序强控（服务端强制全员静音禁自开、举手排队点名发言、锁定共享、结束全体会议）
-  - `10-meeting-attendance-voting-writeback`（`ready-for-agent`，依赖 `08`、`09`）：精确签到流水、会中表决与异议、个人回执 PDF 及原子幂等回写工作簿
+  - `10-meeting-attendance-voting-writeback`（`ready-for-agent`，依赖 `08`、`09`）：精确签到与举手发言只追加流水、会中表决与异议、个人回执 PDF 及原子幂等回写工作簿
+  - `13-meeting-recording-and-evidence-bundle`（`ready-for-agent`，依赖 `01`、`07`、`09`、`10`）：存证知情确认门禁、私有 SFU 轻量轨道直录 + 异步合成带 UTC 水印视频与分轨音频、私有加密归档与 SHA-256 根哈希《会议存证包》（预留 32 字节 TSA 司法时间戳接口）
 - **波次 4（正式签名分发 + 综合验收）**：
   - `11-native-client-release-signing-pipeline`（`ready-for-human`，依赖 `02`、`03`、`04`）：macOS Developer ID 签名公证、生产更新信任根/feed、媒体供应链锁定与安全接收原生 CI
-  - `12-meeting-e2e-and-pilot-acceptance`（`ready-for-agent`，依赖 `03`、`05`、`06`、`09`、`10`、`11`）：全场景端到端压测验收与种子律所操作手册交付
+  - `12-meeting-e2e-and-pilot-acceptance`（`ready-for-agent`，依赖 `03`、`05`、`06`、`09`、`10`、`11`、`13`）：全场景端到端压测、存证包完整性验真与种子律所操作手册交付
 
 ### 主线 2 — 种子律所生产就绪与商业收口（`.scratch/pilot-production-readiness/`，可与主线 1 并行）
 
