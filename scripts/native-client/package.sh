@@ -77,7 +77,7 @@ case "$target" in
       --manifest-fragment native-media-platform/android/documents-manifest.xml \
       --manifest-fragment native-media-platform/android/media-manifest.xml \
       --manifest-fragment native-media-platform/android/auth-manifest.xml \
-      "${roster[@]}" \
+      ${roster[@]+"${roster[@]}"} \
       "${signing[@]}"
     "$tools/apksigner" verify --verbose --print-certs "$out/SurrealCK-android-$status.apk" > "$out/apk-verification.txt" ;;
   linux)
