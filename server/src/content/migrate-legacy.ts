@@ -211,7 +211,12 @@ export async function migrateLegacyPlatformContentIfNeeded(input: Readonly<{
   return migrateLegacyPlatformContent(input);
 }
 
-export async function assertLegacyContentMigrated(source: Queryable, target: Queryable): Promise<void> {
+/** `deepVerify: false` 只要求迁移已完成校验（标记带 verified_at），不逐行比对；逐行比对可能耗时数分钟。 */
+export async function assertLegacyContentMigrated(
+  source: Queryable,
+  target: Queryable,
+  options: Readonly<{ deepVerify?: boolean }> = {},
+): Promise<void> {
   const info = await source.query("INFO FOR DB;");
   const metadata = Array.isArray(info) ? info[0] : undefined;
   const defined = metadata && typeof metadata === "object" ? Reflect.get(metadata, "tables") : undefined;
@@ -237,5 +242,6 @@ export async function assertLegacyContentMigrated(source: Queryable, target: Que
   if (!marker || marker.source_database !== "_system") {
     throw new Error("legacy platform content exists in _system; run the frozen-write migration before switching the publisher");
   }
+  if (options.deepVerify === false && marker.verified_at != null) return;
   await verifyLegacyContentCopy(source, target, true);
 }
