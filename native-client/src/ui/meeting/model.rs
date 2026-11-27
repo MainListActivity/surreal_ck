@@ -427,6 +427,11 @@ impl MeetingState {
     pub fn prepare(self, command: &MeetingCommand) {
         let mut v = self.get();
         match command {
+            MeetingCommand::Create
+            | MeetingCommand::CreateFor { .. }
+            | MeetingCommand::Join { .. } => {
+                v.error = None;
+            }
             MeetingCommand::Leave | MeetingCommand::End => v.stop(),
             MeetingCommand::SetDevice { source, on } => {
                 if v.device(*source) == DeviceState::StopUnconfirmed {
