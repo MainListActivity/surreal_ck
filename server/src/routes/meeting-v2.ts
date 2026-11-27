@@ -1,3 +1,5 @@
+import { PUBLIC_ACTION } from "@surreal-ck/shared/public-entry";
+import { publicClientIp, publicProtection } from "../public-entry/protection";
 import { createHmac } from "node:crypto";
 import { isIP } from "node:net";
 import { Hono, type Context, type MiddlewareHandler } from "hono";
@@ -54,6 +56,7 @@ class VerificationLimits {
 type Options = {
   workspaceScope: Pick<WorkspaceScopeModule, "resolveCollaborationScope">;
   requireUser?: () => MiddlewareHandler<AppBindings>;
+  protection?: typeof publicProtection;
   service?: MeetingV2;
   origin?: string;
   trustedProxy?: boolean;
@@ -110,6 +113,7 @@ async function body(c: Context<AppBindings>) {
 export function createMeetingV2Routes(options: Options) {
   const routes = new Hono<AppBindings>();
   const key = env.PLATFORM_SECRET_KEY;
+  const protection = options.protection ?? publicProtection;
   const service = options.service ?? (key ? new MeetingV2(new SurrealMeetingStore(key), key) : null);
   const origin = options.origin ?? env.MEETING_GUEST_ORIGIN;
   const proxy = options.trustedProxy ?? env.MEETING_GUEST_TRUST_PROXY === "1";
@@ -150,7 +154,9 @@ export function createMeetingV2Routes(options: Options) {
     const previous = getCookie(c, cookie) ?? "";
     if (command.op === "open") {
       const token = typeof command.token === "string" ? command.token.slice(0, 256) : "";
-      const source = options.sourceIp?.(c) ?? ip(c, proxy);
+      const blocked = await protection.challenge(c, PUBLIC_ACTION.guest, token, command.turnstileToken, invalidInvite);
+      if (blocked) return blocked;
+      const source = options.sourceIp?.(c) ?? (protection.enabled ? publicClientIp(c) : ip(c, proxy));
       const candidate = service.digest("rate-link", token);
       limits.start(service.digest("rate-source", source), candidate, Date.now());
       let value: string;

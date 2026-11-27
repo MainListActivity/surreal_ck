@@ -1,0 +1,20 @@
+---
+import BaseLayout from "./BaseLayout.astro";
+interface Props { title: string }
+const { title } = Astro.props;
+---
+<BaseLayout title={`${title}｜吉吉 Workspace`}>
+  <main>
+    <nav aria-label="返回官网"><a href="/">吉吉 Workspace</a></nav>
+    <h1>{title}</h1>
+    <slot />
+  </main>
+</BaseLayout>
+<style>
+  main { max-width: 46rem; margin: 0 auto; padding: 3rem 1.25rem; line-height: 1.75; }
+  nav a { text-decoration: underline; }
+  h1 { margin: 2rem 0 1rem; }
+  main :global(h2) { margin-block: 1.75rem .4rem; font-size: 1.2rem; }
+  main :global(p) { margin-block: .5rem; }
+  main :global(a) { text-decoration: underline; }
+</style>

@@ -11,6 +11,12 @@ const EnvSchema = z.object({
   HOST: z.string().min(1).default("0.0.0.0"),
   PORT: z.coerce.number().int().positive().max(65535).default(8080),
 
+  EDGE_PROXY_SECRET: z.string().optional(),
+  TURNSTILE_SECRET: z.string().optional(),
+  TURNSTILE_HOSTNAMES: z.string().optional(),
+  TRIAL_REQUEST_ORIGIN: z.string().url().optional(),
+  TRIAL_FEEDBACK_URL: z.string().url().optional(),
+
   TURN_SHARED_SECRET: z.preprocess(
     (value) => typeof value === "string" && value.trim() === "" ? undefined : value,
     z.string().min(1).optional(),

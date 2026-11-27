@@ -1,3 +1,4 @@
+import { publicEntry, publicRateLimited } from "@surreal-ck/shared/public-entry";
 import type { ErrorHandler } from "hono";
 import type { ApiError } from "@surreal-ck/shared";
 import { HttpError } from "../http-error";
@@ -16,6 +17,8 @@ export const handleError: ErrorHandler<AppBindings> = (err, c) => {
     code,
     stack: err instanceof Error ? err.stack : undefined,
   });
+
+  if (status === 429 && publicEntry(c.req.path)) return publicRateLimited();
 
   const body: ApiError = {
     error: {

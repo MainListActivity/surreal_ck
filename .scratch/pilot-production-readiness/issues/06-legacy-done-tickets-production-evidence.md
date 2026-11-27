@@ -25,3 +25,7 @@ Status: ready-for-agent
 
 **依赖**：无（可与 `meeting-and-collaboration` 并行推进）。  
 **验证方式**：独立 QA 生产实测（使用 `ck-test-kit` 专用测试主体，测完清理）+ 脱敏验收记录归档。
+
+## 2026-11-27 核对记录
+
+已归档[生产基线、PR #278 历史证据和对外口径](../../../docs/runbooks/pilot-production-acceptance.md)。本次未获得专用运营测试会话，涉及登录和生产测试写入的验收仍待执行。

@@ -1,3 +1,6 @@
+import { PUBLIC_ACTION } from "@surreal-ck/shared/public-entry";
+import { bodyLimit } from "hono/body-limit";
+import { publicProtection } from "../public-entry/protection";
 import { Hono } from "hono";
 import type { Context, MiddlewareHandler } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
@@ -7,9 +10,10 @@ import { HttpError } from "../http-error";
 import { requireOidc } from "../middleware/oidc";
 import { ClaimsPortalService } from "../claims-portal/service";
 import { renderClaimRecordPdf } from "../claims-portal/record-pdf";
-import { SESSION_COOKIE_NAME } from "../claims-portal/constants";
+import { OPEN_FAILURE_MESSAGE, SESSION_COOKIE_NAME } from "../claims-portal/constants";
 
 export type ClaimsPortalRouteOptions = {
+  protection?: typeof publicProtection;
   service?: ClaimsPortalService;
   requireUser?: () => MiddlewareHandler<AppBindings>;
 };
@@ -31,15 +35,19 @@ export function createClaimsPortalRoutes(
   options: ClaimsPortalRouteOptions = {},
 ): Hono<AppBindings> {
   const routes = new Hono<AppBindings>();
+  const protection = options.protection ?? publicProtection;
   const service = options.service ?? new ClaimsPortalService();
   const requireUser = options.requireUser ?? requireOidc;
 
   // ── 公开：债权人令牌入口 ──────────────────────────────────────────────
 
-  routes.post("/api/claims-portal/:slug/:token/session", async (c) => {
+  const denied = () => new HttpError(401, "claims-open-failed", OPEN_FAILURE_MESSAGE);
+  routes.post("/api/claims-portal/:slug/:token/session", bodyLimit({ maxSize: 8192 }), async (c) => {
     const slug = c.req.param("slug");
     const token = c.req.param("token");
     const body = readJsonBody(await c.req.json().catch(() => null));
+    const blocked = await protection.challenge(c, PUBLIC_ACTION.claims, JSON.stringify([slug, token]), body.turnstileToken, denied);
+    if (blocked) return blocked;
     const name = typeof body.name === "string" ? body.name : "";
     const identityCode =
       typeof body.identityCode === "string"
@@ -51,14 +59,16 @@ export function createClaimsPortalRoutes(
       throw new HttpError(400, "claims-open-invalid", "name and identityCode are required");
     }
 
-    const workspaceDb = await service.resolveWorkspaceDb(slug);
-    const opened = await service.openSession({
-      workspaceDb,
-      slug,
-      tokenPlaintext: token,
-      name,
-      identityCode,
-    });
+    const opened = await (async () => {
+      try {
+        const workspaceDb = await service.resolveWorkspaceDb(slug);
+        return await service.openSession({ workspaceDb, slug, tokenPlaintext: token, name, identityCode });
+      } catch (error) {
+        if (protection.enabled && error instanceof HttpError &&
+          ["workspace-not-found", "claims-token-locked"].includes(error.code)) throw denied();
+        throw error;
+      }
+    })();
 
     setCookie(c, SESSION_COOKIE_NAME, opened.cookieValue, {
       httpOnly: true,
@@ -91,6 +101,12 @@ export function createClaimsPortalRoutes(
       rosterId: session.rosterId,
     });
   }
+
+  const verifyWrite: MiddlewareHandler<AppBindings, "/api/claims-portal/:slug/:token/*"> = async (c, next) => {
+    const key = JSON.stringify([c.req.param("slug"), c.req.param("token")]);
+    const blocked = await protection.challenge(c, PUBLIC_ACTION.claimsWrite, key, c.req.header("x-turnstile-token"), denied);
+    return blocked ?? next();
+  };
 
   routes.get("/api/claims-portal/:slug/:token/submission", async (c) => {
     const result = await readPortalRecord(c);
@@ -135,7 +151,7 @@ export function createClaimsPortalRoutes(
     return c.json({ ok: true, submission });
   });
 
-  routes.post("/api/claims-portal/:slug/:token/submission/submit", async (c) => {
+  routes.post("/api/claims-portal/:slug/:token/submission/submit", verifyWrite, async (c) => {
     const slug = c.req.param("slug");
     const token = c.req.param("token");
     const workspaceDb = await service.resolveWorkspaceDb(slug);
@@ -157,7 +173,7 @@ export function createClaimsPortalRoutes(
     return c.json({ ok: true, submission });
   });
 
-  routes.post("/api/claims-portal/:slug/:token/submission/supplement", async (c) => {
+  routes.post("/api/claims-portal/:slug/:token/submission/supplement", verifyWrite, async (c) => {
     const slug = c.req.param("slug");
     const token = c.req.param("token");
     const body = readJsonBody(await c.req.json().catch(() => null));
@@ -183,7 +199,7 @@ export function createClaimsPortalRoutes(
     return c.json({ ok: true, supplement });
   });
 
-  routes.post("/api/claims-portal/:slug/:token/attachments", async (c) => {
+  routes.post("/api/claims-portal/:slug/:token/attachments", verifyWrite, async (c) => {
     const slug = c.req.param("slug");
     const token = c.req.param("token");
     const workspaceDb = await service.resolveWorkspaceDb(slug);

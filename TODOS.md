@@ -51,6 +51,8 @@
 - `05-native-quota-rollout-decision-and-cutover`（`needs-info`，依赖 `01`）：请老板裁决 PR `#59` 冻结状态并按 runbook 完成原生配额生产切流
 - `06-legacy-done-tickets-production-evidence`（`ready-for-agent`）：补齐 VER-06 / VO-04 / VO-06 / claims-vertical / external-collaborator-portal（PR `#278`）生产验收证据与工单簿记纠偏
 
+2026-11-27 生产基线为 a06046e1。公开入口和官网改动待配置发布。隔离备份演练完成，生产异地归档待启用。PR #59 已关闭未合并，灰度切流仍待书面解冻。PR #278 的历史证据已核对，待独立 QA。[生产验真记录](docs/runbooks/pilot-production-acceptance.md)
+
 ## 已经落地的底座（不再派发实现）
 
 Web pivot 的五个需求簇（A 仓库重组、B Hono 骨架、C workspace-as-database、D1 Router workflow、D2 前端迁移）以及 D3 dashboard 迁移、运营迭代计划（OIP-01..18）、资源检索（RR-001..014）、工作区设置、个人中心、home 重设计全部 done。此外：

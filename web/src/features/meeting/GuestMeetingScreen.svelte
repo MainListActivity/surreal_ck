@@ -1,4 +1,10 @@
 <script lang="ts">
+  import PublicTurnstile from "../../components/PublicTurnstile.svelte";
+  import { PUBLIC_ACTION } from "@surreal-ck/shared/public-entry";
+
+  let turnstileToken = $state("");
+  let resetTurnstile = $state<() => void>(() => {});
+  const challengeRequired = import.meta.env.PROD || !!import.meta.env.VITE_TURNSTILE_SITEKEY;
   import { onMount, untrack } from "svelte";
   import { checkMeetingSupport, OPEN_IN_SYSTEM_BROWSER, readMeetingSupportEnv } from "../../lib/meeting/browser-support";
   import { MeetingController, type MeetingView } from "../../lib/meeting/controller";
@@ -43,11 +49,11 @@
 
   async function submit(event: SubmitEvent) {
     event.preventDefault();
-    if (busy) return;
+    if (busy || (challengeRequired && !turnstileToken)) return;
     busy = true;
     error = "";
     try {
-      await meetingV2Request("guest", { op: "open", token, code, name }, AbortSignal.timeout(5000));
+      await meetingV2Request("guest", { op: "open", token, code, name, turnstileToken }, AbortSignal.timeout(10000));
       token = "";
       code = "";
       media.stopAll();
@@ -55,6 +61,7 @@
     } catch (cause) {
       error = meetingErrorCode(cause) === "rate_limited" ? "尝试过于频繁，请稍后再试" : "访客链接或访问码无效";
     } finally {
+      resetTurnstile();
       busy = false;
     }
   }
@@ -127,6 +134,7 @@
     <p>{OPEN_IN_SYSTEM_BROWSER}</p>
   {:else if stage === "form"}
     <form onsubmit={submit}>
+      <PublicTurnstile action={PUBLIC_ACTION.guest} bind:token={turnstileToken} bind:reset={resetTurnstile} />
       <label>展示名称 <input bind:value={name} maxlength="80" required /></label>
       <label>访问码（如主持人已设置） <input bind:value={code} inputmode="numeric" maxlength="6" type="password" /></label>
       <p role="status">{devices === undefined ? "正在检测麦克风和摄像头…"
@@ -137,7 +145,7 @@
         <button type="button" onclick={() => toggle("camera")}>{local.camera ? "停止摄像头测试" : "测试摄像头"}</button>
       </div>
       {#if local.camera}<MediaTrackView track={local.camera} kind="video" mirror />{/if}
-      <button disabled={busy || devices === undefined} type="submit">进入等候室</button>
+      <button disabled={busy || (challengeRequired && !turnstileToken) || devices === undefined} type="submit">进入等候室</button>
     </form>
   {:else if stage === "waiting"}
     <p role="status">正在等候主持人放行。放行前不会接收会议内容。</p>

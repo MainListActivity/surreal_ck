@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@lucide/astro": "^1.28.0",
+    "@surreal-ck/shared": "workspace:*",
     "astro": "^7.1.6",
     "gsap": "^3.15.1"
   },
