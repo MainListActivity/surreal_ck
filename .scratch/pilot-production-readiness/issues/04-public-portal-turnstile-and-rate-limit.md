@@ -22,11 +22,16 @@ Status: ready-for-agent
 - [ ] 缺少、伪造、过期或跨 action/hostname 的 Turnstile 令牌在服务端一律被拒绝，测试覆盖完整正反例。
 - [ ] 生产配置未注入 Turnstile secret 时拒绝按“绕过校验”放行（fail-closed 单测覆盖）。
 - [ ] 高频请求触发限流返回 `429` 且不消耗业务表配额或生成垃圾记录；无效令牌与错访问码响应形态保持不可区分。
-- [ ] 前端外部门户与表单正确加载 Turnstile 小组件并完成真实浏览器端到端核验。
+- [x] 生产试用页渲染 Turnstile。试用 API 拒绝缺失及伪造令牌与非法 Origin，门户开会话接口拒绝缺失令牌。
+- [ ] 前端外部门户与表单完成真实浏览器端到端核验。试用申请需人工通过生产 Turnstile，核对提交回执和落库。
+- [ ] 现有原生名册客户端接入 Turnstile 令牌并完成生产衔接验收。
 
-**依赖**：无（可立即开工；需在生产环境配置 Cloudflare Turnstile sitekey/secret）。  
+**依赖**：无。Cloudflare Turnstile 生产配置已部署。
+
 **验证方式**：服务端单元/集成测试 + Cloudflare/origin 实测限流与 Turnstile 正反例。
 
-## 2026-11-27 核对记录
+## 2026-11-27 UTC 生产实测
 
-浏览器入口和源站已接入 Siteverify。边缘与源站共用公开路径及 429 契约。单测覆盖失败关闭、跨 action/hostname、重放和限流。生产 widget 和原生名册衔接见[发布与验收手册](../../../docs/runbooks/public-entry-protection.md)。
+- 生产 Widget `surreal-ck-maplayer` 及 GitHub `production` 的 6 项运行配置已部署，`https://www.maplayer.top/trial/` 可渲染真实小组件。
+- `POST /api/public/trial-request` 在缺令牌、伪造令牌或非法 Origin 时均返回 403。`POST /api/claims-portal/…/session` 缺令牌时统一返回 401。
+- 单测已覆盖失败关闭、跨 action 与 hostname、重放和限流。生产仍待真实验证码正向提交、边缘与源站限流验收及原生名册衔接。[发布与验收手册](../../../docs/runbooks/public-entry-protection.md)

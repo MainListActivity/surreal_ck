@@ -1,6 +1,6 @@
 # SurrealDB 异地备份与隔离恢复
 
-目标为每日一份可验证的异地归档，RPO ≤ 24 小时，数据库恢复与验证 RTO ≤ 4 小时。生产数据规模下的耗时以首次异机演练实测为准。范围为同一实例的所有命名空间和数据库，包括 `_system`、各 workspace、`platform_content` 及同实例上的公司库。对象附件、会议存证文件、IdP、服务环境和签名材料需按各自的备份流程保护。
+目标为每日一份可验证的异地归档，RPO ≤ 24 小时，数据库恢复与验证 RTO ≤ 4 小时。首次生产全量归档与异机演练的耗时已记录在下方回执。范围为同一实例的所有命名空间和数据库，包括 `_system`、各 workspace、`platform_content` 及同实例上的公司库。对象附件、会议存证文件、IdP、服务环境和签名材料需按各自的备份流程保护。
 
 ## 设置与每日执行
 
@@ -40,8 +40,29 @@ python3 scripts/deploy/surrealdb-offsite-backup.py restore \
   --object <object-from-receipt> --sha256 <digest-from-receipt> --confirm-isolated-target
 ```
 
-## 隔离演练记录
+## 首次生产备份与异机恢复
 
-2026-11-27 UTC 使用 `4.0.1-native-quota.1`（`eab8473e4d4e9f0bfecde6013862ff18a7a676a9`）运行两套临时 RocksDB，经 loopback S3 兼容存储完成上传回读和下载恢复。核对了两个命名空间中四个合成库的记录与唯一索引，密文中未出现样本标记，演练目录已清理。生产异地存储、定时调度、告警和生产数据规模 RTO 待投产验收。
+2026-11-27 UTC，生产 TiKV 在写围栏内完成首次全量加密异地备份。使用包含 [PR #332](https://github.com/MainListActivity/surreal_ck/pull/332) 的版本（`c92bea36`），以 R2 只读权限拉取同一密文，在 Mac 的空白隔离 RocksDB 实例完成恢复。两个命令均以退出码 `0` 结束。
+
+| 项目 | 回执 |
+| --- | --- |
+| 密文对象 | `surrealdb-20261127T121836061943Z.cms`，202,381,029 字节（约 193 MiB） |
+| 异地目的地与留存 | Cloudflare R2 `surreal-ck-offsite-backup/surrealdb/`，`expire-35d` 保留 35 天 |
+| 加密与密钥 | gzip 后以 CMS AES-256-GCM 加密。RSA-3072 公钥证书指纹 `BB:A9:6F:57:59:DC:81:24:F8:EA:90:C2:47:04:1C:61:87:10:F4:E8:81:A0:13:D2:EB:14:16:FA:BF:99:E4:5E`。私钥以 `0600` 权限离线保管 |
+| 密文 SHA-256 | R2 回读及恢复校验一致，`b7ca58316ae2edbe7d659dac38143d96dddeb0059e58ce16ade20f940be041e2` |
+| 生产备份 | `status: ok`，`mode: backup`，`backend: tikv`，`fork_sha: 4a338150330d89f62c6a98d20ace7f8c6c2b48b4`，耗时 342.26 秒（约 5.7 分钟） |
+| 隔离恢复 | `status: ok`，`mode: restore`，`backend: rocksdb`，`fork_sha: eab8473e4d4e9f0bfecde6013862ff18a7a676a9`，耗时 227.52 秒（约 3.8 分钟） |
+| 全量对账 | 15 个 namespace / 72 个 database 全部通过。记录数、表结构、索引、事件及配额账本核对零差异 |
+| 生产恢复与清理 | 解除围栏后，`l.maplayer.top/health`、`company.maplayer.top`、`www.maplayer.top` 均返回 200。演练临时库与目录已清理，`DRILL_CLEANED=true` |
+
+### RPO、RTO 与每日调度
+
+- 本次验证的恢复点对应归档标识 `2026-11-27T12:18:36.061943Z`，恢复后与该围栏快照的记录数及关键定义对账零差异。日常 RPO 目标为 ≤ 24 小时，待每日连续归档后按相邻成功回执的恢复点间隔实测。
+- 实测全库恢复 RTO 为 227.52 秒，涵盖从 R2 拉取、校验、解密、导入及全库对账，达到 ≤ 4 小时目标。本次为隔离恢复计时，业务流量切换另行计时。
+- 手工生产备份和跨机恢复均已通过。每日调度待挂接既有运维定时框架，复用写围栏、互斥锁、失败告警及超出 24 小时未产生可核验回执的告警。挂接后以首次定时触发的真实回执验收。
+
+## 隔离演练记录（合成数据）
+
+2026-11-27 UTC 使用 `4.0.1-native-quota.1`（`eab8473e4d4e9f0bfecde6013862ff18a7a676a9`）运行两套临时 RocksDB，经 loopback S3 兼容存储完成上传回读和下载恢复。核对了两个命名空间中四个合成库的记录与唯一索引，密文中未出现样本标记，演练目录已清理。
 
 归档 `surrealdb-20261127T082946337568Z.cms` 的 SHA-256 为 `81c62542902037c326c599441ea9f97a77cccdf1cc33a954bc283ac264615f29`。脚本备份耗时 0.66 秒，恢复耗时 0.43 秒。

@@ -22,9 +22,14 @@ Status: needs-info
 - [ ] 生产测试工作区实测证实数据库原生配额策略生效（合规/预警/用满/超额状态与提示准确，既有用户数据完整保留）。
 - [ ] `TODOS.md` 与 `EXECUTION_PATH.md` 同步更新为实测状态，不再存在“生产状态未知”的矛盾表述。
 
-**依赖**：`01`（异地备份就绪后再做生产配额切流更安全）+ 老板解冻裁决。  
+**依赖**：P-01 首份生产异地备份与异机恢复回执已齐，生产写入仍须负责人书面解冻。
+
 **验证方式**：生产只读状态核查 + 老板裁决记录 + Runbook 分阶段运行回执。
 
-## 2026-11-27 核对记录
+## 2026-11-27 UTC 生产只读基线
 
-PR #59 已关闭且未合并。生产健康读回证明服务可用，尚未核对各 workspace 配额状态。需负责人书面解冻及 P-01 首次生产备份回执。
+- `main` 命名空间共 59 个库。已确认 5 个库有原生配额策略且 `usage_trusted: true`，51 个库尚无原生策略，余下 3 个库未在本次摘要中分类。核对范围内 `UNTRUSTED_COUNT: 0`。
+- `quota_migration_run` 仅有 2026-08-30 在 SurrealDB 3.3.0 RocksDB 时期的历史记录。`synthetic_internal` 为 `paused`，其余 cohort 为 `pending`。
+- `workspace_quota_runtime` 的 51 个工作区均为 `ledger_state: ready`。本次核对期间 native-audit 持续零报错。`workspace_rollout_gate` 聚合为 4 个工作区开通 `legal_content_access`，3 个开通 `legal_research_ai`。
+- P-01 首份生产备份已完成 R2 回读和 15 个 namespace / 72 个 database 的异机恢复验证。[脱敏回执](../../../docs/runbooks/surrealdb-offsite-backup.md#首次生产备份与异机恢复)
+- PR #59 已关闭且未合并。书面解冻和新一轮 synthetic 晋级仍待执行。[生产验真记录](../../../docs/runbooks/pilot-production-acceptance.md#原生配额生产只读基线)
