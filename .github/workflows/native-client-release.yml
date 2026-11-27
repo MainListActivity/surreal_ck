@@ -65,7 +65,7 @@ permissions:
 
 concurrency:
   group: native-client-${{ github.event_name }}-${{ github.ref }}-${{ inputs.production }}-${{ inputs.verify_release_tag }}-${{ inputs.production_build_run }}
-  cancel-in-progress: ${{ !inputs.production && !inputs.verify_release_tag && !inputs.production_build_run }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
   package:
