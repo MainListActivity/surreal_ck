@@ -77,7 +77,9 @@ pub(crate) fn configured() -> Result<(IdentityClient, SurrealConfig), String> {
     }
     let database = SurrealConfig::new(
         required(option_env!("SURREAL_CK_SURREAL_URL"))?,
-        option_env!("SURREAL_CK_SURREAL_NS").unwrap_or("main"),
+        option_env!("SURREAL_CK_SURREAL_NS")
+            .filter(|ns| !ns.is_empty())
+            .unwrap_or("main"),
     )
     .map_err(|e| e.to_string())?;
     Ok((IdentityClient::new(config), database))
