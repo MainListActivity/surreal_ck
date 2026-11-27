@@ -158,6 +158,7 @@ struct Offer {
 pub struct Files {
     selected: Signal<Option<PathBuf>>,
     pending: Signal<Option<Offer>>,
+    accepting: Signal<Option<String>>,
     active: Signal<Option<String>>,
     status: Signal<String>,
     choosing: Signal<bool>,
@@ -173,6 +174,7 @@ impl Files {
         Self {
             selected: signal(None),
             pending: signal(None),
+            accepting: signal(None),
             active: signal(None),
             status: signal("没有文件传输".into()),
             choosing: signal(false),
@@ -234,18 +236,24 @@ impl Files {
     pub fn failed(self) {
         self.requesting.set(false);
     }
-    pub(crate) fn accept_failed(self, id: &str, message: String) {
-        if self
-            .pending
-            .get_untracked()
-            .is_some_and(|offer| offer.id == id)
-            && self.active.get_untracked().as_deref() == Some(id)
-        {
-            self.active.set(None);
-            self.status.set(format!("无法接收文件：{message}"));
+    pub(crate) fn accept_result(self, id: String, result: Result<(), String>) {
+        if self.accepting.get_untracked().as_deref() != Some(id.as_str()) {
+            return;
+        }
+        self.accepting.set(None);
+        match result {
+            Ok(()) => {
+                self.clear_pending(&id);
+                self.active.set(Some(id));
+                self.status.set("已确认接收，等待对方发送。".into());
+            }
+            Err(error) => self.status.set(format!("无法接收文件：{error}")),
         }
     }
     fn clear_pending(self, id: &str) {
+        if self.accepting.get_untracked().as_deref() == Some(id) {
+            self.accepting.set(None);
+        }
         if self
             .pending
             .get_untracked()
@@ -265,6 +273,7 @@ impl Files {
         self.release_inflight();
         self.requesting.set(false);
         self.pending.set(None);
+        self.accepting.set(None);
         self.active.set(None);
         self.status
             .set(disconnected_status(self.has_completed.get_untracked()).into());
@@ -497,7 +506,7 @@ impl Files {
                                     move || {
                                         self.choosing.get()
                                             || !connected.get()
-                                            || self.active.get().is_some()
+                                            || self.accepting.get().is_some()
                                             || !crate::file_dialogs::can_receive()
                                             || self.pending.get().is_some_and(|offer| {
                                                 !crate::file_dialogs::receive_size_supported(
@@ -543,7 +552,7 @@ impl Files {
                                                             ))
                                                             .is_ok()
                                                         {
-                                                            self.active.set(Some(offer.id));
+                                                            self.accepting.set(Some(offer.id));
                                                             self.status.set("正在准备接收文件…".into());
                                                         } else {
                                                             self.status.set(
@@ -562,7 +571,7 @@ impl Files {
                                 ))
                                 .child(ui::action(
                                     "拒绝",
-                                    move || self.pending.get().is_none() || self.choosing.get() || self.active.get().is_some() || !connected.get(),
+                                    move || self.pending.get().is_none() || self.choosing.get() || self.accepting.get().is_some() || !connected.get(),
                                     move || {
                                         if self.permitted() && let Some(offer) = self.pending.get_untracked()
                                             && reject
@@ -610,14 +619,14 @@ impl Files {
                 },
             ))
             .child(when(
-                move || self.active.get().is_some(),
+                move || self.accepting.get().is_some() || self.active.get().is_some(),
                 move || {
                     let cancel = cancel.clone();
                     ui::action(
                         "取消传输",
-                        move || self.active.get().is_none(),
+                        move || self.accepting.get().is_none() && self.active.get().is_none(),
                         move || {
-                            if self.permitted() && let Some(id) = self.active.get_untracked()
+                            if self.permitted() && let Some(id) = self.accepting.get_untracked().or_else(|| self.active.get_untracked())
                                 && cancel.try_send(Command::CancelFile(id)).is_err()
                             {
                                 if let Some(scope) = self.scope() { scope.invalidate(); self.status.set("取消队列已满，文件会话已请求停止；等待真实关闭回执。".into()); }
@@ -746,9 +755,9 @@ mod tests {
             name: "合同.pdf".into(),
             size: 4096,
         });
-        files.active.set(Some("request-1".into()));
-        files.accept_failed("request-1", "保存位置不可写".into());
-        assert!(files.active.get_untracked().is_none());
+        files.accepting.set(Some("request-1".into()));
+        files.accept_result("request-1".into(), Err("保存位置不可写".into()));
+        assert!(files.accepting.get_untracked().is_none());
         let (tx, _rx) = async_channel::bounded(1);
         files.panel(tx, signal(true))
     }

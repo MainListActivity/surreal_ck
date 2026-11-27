@@ -41,7 +41,7 @@ pub enum Update {
     Error(String),
     Closed,
     FileOffered(String),
-    FileAcceptFailed(String, String),
+    FileAcceptResult(String, Result<(), String>),
     File(FileEvent),
     Media(Notice),
     Verification(VerificationNotice),
@@ -80,9 +80,8 @@ impl FileCommands {
                         Err(error) => Err(error),
                     },
                     FileCommand::Accept(id, path) => {
-                        if let Err(error) = files.accept(&id, path).await {
-                            let _ = output.send(Update::FileAcceptFailed(id, error)).await;
-                        }
+                        let result = files.accept(&id, path).await;
+                        let _ = output.send(Update::FileAcceptResult(id, result)).await;
                         Ok(())
                     }
                     FileCommand::Reject(id) => files.reject(&id).await,
@@ -484,7 +483,7 @@ pub fn start() -> (Sender<Command>, Receiver<Update>, Gate) {
                             let result = current.as_ref().ok_or_else(|| "尚未连接".to_owned())
                                 .and_then(|state| state.file_commands.enqueue(FileCommand::Accept(id.clone(), path)));
                             if let Err(error) = result {
-                                let _ = output.send(Update::FileAcceptFailed(id, error)).await;
+                                let _ = output.send(Update::FileAcceptResult(id, Err(error))).await;
                             }
                         }
                         Command::RejectFile(id) => current

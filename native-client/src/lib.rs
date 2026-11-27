@@ -150,7 +150,7 @@ pub fn Collaboration() -> impl IntoElement {
                 Update::Verification(notice) => verification.event(notice),
                 Update::Media(event) => call.event(event),
                 Update::FileOffered(id) => files.offered(id),
-                Update::FileAcceptFailed(id, error) => files.accept_failed(&id, error),
+                Update::FileAcceptResult(id, result) => files.accept_result(id, result),
                 Update::File(event) => files.event(event),
                 Update::Code(code) => {
                     local.set(code);

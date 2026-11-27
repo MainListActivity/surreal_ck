@@ -309,6 +309,10 @@ impl FileTools {
                         let cancelling = matches!(command, Command::CancelFile(_));
                         let permit = if cancelling {cancellations.clone()} else {ordinary.clone()}.try_acquire_owned();
                         let Ok(permit) = permit else {
+                            if let Command::AcceptFile(id, _) = command {
+                                files.accept_result(id, Err("文件操作繁忙，尚未启动接收。".into()));
+                                continue;
+                            }
                             if cancelling {binding.scope.invalidate();}
                             files.failed();
                             files.info(if cancelling {"取消操作繁忙，文件会话已请求停止；等待关闭回执。"} else {"文件操作繁忙，尚未启动新操作。"}.into());
@@ -335,9 +339,8 @@ impl FileTools {
                                     let reply = operation_binding.handle.accept_confirmed(id.clone(), path).await;
                                     if reply.context.is_current(operation_binding.handle.session())
                                         && operation_binding.scope.is_current()
-                                        && let Err(error) = reply.result
                                     {
-                                        files.accept_failed(&id, error);
+                                        files.accept_result(id, reply.result);
                                     }
                                     Ok(())
                                 },
