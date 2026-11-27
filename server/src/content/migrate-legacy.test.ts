@@ -107,6 +107,27 @@ describe("legacy content startup verification", () => {
       .rejects.toThrow("content migration mismatch");
   });
 
+  test("deepVerify false skips row comparison only when the marker is verified", async () => {
+    const reads: string[] = [];
+    function db(marker: Record<string, unknown>) {
+      return {
+        async query(sql: string): Promise<unknown> {
+          if (sql === "INFO FOR DB;") return [{ tables: { ingestion_batch: "" } }];
+          if (sql === "SELECT VALUE count() FROM ingestion_batch GROUP ALL;") return [[10n]];
+          if (sql.includes("content_migration_state")) return [[marker]];
+          reads.push(sql);
+          return [[]];
+        },
+      };
+    }
+    const verified = db({ source_database: "_system", verified_at: "2026-11-01T00:00:00Z" });
+    await assertLegacyContentMigrated(verified, verified, { deepVerify: false });
+    expect(reads).toEqual([]);
+    const unverified = db({ source_database: "_system" });
+    await assertLegacyContentMigrated(unverified, unverified, { deepVerify: false });
+    expect(reads.length).toBeGreaterThan(0);
+  });
+
   test("accepts equal BigInts in migrated rows and nested payloads, ignoring field order and timestamps", async () => {
     const source = copyDb({ values: [{ amount: 9_007_199_254_740_993n }], label: "fixture", updated_at: "source" }, 1n);
     const target = copyDb({ label: "fixture", updated_at: "target", values: [{ amount: 9_007_199_254_740_993n }] }, 1n);

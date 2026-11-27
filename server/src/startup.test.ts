@@ -311,6 +311,8 @@ describe("server startup", () => {
         ...minimalDeps(),
         backgroundWorkers,
         reconcileCitationResolutions: async () => { calls.push("citations"); },
+        assertLegacyContentMigrated: async () => { calls.push("marker"); },
+        verifyLegacyContentCopy: async () => { calls.push("audit"); },
         serve: () => {
           calls.push("listen");
           return { stop: () => {} };
@@ -318,7 +320,7 @@ describe("server startup", () => {
       });
       await Bun.sleep(0);
       await running.shutdown("SIGTERM");
-      expect(calls).toEqual(backgroundWorkers ? ["listen", "citations"] : ["listen"]);
+      expect(calls).toEqual(backgroundWorkers ? ["marker", "listen", "citations", "audit"] : ["marker", "listen"]);
     }
   });
 
