@@ -20,6 +20,7 @@ policy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(policy)
 MIN_REMAINING = 86400
 EXPECTED_TARGETS = {('linux','x86_64'), ('macos','aarch64'), ('macos','x86_64'), ('windows','x86_64'), ('android','aarch64'), ('android','x86_64')}
+REQUIRED_SIGNING = {'android': 'release-key', 'macos': 'developer-id-notarized', 'windows': 'authenticode'}
 # Public repository test fixtures / RFC8032 vectors must never be production roots.
 TEST_PUBLIC_KEYS = {
     '197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d61',
@@ -100,7 +101,7 @@ def match_asset(p, item, repository, tag):
     if item['platform']=='macos' and item.get('signing')!='developer-id-notarized':
         raise ValueError('macOS installer requires Developer ID signing and stapled notarization')
 
-def check_desktop_package(path, receipt):
+def check_desktop_package(path, receipt, *, require_release_eligibility=True):
     """Release admission is independent of the original build event/environment."""
     if receipt.get('platform') not in ('windows', 'macos'):
         return
@@ -115,7 +116,7 @@ def check_desktop_package(path, receipt):
         raise ValueError('Production desktop release requires approved bundled media')
     if runtime.get('development_only') is not False or runtime.get('release_approved') is not True:
         raise ValueError('Development-only or unapproved media cannot enter a production release')
-    if package.get('release_eligible') is not True:
+    if require_release_eligibility and package.get('release_eligible') is not True:
         raise ValueError('Desktop package is not release eligible')
     if runtime.get('platform') != receipt['platform'] or runtime.get('arch') != receipt['host_arch']:
         raise ValueError('Desktop media inventory target differs from the build receipt')
@@ -133,30 +134,57 @@ def check_desktop_package(path, receipt):
         raise ValueError('Desktop media requires a sealed SHA256 inventory')
 
 
-def check_release(root, repository, tag, *, fetch=fetch_policy, verify_remote=remote_artifact, now=None):
-    if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository) or not tag:
-        raise ValueError('Exact repository and release tag required')
-    fixed_now = now is not None
-    now = int(time.time()) if now is None else now
+def load_installers(root, *, commit, require_release_eligibility):
     receipts = sorted(root.glob('*-build-receipt.json'))
     if not receipts: raise ValueError('No build receipts; refusing unproven installers')
-    seen, cache, evidence, remote_checked = set(), {}, [], set()
+    seen, installers, versions, filenames = set(), [], set(), set()
     for path in receipts:
         receipt = policy.strict_json(path.read_bytes())
-        check_desktop_package(path, receipt)
+        check_desktop_package(path, receipt, require_release_eligibility=require_release_eligibility)
+        if commit and (receipt.get('commit') != commit or receipt.get('dirty') is not False):
+            raise ValueError('Installer was not built from the exact clean release commit')
         if receipt.get('update_config') != 'embedded-unverified':
             raise ValueError('Missing embedded update config: startup-locked preview')
         config = validate_config(receipt.get('update_config_public'))
         key = bytes(config['trust']['public_key']).hex()
         if key in TEST_PUBLIC_KEYS: raise ValueError('Public test key cannot authorize production release')
         name = receipt['filename']
-        if pathlib.Path(name).name != name: raise ValueError('Unsafe installer filename')
+        if pathlib.Path(name).name != name or name in filenames:
+            raise ValueError('Unsafe or duplicate installer filename')
+        filenames.add(name)
+        versions.add(receipt['version'])
         artifact = root/name
         if artifact.stat().st_size != receipt['size'] or file_hash(artifact) != receipt['sha256']:
             raise ValueError('Installer does not match build receipt')
         index = path.with_name(path.name.removesuffix('-build-receipt.json')+'-assets.json')
         items = policy.strict_json(index.read_bytes())
         if not isinstance(items,list) or not items: raise ValueError('Missing platform asset index')
+        for item in items:
+            if any(item[k] != receipt[k] for k in ('platform','filename','version','size','sha256')):
+                raise ValueError('Asset index differs from build receipt')
+            target = (item['platform'],item['arch'])
+            if target in seen: raise ValueError('Duplicate local platform target')
+            expected_signing = REQUIRED_SIGNING.get(item['platform'])
+            if expected_signing and item.get('signing') != expected_signing:
+                raise ValueError(f'{item["platform"]} installer requires signing status {expected_signing}')
+            seen.add(target)
+        installers.append((config, key, items))
+    if seen != EXPECTED_TARGETS: raise ValueError('Complete expected release target set required')
+    if len(versions) != 1:
+        raise ValueError('Production installers must share a version')
+    return installers, versions.pop()
+
+
+def check_release(root, repository, tag, *, commit=None, fetch=fetch_policy, verify_remote=remote_artifact, now=None):
+    if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository) or not tag:
+        raise ValueError('Exact repository and release tag required')
+    fixed_now = now is not None
+    now = int(time.time()) if now is None else now
+    installers, version = load_installers(root, commit=commit, require_release_eligibility=True)
+    if commit and tag != 'v' + version:
+        raise ValueError('Release tag differs from the installer version')
+    cache, evidence, remote_checked = {}, [], set()
+    for config, key, items in installers:
         accepted = []
         for url in config['policy_urls']:
             cache_key = (url,key)
@@ -168,8 +196,6 @@ def check_release(root, repository, tag, *, fetch=fetch_policy, verify_remote=re
             check_policy(p,config,now)
             accepted.append(payload_hash)
             for item in items:
-                if any(item[k] != receipt[k] for k in ('platform','filename','version','size','sha256')):
-                    raise ValueError('Asset index differs from build receipt')
                 match_asset(p,item,repository,tag)
                 release = next(r for r in p['releases'] if (r['platform'],r['arch']) == (item['platform'],item['arch']))
                 for asset_url in [release['url'], *release.get('mirror_urls',[])]:
@@ -179,11 +205,6 @@ def check_release(root, repository, tag, *, fetch=fetch_policy, verify_remote=re
                         remote_checked.add(remote_key)
             evidence.append(dict(endpoint=url, payload_sha256=payload_hash, sequence=p['sequence'], expires_at=p['expires_at']))
         if len(set(accepted)) != 1: raise ValueError('Configured policy endpoints serve different payloads')
-        for item in items:
-            target = (item['platform'],item['arch'])
-            if target in seen: raise ValueError('Duplicate local platform target')
-            seen.add(target)
-    if seen != EXPECTED_TARGETS: raise ValueError('Complete expected release target set required')
     final_time = now if fixed_now else int(time.time())
     if final_time < now or any(p['expires_at'] - final_time < MIN_REMAINING for _,p in cache.values()):
         raise ValueError('Policy expired/too near expiry or clock rolled back during remote verification')
@@ -193,10 +214,21 @@ def check_release(root, repository, tag, *, fetch=fetch_policy, verify_remote=re
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('assets',type=pathlib.Path)
-    p.add_argument('--repository',required=True)
-    p.add_argument('--tag',required=True)
+    p.add_argument('--repository')
+    p.add_argument('--tag')
+    p.add_argument('--commit')
+    p.add_argument('--local-only',action='store_true')
     args=p.parse_args()
-    try: print(json.dumps(check_release(args.assets,args.repository,args.tag),indent=2))
+    try:
+        if args.local_only:
+            if not args.commit or args.repository or args.tag:
+                p.error('--local-only requires --commit without --repository or --tag')
+            _, version = load_installers(args.assets, commit=args.commit, require_release_eligibility=False)
+            print(f'Verified production build inputs and installer receipts for {version}; final release eligibility pending')
+        else:
+            if not args.repository or not args.tag:
+                p.error('--repository and --tag are required for online verification')
+            print(json.dumps(check_release(args.assets,args.repository,args.tag,commit=args.commit),indent=2))
     except (ValueError,KeyError,TypeError,OSError,policy.subprocess.SubprocessError) as e:
         raise SystemExit('Release preflight FAILED: '+str(e))
 

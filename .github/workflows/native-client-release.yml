@@ -24,6 +24,16 @@ on:
       - '.github/workflows/native-client*'
   workflow_dispatch:
     inputs:
+      production:
+        description: Build signed production installers from main
+        type: boolean
+        default: false
+      verify_release_tag:
+        description: Pre-staged GitHub Release tag to verify online
+        type: string
+      production_build_run:
+        description: Successful production installer run ID for the release tag
+        type: string
       experimental_android_media:
         description: Build an additional experimental Android media APK (test key, no device validation)
         type: boolean
@@ -48,19 +58,18 @@ on:
       - '!scripts/native-client/smoke-media-runtime.py'
       - '!scripts/native-client/test_media_native_build.py'
       - '.github/workflows/native-client*'
-  release:
-    types: [published]
 
 permissions:
   contents: read
   actions: read
 
 concurrency:
-  group: native-client-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'release' }}
+  group: native-client-${{ github.event_name }}-${{ github.ref }}-${{ inputs.production }}-${{ inputs.verify_release_tag }}-${{ inputs.production_build_run }}
+  cancel-in-progress: ${{ !inputs.production && !inputs.verify_release_tag && !inputs.production_build_run }}
 
 jobs:
   package:
+    if: ${{ !inputs.verify_release_tag && !inputs.production_build_run }}
     strategy:
       fail-fast: false
       matrix:
@@ -74,12 +83,15 @@ jobs:
           - target: macos
             os: macos-15
             native_host: aarch64-apple-darwin
+            media_arch: aarch64
           - target: macos
             os: macos-15-intel
             native_host: x86_64-apple-darwin
+            media_arch: x86_64
           - target: windows
             os: windows-2022
             native_host: x86_64-pc-windows-msvc
+            media_arch: x86_64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     env:
@@ -87,6 +99,16 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
     steps:
+      - name: Restrict production packaging to main
+        if: inputs.production
+        shell: bash
+        env:
+          EXPERIMENTAL_ANDROID: ${{ inputs.experimental_android_media }}
+        run: |
+          if [[ "$GITHUB_REF" != 'refs/heads/main' || "$EXPERIMENTAL_ANDROID" == 'true' ]]; then
+            echo '::error::Production packaging requires main and standard Android packaging'
+            exit 1
+          fi
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -98,6 +120,22 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Load approved desktop media artifact lock
+        if: inputs.production && matrix.media_arch
+        id: media-lock
+        shell: bash
+        run: python scripts/native-client/release-media-input.py lock '${{ matrix.target }}-${{ matrix.media_arch }}'
+      - uses: actions/download-artifact@v4
+        if: steps.media-lock.outputs.run_id
+        with:
+          name: approved-media-${{ matrix.target }}-${{ matrix.media_arch }}
+          path: ${{ runner.temp }}/approved-media
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.media-lock.outputs.run_id }}
+      - name: Configure verified desktop media input
+        if: steps.media-lock.outputs.run_id
+        shell: bash
+        run: python scripts/native-client/release-media-input.py configure '${{ matrix.target }}-${{ matrix.media_arch }}'
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: native-client
@@ -177,7 +215,7 @@ jobs:
         run: python scripts/native-client/install-sparkle-sdk.py
       - name: Detect macOS signing configuration
         id: macos-signing
-        if: matrix.target == 'macos' && github.event_name == 'release'
+        if: matrix.target == 'macos' && inputs.production
         env:
           SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
           SPARKLE_FEED_URL: ${{ vars.SPARKLE_FEED_URL }}
@@ -235,7 +273,7 @@ jobs:
         if: matrix.target == 'linux' || matrix.target == 'android'
         run: python scripts/native-client/install-nsh.py
       - name: Verify public production identity and update inputs
-        if: github.event_name == 'release'
+        if: inputs.production
         env:
           SURREAL_UPDATE_CONFIG_JSON: ${{ vars.SURREAL_UPDATE_CONFIG_JSON }}
           SURREAL_CK_OIDC_ISSUER: ${{ vars.SURREAL_CK_OIDC_ISSUER }}
@@ -276,11 +314,26 @@ jobs:
       - name: Build Linux, macOS or Android package
         if: matrix.target != 'windows' && (matrix.target != 'macos' || steps.macos-signing.outputs.ready == 'true')
         env:
-          SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
+          SPARKLE_PUBLIC_ED_KEY: ${{ inputs.production && matrix.target == 'macos' && secrets.SPARKLE_PUBLIC_ED_KEY || '' }}
           SPARKLE_FEED_URL: ${{ vars.SPARKLE_FEED_URL }}
-          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          MACOS_SIGN_IDENTITY: ${{ inputs.production && matrix.target == 'macos' && secrets.MACOS_SIGN_IDENTITY || '' }}
+          ANDROID_PRODUCTION: ${{ inputs.production && matrix.target == 'android' }}
+          ANDROID_KEYSTORE_BASE64: ${{ inputs.production && matrix.target == 'android' && secrets.ANDROID_KEYSTORE_BASE64 || '' }}
+          ANDROID_KEY_ALIAS: ${{ inputs.production && matrix.target == 'android' && vars.ANDROID_KEY_ALIAS || '' }}
+          NSH_KEYSTORE_PASSWORD: ${{ inputs.production && matrix.target == 'android' && secrets.NSH_KEYSTORE_PASSWORD || '' }}
         shell: bash
-        run: bash scripts/native-client/package.sh '${{ matrix.target }}'
+        run: |
+          if [[ "$ANDROID_PRODUCTION" == 'true' ]]; then
+            : "${ANDROID_KEYSTORE_BASE64:?Missing production Android keystore}"
+            : "${ANDROID_KEY_ALIAS:?Missing production Android key alias}"
+            : "${NSH_KEYSTORE_PASSWORD:?Missing production Android keystore password}"
+            umask 077
+            export ANDROID_KEYSTORE_PATH="$(mktemp "$RUNNER_TEMP/android-release.XXXXXX")"
+            trap 'rm -f "$ANDROID_KEYSTORE_PATH"' EXIT
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ANDROID_KEYSTORE_PATH"
+            unset ANDROID_KEYSTORE_BASE64
+          fi
+          bash scripts/native-client/package.sh '${{ matrix.target }}'
       - name: Delete temporary macOS signing keychain
         if: always() && steps.macos-signing.outputs.ready == 'true'
         shell: bash
@@ -296,15 +349,19 @@ jobs:
       - name: Build Windows installer
         if: matrix.target == 'windows'
         env:
-          WINDOWS_CERT_THUMBPRINT: ${{ github.event_name == 'release' && secrets.WINDOWS_CERT_THUMBPRINT || '' }}
-          WINDOWS_SIGN_CERT_PFX_BASE64: ${{ github.event_name == 'release' && secrets.WINDOWS_SIGN_CERT_PFX_BASE64 || '' }}
-          WINDOWS_SIGN_CERT_PASSWORD: ${{ github.event_name == 'release' && secrets.WINDOWS_SIGN_CERT_PASSWORD || '' }}
+          WINDOWS_PRODUCTION: ${{ inputs.production }}
+          WINDOWS_CERT_THUMBPRINT: ${{ inputs.production && secrets.WINDOWS_CERT_THUMBPRINT || '' }}
+          WINDOWS_SIGN_CERT_PFX_BASE64: ${{ inputs.production && secrets.WINDOWS_SIGN_CERT_PFX_BASE64 || '' }}
+          WINDOWS_SIGN_CERT_PASSWORD: ${{ inputs.production && secrets.WINDOWS_SIGN_CERT_PASSWORD || '' }}
         shell: pwsh
         run: |
           $thumbprint = $env:WINDOWS_CERT_THUMBPRINT
           $pfx = Join-Path $env:RUNNER_TEMP 'native-release-signing.pfx'
           $imported = @()
           try {
+            if ($env:WINDOWS_PRODUCTION -eq 'true' -and -not $thumbprint) {
+              throw 'Production Windows packaging requires an Authenticode identity'
+            }
             if ($thumbprint) {
               if ($thumbprint -notmatch '^[0-9a-fA-F]{40}$') { throw 'Invalid Windows signing certificate thumbprint' }
               if (-not ($env:WINDOWS_SIGN_CERT_PFX_BASE64 -and $env:WINDOWS_SIGN_CERT_PASSWORD)) {
@@ -367,7 +424,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: matrix.target != 'macos' || steps.macos-signing.outputs.ready == 'true'
         with:
-          name: native-client-${{ matrix.target }}-${{ matrix.os }}
+          name: ${{ inputs.production && 'production-' || '' }}native-client-${{ matrix.target }}-${{ matrix.os }}
           path: dist/release/*
           if-no-files-found: error
 
@@ -433,31 +490,76 @@ jobs:
           path: ${{ runner.temp }}/windows-smoke/*
           if-no-files-found: warn
 
-  # Validation only: public candidate bytes must already exist before activating
-  # a mandatory policy. Never upload missing bytes after switching live policy.
-  verify-published-release:
-    if: github.event_name == 'release'
+  qualify-production-installers:
+    if: inputs.production && !inputs.verify_release_tag && !inputs.production_build_run
     needs: package
     runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: production-native-client-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify exact build receipts, signatures and approved media before staging
+        run: python scripts/native-client/check-release-readiness.py release-assets --local-only --commit "$GITHUB_SHA"
+
+  # Verify the staged bytes against the original build, without rebuilding them.
+  verify-published-release:
+    if: inputs.verify_release_tag || inputs.production_build_run
+    runs-on: ubuntu-24.04
     permissions:
+      actions: read
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Bind release tag to original successful production run
+        id: release-source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.verify_release_tag }}
+          BUILD_RUN: ${{ inputs.production_build_run }}
+          PRODUCTION: ${{ inputs.production }}
+        shell: bash
+        run: |
+          [[ "$GITHUB_REF" == 'refs/heads/main' && "$PRODUCTION" != 'true' ]]
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && "$BUILD_RUN" =~ ^[0-9]+$ ]]
+          git fetch --no-tags origin "refs/tags/$RELEASE_TAG"
+          commit="$(git rev-parse 'FETCH_HEAD^{commit}')"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN" |
+            jq -e --arg commit "$commit" --arg repo "$GITHUB_REPOSITORY" '
+              .conclusion == "success" and .event == "workflow_dispatch" and
+              .head_branch == "main" and .head_sha == $commit and
+              (.head_repository.full_name | ascii_downcase) == ($repo | ascii_downcase) and
+              .path == ".github/workflows/native-client-release.yml"
+            '
+          printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with:
-          pattern: native-client-*
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.production_build_run }}
+          pattern: production-native-client-*
           path: release-assets
           merge-multiple: true
       - name: Verify live signed policy against every release installer
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ inputs.verify_release_tag }}
           RELEASE_REPOSITORY: ${{ github.repository }}
-        run: python scripts/native-client/check-release-readiness.py release-assets --repository "$RELEASE_REPOSITORY" --tag "$RELEASE_TAG" > release-assets/online-policy-preflight.json
+          RELEASE_COMMIT: ${{ steps.release-source.outputs.commit }}
+        run: python scripts/native-client/check-release-readiness.py release-assets --repository "$RELEASE_REPOSITORY" --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" > release-assets/online-policy-preflight.json
       - name: Attach missing verification evidence only (never installers)
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ inputs.verify_release_tag }}
         run: python scripts/native-client/attach-release-evidence.py release-assets
       - uses: actions/upload-artifact@v4
         with:

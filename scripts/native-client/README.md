@@ -17,7 +17,7 @@
 
 在仓库根目录运行 `bash scripts/native-client/package.sh linux`（或 `android`、`macos`）；Windows 运行 `./scripts/native-client/package-windows.ps1`。先安装 NSH、Rust 以及平台 SDK/编译依赖。本地脚本不会上传、发布或修改 GitHub 配置。
 
-Actions 在 `feat/native-collaboration-bootstrap` 开发分支的原生相关路径 push、PR 和手动运行仅产生 workflow artifacts。开发分支 push 不触发生产部署，`contents: read` 保持不变，Release 验证作业仍只接受 `release` 事件。Release事件现在只校验预先公开的候选安装器及在线签名策略，不再自动上传缺失安装器；这是为防止先切强制策略、后上传资产导致旧用户锁定。全部预检通过后，仅附加尚不存在的验证receipt/索引/校验和等旁证，不覆盖同名文件，不创建tag或发布Release。安装包仍完整保留在workflow artifacts；真正两阶段候选预置/正式晋级流程尚待完成，不能称自动生成完整Release。
+Actions 在开发分支 push、PR 和默认手动运行时只上传普通构建产物。在 `main` 手动运行 **Native client installers** 并选中 `production` 会构建带生产配置的安装包。先确认 `qualify-production-installers` 通过，再使用该运行的 `production-native-client-*` 安装包及清单进行验收。未提供正式签名或批准的运行时会使生产构建失败。
 
 NSH 0.4 的 `package` 没有 `--features` 参数；前置 desktop binary 编译不改变 NSH 独立 runner 的 features。标准 Android 打包现已替换为完整 enterprise-collaboration 宿主，不再只交付基础 runner；测试签名和更新配置缺失状态仍如实记录。桌面安装包的功能覆盖由各平台打包步骤和验收结果单独说明。
 
@@ -33,9 +33,9 @@ NSH 0.4 的 `package` 没有 `--features` 参数；前置 desktop binary 编译�
 
 - macOS：已安装的 `MACOS_SIGN_IDENTITY`，和已有 keychain 的 `APPLE_NOTARY_PROFILE`。脚本使用 hardened runtime 签名、等待公证、staple 与验证。缺身份时不尝试公证；配置后任何签名/公证失败会使构建失败，不静默降级。
 - Windows：已安装 CurrentUser/My 中有私钥的 `WINDOWS_CERT_THUMBPRINT`，对应用 EXE 和安装器做 Authenticode 与时间戳（PowerShell 系统接口）；验证状态必须为 Valid。
-- Android：已有 `ANDROID_KEYSTORE_PATH`、`ANDROID_KEY_ALIAS`、`NSH_KEYSTORE_PASSWORD`，无需把密码写进命令参数。生成包必须通过 apksigner verify 与 zipalign 16KiB 对齐检查。测试签名只提供安装完整性，不提供正式发布者可信身份。
+- Android：本地构建使用 `ANDROID_KEYSTORE_PATH`、`ANDROID_KEY_ALIAS`、`NSH_KEYSTORE_PASSWORD`。生产 CI 从 `ANDROID_KEYSTORE_BASE64` 和 `NSH_KEYSTORE_PASSWORD` secrets 以及 `ANDROID_KEY_ALIAS` 变量加载已有发布密钥，构建后删除临时文件。生成包必须通过 apksigner verify 与 zipalign 16KiB 对齐检查。
 
-当前脚本不创建 Apple/Windows 证书，不导入私钥、不创建公证凭据，也不绕过 OS 安全检查。NSH 在缺少 Android key 时创建标准临时 debug keystore，这是非生产 APK 测试构建所需，不授予任何服务访问。
+生产 CI 在临时系统证书存储中导入已有 Developer ID 与 Windows 代码签名身份，并用既有 Apple API key 申请公证。批准后的桌面媒体运行时通过 `media-runtime.lock.json` 固定。启用前分别锁定三个目标的 `run_id` 和 `manifest_sha256`。同仓库 Actions 运行须保留名为 `approved-media-<平台>-<架构>` 的 artifact，其中包含批准的 `manifest.json` 和 `runtime/`。macOS 输入中的媒体程序须已完成签名。打包会检查完整运行时清单、原生测试回执和包内最终 SHA-256。
 
 ## 验证范围
 
@@ -80,7 +80,7 @@ CI 额外运行 `test_android_host.py` 的负向及资源保留测试。普通 r
 
 macOS ARM/Intel、Windows MSVC runner 通过 `check-renderer.sh` 对完整 NSH 依赖执行 `native-video-view` 的 check/test/clippy，分别启用 macos-appkit/windows-d2d。当前只是新增检查路径，尚未运行这些 Actions，不能把本机绘制 API 探针结果称为完整平台通过。
 
-手动 workflow_dispatch 新增 `experimental_android_media`，默认 false。只有显式选中才生成独立 `experimental-android-media-test-only` artifact，使用已由普通 NSH 测试构建使用的现存 debug key；缺 key 即失败，不创建新身份。普通 APK 已启用完整协同/更新宿主；release 事件不启用此分支，实验产物不进入 release 下载匹配或正式更新资产索引。
+手动 workflow_dispatch 的 `experimental_android_media` 默认 false。只有显式选中才生成独立 `experimental-android-media-test-only` artifact，使用普通 NSH 测试构建的 debug key。生产构建要求此选项关闭。普通 APK 已启用完整协同和更新宿主。
 
 实验步骤运行独立 host 双 ABI 构建、Java 纯逻辑测试与打包器 JNI/DEX/资源/签名/16KiB 对齐校验；输出固定带 test-only 的名称和状态说明。它不安装设备，不授予麦克风/相机/屏幕权限，不声称真实采集、播放或自动升级已经验收。
 
@@ -113,9 +113,9 @@ macOS ARM/Intel、Windows MSVC runner 通过 `check-renderer.sh` 对完整 NSH �
 安全顺序由外部已授权发布者执行：
 1. 一次构建固定字节及receipt，先把候选安装器公开预置为不晋升latest的候选发布，并验证源/镜像字节；此时不切当前用户的强制策略。只有私有draft资产不能满足未认证客户端下载要求。
 2. 在所有目标候选资产可下载后，外部授权签名服务签署正确版本/哈希的策略，最后原子切换策略端点。工具不部署、不签发密钥。
-3. 使用**同一批固定字节**运行最终在线预检，通过后再由授权发布者晋级正式Release。不得重新构建后假定签名/压缩字节仍一致。
+3. 在 `main` 再运行 **Native client installers**，填写 `verify_release_tag` 与 `production_build_run`，保留 `production` 关闭。校验作业根据标签提交下载原生产构建的制品，在线预检和正式发布资格检查通过后，只附加缺少的验证旁证。最终由授权发布者晋级 Release。
 
-现有Release事件job只提供最后的验证与缺少旁证附件，不负责候选预置、策略切换或正式晋级；若它重新构建的字节不同会拒绝，不能以覆盖安装器来“修复”。通过仅证明检查时在线策略和公开资产一致，不证明key归属、服务持续在线、平台安装成功、设备媒体或全局最新性。
+正式发布仍需在干净设备完成安装、登录和升级验收。当前桌面包的 `release_eligible` 仍为 false，因此 `qualify-production-installers` 只确认产物可进入验收，最终在线门禁仍拒绝晋级。
 
 ## 候选桌面安全接收原生验证（未启用生产）
 
