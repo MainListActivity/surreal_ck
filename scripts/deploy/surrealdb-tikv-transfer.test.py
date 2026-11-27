@@ -1,7 +1,10 @@
+from collections import Counter
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
 import tempfile
+from threading import Event
 import unittest
 from unittest.mock import patch
 
@@ -59,6 +62,100 @@ class TransferTests(unittest.TestCase):
         with patch.object(transfer.upgrade, "sql", return_value=quota):
             with self.assertRaisesRegex(RuntimeError, "账本不可信"):
                 transfer.quota_state("source", ("root", "dummy"), "ns", "db")
+
+    def test_empty_database_does_not_query_tables(self):
+        with patch.object(transfer.upgrade, "request") as request:
+            self.assertEqual(transfer.table_catalog("source", ("root", "fixture"), "ns", "db", {}), {})
+            self.assertEqual(transfer.upgrade.database_counts("source", ("root", "fixture"), "ns", "db", {}), {})
+            request.assert_not_called()
+
+    def test_export_batches_each_database_counts_once_and_preserves_sorted_order(self):
+        endpoint = "http://127.0.0.1:1234"
+        database_names = {"z": {"b": "DEFINE DATABASE b"},
+                          "a": {"z": "DEFINE DATABASE z", "a": "DEFINE DATABASE a"}}
+        expected_order = [("a", "a"), ("a", "z"), ("z", "b")]
+        tables = {"z": "DEFINE TABLE z", "a": "DEFINE TABLE a"}
+        count_sql = b"SELECT count() AS count FROM `a` GROUP ALL;\nSELECT count() AS count FROM `z` GROUP ALL;"
+        info_sql = b"INFO FOR TABLE `a`;\nINFO FOR TABLE `z`;"
+        later_catalog_read = Event()
+        later_export_written = Event()
+
+        def query(url, sql, headers, **options):
+            self.assertEqual(url, endpoint + "/sql")
+            ns, db = headers.get("surreal-ns"), headers.get("surreal-db")
+            if sql == b"INFO FOR ROOT;":
+                values = [{"namespaces": {ns: f"DEFINE NAMESPACE {ns}" for ns in database_names},
+                           "users": {"root": "definition"}}]
+            elif sql == b"INFO FOR NS;":
+                values = [{"databases": database_names[ns]}]
+            elif sql == b"INFO FOR DB;":
+                if (ns, db) == expected_order[0]:
+                    self.assertTrue(later_catalog_read.wait(3), "database snapshots did not overlap")
+                elif (ns, db) == expected_order[1]:
+                    later_catalog_read.set()
+                values = [{"tables": tables}]
+            elif sql == info_sql:
+                values = [{"indexes": {"a_unique": "definition"}, "lives": {"ephemeral": "definition"}}, {}]
+            elif sql == count_sql:
+                values = [[{"count": 1}], []]
+            else:
+                self.assertEqual(sql, f"INFO FOR QUOTA ON DATABASE `{db}` STRUCTURE;".encode())
+                values = [{"policy": None}]
+            return [{"status": "OK", "result": value} for value in values]
+
+        def dump(ns, db):
+            return f"-- {ns}/{db}\n".encode()
+
+        def export_database(endpoint, auth, ns, db, output):
+            if (ns, db) == expected_order[0]:
+                self.assertTrue(later_export_written.wait(3), "database exports did not overlap")
+            output.write_bytes(dump(ns, db))
+            if (ns, db) == expected_order[1]:
+                later_export_written.set()
+
+        exported = self.bundle / "exported"
+        with (patch.object(transfer.upgrade, "request", side_effect=query) as request,
+              patch.object(transfer.upgrade, "export_database", side_effect=export_database)):
+            self.assertEqual(transfer.export_bundle(endpoint, ("root", "fixture"), exported),
+                             {"namespaces": 2, "databases": 3})
+
+        def queried_databases(sql):
+            return Counter((headers["surreal-ns"], headers["surreal-db"])
+                           for _, body, headers in (call.args for call in request.call_args_list) if body == sql)
+
+        self.assertEqual(queried_databases(count_sql), Counter(expected_order))
+        self.assertEqual(queried_databases(info_sql), Counter(expected_order * 2))
+        receipt = transfer.read_bundle(exported)
+        self.assertEqual([(ns, db) for ns, db, _ in transfer.databases(receipt["catalog"]["namespaces"])],
+                         expected_order)
+        for index, (ns, db, metadata) in enumerate(transfer.databases(receipt["catalog"]["namespaces"])):
+            self.assertEqual(metadata["counts"], {"a": 1, "z": 0})
+            self.assertEqual(metadata["tables"]["a"], {"indexes": {"a_unique": "definition"}})
+            self.assertEqual((exported / f"{index}.import.surql").read_bytes(), dump(ns, db))
+            self.assertEqual(receipt["artifacts"][index]["sha256"], hashlib.sha256(dump(ns, db)).hexdigest())
+
+    def test_export_rejects_post_export_directory_or_quota_drift(self):
+        metadata = {"definition": "DEFINE DATABASE db", "catalog": {"tables": {"sample": "DEFINE TABLE sample"}},
+                    "tables": {"sample": {}}, "quota": {"usage": {"total": 2}}}
+
+        def snapshot(db):
+            return {"namespaces": {"ns": {"definition": "DEFINE NAMESPACE ns", "databases": {"db": db}}},
+                    "defaults": {}, "config": {}}
+
+        before = snapshot({**metadata, "counts": {"sample": 2}})
+        changes = (
+            {**metadata, "tables": {"sample": {"indexes": {"new": "definition"}}}},
+            {**metadata, "quota": {"usage": {"total": 3}}},
+        )
+        for index, changed in enumerate(changes):
+            exported = self.bundle / f"changed-{index}"
+            with (patch.object(transfer, "snapshot", side_effect=[before, snapshot(changed)]),
+                  patch.object(transfer.upgrade, "export_database"),
+                  patch.object(transfer.upgrade, "transform_export", return_value={"replacements": 0}),
+                  patch.object(transfer.upgrade, "digest", return_value="a" * 64)):
+                with self.assertRaisesRegex(RuntimeError, "导出期间数据目录或配额状态发生变化"):
+                    transfer.export_bundle("source", ("root", "fixture"), exported)
+            self.assertFalse((exported / transfer.MANIFEST).exists())
 
     def test_non_loopback_endpoint_never_contacts_server(self):
         with patch.object(transfer.upgrade, "request") as request:
