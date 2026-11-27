@@ -144,6 +144,7 @@ pub enum MeetingError {
     NotFoundOrNotInvited,
     Full,
     Expired,
+    SelfInvite,
     Retryable { msg: String },
 }
 impl MeetingError {
@@ -153,6 +154,7 @@ impl MeetingError {
             Self::NotFoundOrNotInvited => "无法加入会议，请检查会议号或联系邀请人。".to_owned(),
             Self::Full => "会议已满员，最多支持 4 人。".to_owned(),
             Self::Expired => "会期已失效，请重新创建会议。".to_owned(),
+            Self::SelfInvite => "无法邀请自己参加会议。".to_owned(),
             Self::Retryable { msg } => format!("操作失败：{msg}"),
         }
     }
@@ -192,6 +194,7 @@ pub enum MeetingUpdate {
     Capability(Capability),
     Invitations(Vec<Invitation>),
     Contacts(Vec<Contact>),
+    LocalMember(String),
     Snapshot(RoomSnapshot),
     ManagedIceUnavailable(bool),
     Device { source: Source, state: DeviceState },
@@ -205,6 +208,7 @@ pub struct MeetingView {
     pub capability: Capability,
     pub invitations: Vec<Invitation>,
     pub contacts: Vec<Contact>,
+    pub local_member: Option<String>,
     pub room: Option<RoomSnapshot>,
     pub recently_ended: Vec<String>,
     pub managed_ice_unavailable: bool,
@@ -224,6 +228,7 @@ impl Default for MeetingView {
             },
             invitations: vec![],
             contacts: vec![],
+            local_member: None,
             room: None,
             recently_ended: vec![],
             managed_ice_unavailable: false,
@@ -302,6 +307,7 @@ impl MeetingView {
         match update {
             MeetingUpdate::Capability(c) => {
                 if c != Capability::Available {
+                    self.local_member = None;
                     self.recently_ended.clear();
                     self.stop();
                     self.room = None;
@@ -313,6 +319,7 @@ impl MeetingView {
             }
             MeetingUpdate::Invitations(i) => self.invitations = i,
             MeetingUpdate::Contacts(c) => self.contacts = c,
+            MeetingUpdate::LocalMember(id) => self.local_member = Some(id),
             MeetingUpdate::ManagedIceUnavailable(unavailable) => {
                 self.managed_ice_unavailable = unavailable;
             }

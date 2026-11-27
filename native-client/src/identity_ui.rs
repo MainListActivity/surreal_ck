@@ -1258,10 +1258,12 @@ pub(crate) fn enterprise_identity(
                             card.child(ui::secondary(
                                 "发起会议",
                                 move || {
-                                    !meeting_state.get().can_enter()
-                                        || member_dialog
-                                            .get()
-                                            .is_none_or(|(_, member)| member.pending)
+                                    let meeting = meeting_state.get();
+                                    !meeting.can_enter()
+                                        || member_dialog.get().is_none_or(|(_, member)| {
+                                            member.pending
+                                                || meeting.local_member.as_ref() == Some(&member.id)
+                                        })
                                 },
                                 move || {
                                     if let Some((_, member)) = member_dialog.get_untracked() {

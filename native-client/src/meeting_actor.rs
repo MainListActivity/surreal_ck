@@ -466,6 +466,7 @@ async fn run(
             return;
         }
     };
+    let local_member = rpc.member_id().to_owned();
     let mut meeting = match Meeting::new(rpc) {
         Ok(meeting) => meeting,
         Err(error) => {
@@ -501,6 +502,7 @@ async fn run(
     let mut retry_after: BTreeMap<String, Instant> = BTreeMap::new();
     let mut tick = tokio::time::interval(TICK);
     let mut last_renew = Instant::now();
+    emit!(MeetingUpdate::LocalMember(local_member.clone()));
     emit!(MeetingUpdate::Capability(Capability::Available));
     emit!(MeetingUpdate::Contacts(contacts.clone()));
     match meeting.invitations().await {
@@ -521,6 +523,12 @@ async fn run(
             command = commands.recv() => {
                 let Ok(command) = command else { break };
                 match command {
+                    MeetingCommand::CreateFor { member_id }
+                        if member_id == local_member
+                            || local_member.strip_prefix("user:") == Some(member_id.as_str()) =>
+                    {
+                        emit!(MeetingUpdate::Error(MeetingError::SelfInvite));
+                    }
                     command @ (MeetingCommand::Create | MeetingCommand::CreateFor { .. }) => match meeting.create().await {
                         Ok(()) => {
                             tick = tokio::time::interval(TICK);
