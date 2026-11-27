@@ -13,6 +13,7 @@ import { seedSystemAdmins } from "./db/system-admin-seed";
 import { seedPlatformOperators } from "./db/platform-operator-seed";
 import { seedQuotaPlans } from "./db/quota-plan-seed";
 import { migrateAllWorkspaces } from "./db/migration-runner";
+import { retryAtomicConflict } from "./db/atomic-conflict-retry";
 import { startReconcileLoop, type ReconcileLoopHandle } from "./db/reconciler";
 import { startNativeMeetingGc } from "./db/native-meeting-gc";
 import { runFailedTestKitInvitationReaper, runTestSubjectReaper, type TestSubjectReaperDeps } from "./test-subjects/reaper";
@@ -312,7 +313,8 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
 
   async function bootStep(step: string, run: () => Promise<unknown>): Promise<void> {
     const startedAt = Date.now();
-    await run();
+    // 启动步骤均幂等；发布桥接时与旧进程并发写同一批记录，事务冲突整步重试。
+    await retryAtomicConflict(run);
     if (envName !== "test") console.info("[server] boot step", { step, durationMs: Date.now() - startedAt });
   }
 

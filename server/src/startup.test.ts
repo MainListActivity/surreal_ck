@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { startServer } from "./startup";
+import { QueryError } from "surrealdb";
 
 describe("server startup", () => {
   test("ensures the system schema before listening", async () => {
@@ -285,6 +286,22 @@ describe("server startup", () => {
     await running.shutdown("SIGTERM");
 
     expect(calls).toEqual(["listen", "server:stop", "root:close"]);
+  });
+
+  test("启动步骤遇到可重试事务冲突时整步重试", async () => {
+    let attempts = 0;
+    const running = await startServer({
+      ...minimalDeps(),
+      seedQuotaPlans: async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new QueryError({ code: -32000, message: "There was a problem with the key-value store: Transaction conflict: x. This transaction can be retried" });
+        }
+      },
+      serve: () => ({ stop: () => {} }),
+    });
+    await running.shutdown("SIGTERM");
+    expect(attempts).toBe(2);
   });
 
   test("引用解析校对在监听之后后台运行，桥接进程不运行", async () => {
