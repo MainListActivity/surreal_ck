@@ -269,6 +269,9 @@ impl Files {
         self.status
             .set(disconnected_status(self.has_completed.get_untracked()).into());
     }
+    pub(crate) fn can_export(self) -> bool {
+        cfg!(target_os = "android") && self.scope.is_none() && self.last_received.get().is_some()
+    }
     pub fn event(self, event: Event) {
         match event {
             Event::Offer { id, name, size } => {
@@ -579,7 +582,7 @@ impl Files {
                 || text("企业文件已保存到应用私有区，尚未导出。原生导出流程还不能在账号切换后阻止迟到写入，本实验暂不开放导出。"),
             ))
             .child(when(
-                move || cfg!(target_os = "android") && self.scope.is_none() && self.last_received.get().is_some(),
+                move || self.can_export(),
                 move || {
                     ui::action(
                         "导出已接收文件",

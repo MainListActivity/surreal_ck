@@ -419,7 +419,10 @@ pub fn Collaboration() -> impl IntoElement {
         .child(
             scroll()
                 .max_h(px(220.0))
-                .style_when(move || !connected.get(), |style| style.hidden())
+                .style_when(
+                    move || !connected.get() && !files.can_export(),
+                    |style| style.hidden(),
+                )
                 .child(files.panel(file_commands, connected)),
         )
         .child(
