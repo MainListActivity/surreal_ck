@@ -273,6 +273,46 @@ describe("Web 会议状态机（V1 网状房间）", () => {
     expect(gone.terminated).toEqual(["removed"]);
   });
 
+  test("散会过程中房间先失效，主持人看到的仍是会议已结束", async () => {
+    const h = harness();
+    await h.controller.create();
+    h.rpc.snapshot = async () => {
+      throw new MeetingRpcError("not_found");
+    };
+    h.rpc.end = async () => {
+      await h.controller.tick();
+    };
+    await h.controller.end();
+    expect(h.controller.view.phase).toBe("ended");
+    expect(h.terminated).toEqual(["ended"]);
+  });
+
+  test("瞬时信令错误在下一轮轮询成功或媒体边连通后撤下", async () => {
+    const h = harness();
+    await h.controller.create();
+    const pollOffers = h.rpc.pollOffers;
+    h.rpc.pollOffers = async () => {
+      throw new Error("socket closed");
+    };
+    await h.controller.tick();
+    expect(h.controller.view.error).toBe("会议服务异常");
+    h.rpc.pollOffers = pollOffers;
+    await h.controller.tick();
+    expect(h.controller.view.error).toBeNull();
+
+    const c = harness();
+    await c.controller.create();
+    c.setMembers([ME, HIGH]);
+    await c.controller.tick();
+    c.rpc.pollOffers = async () => {
+      throw new Error("socket closed");
+    };
+    await c.controller.tick();
+    expect(c.controller.view.error).toBe("会议服务异常");
+    c.edges[0]!.connect();
+    expect(c.controller.view.error).toBeNull();
+  });
+
   test("主持人散会与普通离会都发送信令且只终止一次", async () => {
     const h = harness();
     await h.controller.create();

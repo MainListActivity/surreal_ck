@@ -104,6 +104,8 @@ export class MeetingController {
   #chat: ChatEntry[] = [];
   #chatSeq = 0;
   #error: string | null = null;
+  #errorTransient = false;
+  #ending = false;
   #ice: MeetingIce | null = null;
   #lastRenew = 0;
   #timer: ReturnType<typeof setInterval> | null = null;
@@ -201,10 +203,13 @@ export class MeetingController {
     const room = this.#snapshot?.room;
     const joinId = this.#localJoin;
     if (!room || !joinId || !this.view.isHost) return;
+    this.#ending = true;
     try {
       await this.#deps.rpc.end(room.id, joinId);
     } catch (error) {
+      this.#ending = false;
       this.#error = meetingErrorMessage(error);
+      this.#errorTransient = false;
       this.#emit();
       return;
     }
@@ -224,6 +229,7 @@ export class MeetingController {
       if (this.#phase !== "live") return;
       this.#expireAttempts();
       await this.#startOffers();
+      this.#clearTransientError();
     } catch (error) {
       this.#handleError(error);
     } finally {
@@ -374,6 +380,7 @@ export class MeetingController {
         onState: (state: EdgeState) => {
           if (peer.edge !== entry) return;
           if (state === "failed") this.#failEdge(peer);
+          if (state === "connected") this.#clearTransientError();
           this.#emit();
         },
         onTrack: (source, track) => {
@@ -537,13 +544,22 @@ export class MeetingController {
     }
     if (code === "rate_limited" || code === "conflict") return;
     this.#error = meetingErrorMessage(error);
+    this.#errorTransient = true;
+  }
+
+  /** 轮询或媒体边恢复后撤下上一次瞬时信令错误；散会等操作错误保留。 */
+  #clearTransientError(): void {
+    if (!this.#errorTransient) return;
+    this.#error = null;
+    this.#errorTransient = false;
   }
 
   #terminate(phase: MeetingPhase): boolean {
     if (this.#phase === "left" || this.#phase === "ended" || this.#phase === "removed" || this.#phase === "failed") {
       return false;
     }
-    this.#phase = phase;
+    // 主持人散会期间，房间失效 / 本端被移除都是散会本身的结果。
+    this.#phase = this.#ending && phase === "removed" ? "ended" : phase;
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = null;
     if (this.#leaseTimer) clearTimeout(this.#leaseTimer);
@@ -552,7 +568,7 @@ export class MeetingController {
     this.#heartbeat = null;
     for (const peer of this.#peers.values()) peer.edge?.edge.close();
     this.#peers.clear();
-    this.#deps.onTerminated?.(phase);
+    this.#deps.onTerminated?.(this.#phase);
     this.#emit();
     return true;
   }

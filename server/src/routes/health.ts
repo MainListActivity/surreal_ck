@@ -24,7 +24,8 @@ export function createHealthRoutes(deps: HealthRoutesDeps = {}) {
   const checkProbe = deps.checkHealthProbe ?? checkHealthProbe;
   const routes = new Hono<AppBindings>();
 
-  routes.get("/health", async (c) => {
+  // /api/health 是 /health 的别名，供只转发 /api/* 的探针使用。
+  routes.on("GET", ["/health", "/api/health"], async (c) => {
     // 并行实测两条连接：探测连接（演练目标）+ 业务 root 连接，各自 5s 预算。
     const [probeUp, rootUp] = await Promise.all([
       checkProbe(5000),
