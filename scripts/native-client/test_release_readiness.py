@@ -135,7 +135,7 @@ class OnlinePreflightTests(unittest.TestCase):
             with self.assertRaises(OSError):readiness.check_release(root,'owner/repo','v1.0.0',fetch=mock.Mock(side_effect=OSError('offline')))
             with self.assertRaises(readiness.policy.subprocess.CalledProcessError):readiness.check_release(root,'owner/repo','v1.0.0',fetch=lambda url:SIGNED)
 
-    def test_production_build_rejects_unsigned_windows_and_wrong_commit(self):
+    def test_production_build_accepts_windows_without_certificate_and_rejects_wrong_commit(self):
         with tempfile.TemporaryDirectory() as tmp, \
              mock.patch.object(readiness, 'EXPECTED_TARGETS', {('windows', 'x86_64')}), \
              mock.patch.object(readiness, 'check_desktop_package') as desktop:
@@ -150,15 +150,17 @@ class OnlinePreflightTests(unittest.TestCase):
             receipt.write_text(json.dumps(identity | dict(commit='a'*40, dirty=False,
                                update_config='embedded-unverified', update_config_public=config)))
             index = root / 'windows-assets.json'
-            asset = identity | dict(arch='x86_64', signing='unsigned')
+            asset = identity | dict(arch='x86_64', signing='unknown')
             index.write_text(json.dumps([asset]))
             with self.assertRaisesRegex(ValueError, 'exact clean release commit'):
                 readiness.load_installers(root, commit='b'*40, require_release_eligibility=False)
-            with self.assertRaisesRegex(ValueError, 'authenticode'):
+            with self.assertRaisesRegex(ValueError, 'Windows installer signing status'):
                 readiness.load_installers(root, commit='a'*40, require_release_eligibility=False)
-            index.write_text(json.dumps([asset | dict(signing='authenticode')]))
-            _, version = readiness.load_installers(root, commit='a'*40, require_release_eligibility=False)
-            self.assertEqual(version, '0.1.3')
+            for signing in ('unsigned', 'authenticode'):
+                with self.subTest(signing=signing):
+                    index.write_text(json.dumps([asset | dict(signing=signing)]))
+                    _, version = readiness.load_installers(root, commit='a'*40, require_release_eligibility=False)
+                    self.assertEqual(version, '0.1.3')
             desktop.assert_called_with(receipt, mock.ANY, require_release_eligibility=False)
 
     def test_evidence_upload_never_includes_installers_or_overwrites(self):

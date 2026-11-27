@@ -17,7 +17,7 @@
 
 在仓库根目录运行 `bash scripts/native-client/package.sh linux`（或 `android`、`macos`）；Windows 运行 `./scripts/native-client/package-windows.ps1`。先安装 NSH、Rust 以及平台 SDK/编译依赖。本地脚本不会上传、发布或修改 GitHub 配置。
 
-Actions 在开发分支 push、PR 和默认手动运行时只上传普通构建产物。在 `main` 手动运行 **Native client installers** 并选中 `production` 会构建带生产配置的安装包。先确认 `qualify-production-installers` 通过，再使用该运行的 `production-native-client-*` 安装包及清单进行验收。未提供正式签名或批准的运行时会使生产构建失败。
+Actions 在开发分支 push、PR 和默认手动运行时只上传普通构建产物。在 `main` 手动运行 **Native client installers** 并选中 `production` 会构建带生产配置的安装包。先确认 `qualify-production-installers` 通过，再使用该运行的 `production-native-client-*` 安装包及清单进行验收。macOS 和 Android 需要正式签名，桌面包需要获批的运行时。
 
 NSH 0.4 的 `package` 没有 `--features` 参数；前置 desktop binary 编译不改变 NSH 独立 runner 的 features。标准 Android 打包现已替换为完整 enterprise-collaboration 宿主，不再只交付基础 runner；测试签名和更新配置缺失状态仍如实记录。桌面安装包的功能覆盖由各平台打包步骤和验收结果单独说明。
 
@@ -32,7 +32,7 @@ NSH 0.4 的 `package` 没有 `--features` 参数；前置 desktop binary 编译�
 脚本支持合法签名配置，但必须先单独授权凭据配置/持久访问，再接入受保护签名 runner 或签名服务：
 
 - macOS：已安装的 `MACOS_SIGN_IDENTITY`，和已有 keychain 的 `APPLE_NOTARY_PROFILE`。脚本使用 hardened runtime 签名、等待公证、staple 与验证。缺身份时不尝试公证；配置后任何签名/公证失败会使构建失败，不静默降级。
-- Windows：已安装 CurrentUser/My 中有私钥的 `WINDOWS_CERT_THUMBPRINT`，对应用 EXE 和安装器做 Authenticode 与时间戳（PowerShell 系统接口）；验证状态必须为 Valid。
+- Windows：可以选择对应用 EXE 和安装器做 Authenticode 与时间戳。CI 配置签名后须提供指纹和受密码保护的 PFX，验证状态必须为 Valid。未配置时保留 `unsigned` 回执。
 - Android：本地构建使用 `ANDROID_KEYSTORE_PATH`、`ANDROID_KEY_ALIAS`、`NSH_KEYSTORE_PASSWORD`。生产 CI 从 `ANDROID_KEYSTORE_BASE64` 和 `NSH_KEYSTORE_PASSWORD` secrets 以及 `ANDROID_KEY_ALIAS` 变量加载已有发布密钥，构建后删除临时文件。生成包必须通过 apksigner verify 与 zipalign 16KiB 对齐检查。
 
 生产 CI 在临时系统证书存储中导入已有 Developer ID 与 Windows 代码签名身份，并用既有 Apple API key 申请公证。批准后的桌面媒体运行时通过 `media-runtime.lock.json` 固定。启用前分别锁定三个目标的 `run_id` 和 `manifest_sha256`。同仓库 Actions 运行须保留名为 `approved-media-<平台>-<架构>` 的 artifact，其中包含批准的 `manifest.json` 和 `runtime/`。macOS 输入中的媒体程序须已完成签名。打包会检查完整运行时清单、原生测试回执和包内最终 SHA-256。
