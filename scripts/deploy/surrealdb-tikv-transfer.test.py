@@ -190,6 +190,55 @@ class TransferTests(unittest.TestCase):
                     with self.assertRaisesRegex(RuntimeError, "目录定义.*校验失败"):
                         transfer.verify_bundle("target", auth, self.bundle)
 
+    def test_restore_rechecks_legacy_manifest_against_target_table_info(self):
+        catalog = self.manifest["catalog"]
+        namespace = catalog["namespaces"]["ns"]
+        definitions = {
+            "fields": {"name": "DEFINE FIELD name ON employee TYPE string"},
+            "indexes": {"employee_name": "DEFINE INDEX employee_name ON employee FIELDS name"},
+            "events": {"changed": "DEFINE EVENT changed ON employee WHEN true THEN RETURN NONE"},
+        }
+        database = {"tables": {"employee": "DEFINE TABLE employee SCHEMAFULL"}}
+        namespace["databases"]["db"] = {
+            "definition": "DEFINE DATABASE db",
+            "catalog": database,
+            "tables": {"employee": {**definitions, "migrations": {"generation": 27}}},
+            "counts": {"employee": 1},
+            "quota": None,
+        }
+        self.manifest["artifacts"][0]["access_key_replacements"] = 0
+        (self.bundle / transfer.MANIFEST).write_text(json.dumps(self.manifest))
+
+        target_info = {**definitions, "migrations": {"generation": 1}, "lives": {}}
+        replies = {
+            b"DEFINE NAMESPACE ns;": None,
+            b"DEFINE DATABASE db;": None,
+            b"INFO FOR NS;": {"databases": {"db": "DEFINE DATABASE db"}},
+            b"INFO FOR DB;": database,
+            b"INFO FOR TABLE `employee`;": target_info,
+            b"INFO FOR QUOTA ON DATABASE `db` STRUCTURE;": {"policy": None},
+            b"SELECT count() AS count FROM `employee` GROUP ALL;": [{"count": 1}],
+        }
+
+        def request(url, sql, headers, **options):
+            if sql == b"INFO FOR ROOT;":
+                namespaces = {"ns": "DEFINE NAMESPACE ns"} if upload.called else {}
+                result = {"users": {"root": "definition"}, "namespaces": namespaces}
+            else:
+                result = replies[sql]
+            return [{"status": "OK", "result": result}]
+
+        endpoint, auth = "http://127.0.0.1:1234", ("root", "fixture")
+        with (patch.object(transfer.upgrade, "http_transfer") as upload,
+              patch.object(transfer.upgrade, "request", side_effect=request)):
+            self.assertEqual(transfer.restore_bundle(endpoint, auth, self.bundle, False),
+                             {"namespaces": 1, "databases": 1})
+            upload.assert_called_once_with(endpoint, auth, "ns", "db", self.dump, importing=True)
+            for section in ("fields", "indexes", "events"):
+                with self.subTest(section=section), patch.dict(target_info, {section: {}}):
+                    with self.assertRaisesRegex(RuntimeError, "目录定义.*校验失败"):
+                        transfer.verify_bundle(endpoint, auth, self.bundle)
+
     def test_non_loopback_endpoint_never_contacts_server(self):
         with patch.object(transfer.upgrade, "request") as request:
             with self.assertRaisesRegex(RuntimeError, "127.0.0.1"):
