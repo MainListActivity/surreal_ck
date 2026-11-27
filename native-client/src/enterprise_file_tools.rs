@@ -331,7 +331,16 @@ impl FileTools {
                                         Err(error) => Err(error),
                                     }
                                 },
-                                Command::AcceptFile(id, path) => operation_binding.handle.accept_confirmed(id, path).await.result,
+                                Command::AcceptFile(id, path) => {
+                                    let reply = operation_binding.handle.accept_confirmed(id.clone(), path).await;
+                                    if reply.context.is_current(operation_binding.handle.session())
+                                        && operation_binding.scope.is_current()
+                                        && let Err(error) = reply.result
+                                    {
+                                        files.accept_failed(&id, error);
+                                    }
+                                    Ok(())
+                                },
                                 Command::RejectFile(id) => operation_binding.handle.reject(id).await.result,
                                 Command::CancelFile(id) => match operation_binding.handle.cancel(id).await.result {
                                     Ok(CancelOutcome::CommitInProgress) => {if operation_binding.scope.is_current() {files.info("保存发布已先行开始，不能承诺撤回；等待真实保存回执。".into());} Ok(())},
