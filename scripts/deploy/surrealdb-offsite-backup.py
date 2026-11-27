@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""加密归档和恢复同版 RocksDB fork 的逻辑数据库备份。"""
+"""加密归档和恢复同版公司 SurrealDB fork 的逻辑数据库备份。"""
 
 import argparse
 import datetime
@@ -80,6 +80,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("backup", "restore"))
     parser.add_argument("--endpoint", required=True)
+    parser.add_argument("--backend", choices=("rocksdb", "tikv"), default="rocksdb",
+                        help="当前实例的存储后端（默认 rocksdb）")
     parser.add_argument("--git-sha", required=True)
     parser.add_argument("--credentials", required=True, type=Path)
     parser.add_argument("--scratch", required=True, type=Path)
@@ -110,7 +112,7 @@ def main():
     endpoint = args.endpoint.rstrip("/")
     with (args.scratch / ".surrealdb-backup.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        transfer.check_server(endpoint, "rocksdb", args.git_sha)
+        transfer.check_server(endpoint, args.backend, args.git_sha)
         auth = credentials(args.credentials)
         with tempfile.TemporaryDirectory(dir=args.scratch) as temporary:
             work = Path(temporary)
@@ -136,7 +138,8 @@ def main():
                 unpack(file, bundle, args.certificate, args.key)
                 result = transfer.restore_bundle(endpoint, auth, bundle, args.allow_access_key_rotation)
             print(json.dumps({"status": "ok", "mode": args.mode, "object": name, "sha256": checksum,
-                              "fork_sha": args.git_sha, "seconds": round(time.monotonic() - started, 2), **result}))
+                              "backend": args.backend, "fork_sha": args.git_sha,
+                              "seconds": round(time.monotonic() - started, 2), **result}))
 
 
 if __name__ == "__main__":

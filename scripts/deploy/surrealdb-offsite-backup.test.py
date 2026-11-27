@@ -1,6 +1,9 @@
+from contextlib import redirect_stdout
 import hashlib
 import importlib.util
 import io
+import json
+import os
 from pathlib import Path
 import stat
 import subprocess
@@ -116,20 +119,70 @@ class ArchiveTests(unittest.TestCase):
 
 
 class CommandTests(unittest.TestCase):
-    def test_unconfirmed_backup_exits_nonzero_without_success_receipt(self):
-        with tempfile.TemporaryDirectory() as directory:
-            scratch = Path(directory)
-            rclone_config = scratch / "fixture.conf"
-            rclone_config.touch(mode=0o600)
-            result = subprocess.run(
-                [sys.executable, str(SCRIPT), "backup",
-                 "--endpoint", "http://127.0.0.1:1", "--git-sha", "a" * 40,
-                 "--credentials", str(scratch / "unused.json"), "--scratch", directory,
-                 "--certificate", str(scratch / "unused.crt"), "--rclone-config", str(rclone_config),
-                 "--remote", "backup:db/fixture"],
-                capture_output=True, encoding="utf-8", check=False,
-            )
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.addCleanup(os.umask, os.umask(0o077))
+        scratch = Path(directory.name)
+        rclone_config = scratch / "fixture.conf"
+        rclone_config.touch(mode=0o600)
+        self.key = scratch / "fixture.key"
+        self.key.touch(mode=0o600)
+        self.endpoint = "http://127.0.0.1:1"
+        self.fork_sha = "a" * 40
+        self.args = [
+            "--endpoint", self.endpoint, "--git-sha", self.fork_sha,
+            "--credentials", str(scratch / "unused.json"), "--scratch", directory.name,
+            "--certificate", str(scratch / "unused.crt"), "--rclone-config", str(rclone_config),
+            "--remote", "backup:db/fixture",
+        ]
 
+    def test_accepts_both_backends_for_backup_and_restore_and_defaults_to_rocksdb(self):
+        checksum = "b" * 64
+        modes = {
+            "backup": ["--confirm-fenced-source"],
+            "restore": ["--confirm-isolated-target", "--key", str(self.key),
+                        "--object", "surrealdb-20261127T082946337568Z.cms", "--sha256", checksum],
+        }
+        for mode, mode_args in modes.items():
+            for backend in ("tikv", "rocksdb", None):
+                with self.subTest(mode=mode, backend=backend):
+                    selection = ["--backend", backend] if backend else []
+                    output = io.StringIO()
+                    with (
+                        patch.object(sys, "argv", [str(SCRIPT), mode, *self.args, *mode_args, *selection]),
+                        patch.object(backup.transfer, "check_server") as check_server,
+                        patch.object(backup.transfer, "export_bundle", return_value={"databases": 1}),
+                        patch.object(backup.transfer, "restore_bundle", return_value={"databases": 1}),
+                        patch.object(backup, "credentials", return_value=("fixture", "fixture")),
+                        patch.object(backup, "archive"),
+                        patch.object(backup, "unpack"),
+                        patch.object(backup, "run"),
+                        patch.object(backup.upgrade, "digest", return_value=checksum),
+                        patch.object(backup, "remote_digest", return_value=checksum),
+                        redirect_stdout(output),
+                    ):
+                        backup.main()
+                    expected = backend or "rocksdb"
+                    check_server.assert_called_once_with(self.endpoint, expected, self.fork_sha)
+                    receipt = json.loads(output.getvalue())
+                    self.assertEqual(receipt["backend"], expected)
+                    self.assertEqual(receipt["mode"], mode)
+
+    def test_invalid_backend_is_rejected_by_argument_parser(self):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "backup", *self.args, "--backend", "invalid-engine"],
+            capture_output=True, encoding="utf-8", check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("argument --backend: invalid choice: 'invalid-engine'", result.stderr)
+
+    def test_unconfirmed_backup_exits_nonzero_without_success_receipt(self):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "backup", *self.args],
+            capture_output=True, encoding="utf-8", check=False,
+        )
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stdout, "")
         self.assertEqual(result.stderr.strip(), "备份要求已有写围栏覆盖全部数据库写入者")
