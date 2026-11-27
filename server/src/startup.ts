@@ -69,6 +69,7 @@ export type StartServerDeps = {
   ensureSystemSchema?: () => Promise<unknown>;
   ensurePlatformContentSchema?: () => Promise<unknown>;
   assertLegacyContentMigrated?: () => Promise<unknown>;
+  verifyLegacyContentCopy?: () => Promise<unknown>;
   initContentPublisherSession?: () => Promise<unknown>;
   initContentProjectionSession?: () => Promise<unknown>;
   defineContentReaderAccess?: () => Promise<unknown>;
@@ -118,6 +119,14 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
   const ensureContentSchema = deps.ensurePlatformContentSchema
     ?? (envName === "test" ? async () => undefined : () => ensurePlatformContentSchema());
   const assertContentMigrated = deps.assertLegacyContentMigrated
+    ?? (envName === "test" ? async () => undefined : async () => {
+      await assertLegacyContentMigrated(
+        await getRootDatabaseSession("_system"),
+        await getRootDatabaseSession(env.CONTENT_DATABASE),
+        { deepVerify: false },
+      );
+    });
+  const verifyContentCopy = deps.verifyLegacyContentCopy
     ?? (envName === "test" ? async () => undefined : async () => {
       await assertLegacyContentMigrated(
         await getRootDatabaseSession("_system"),
@@ -282,6 +291,8 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
   const handles = backgroundWorkers ? startBackgroundWorkers() : {};
   // 引用解析校对是可重放的派生数据，扫描全部引用需数分钟：放到监听之后由正式进程后台跑，桥接进程不跑。
   const citationReconcile = backgroundWorkers ? runCitationReconcile() : undefined;
+  // 旧内容逐行比对同理：启动前只检查迁移标记，完整比对由正式进程监听后后台跑。
+  const contentCopyAudit = backgroundWorkers ? runAfterListen("content-copy-audit", verifyContentCopy) : undefined;
   const { reconcileLoop, funnelLoop, claimsRiskDispatcher, testSubjectReaper, officeReconciler } = handles;
 
   return {
@@ -304,6 +315,7 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
         await stopEmployeeRuntime();
       }
       citationReconcile?.abandon();
+      contentCopyAudit?.abandon();
       await (deps.closeContentPublisherSession ?? closeContentPublisherSession)();
       await (deps.closeContentProjectionSession ?? closeContentProjectionSession)();
       await closeProbe();
@@ -330,6 +342,24 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
       (cause: unknown) => {
         if (abandoned) return;
         console.error("[platform-content] citation resolution reconciliation failed after startup", {
+          message: cause instanceof Error ? cause.message : String(cause),
+        });
+      },
+    );
+    return { abandon: () => { abandoned = true; } };
+  }
+
+  function runAfterListen(step: string, run: () => Promise<unknown>): { abandon(): void } {
+    let abandoned = false;
+    const startedAt = Date.now();
+    run().then(
+      () => {
+        if (envName !== "test") console.info("[server] post-listen step", { step, durationMs: Date.now() - startedAt });
+      },
+      (cause: unknown) => {
+        if (abandoned) return;
+        console.error("[server] post-listen step failed", {
+          step,
           message: cause instanceof Error ? cause.message : String(cause),
         });
       },
