@@ -45,12 +45,17 @@ def root_catalog(endpoint, auth):
     return root["namespaces"], defaults, root.get("config", {})
 
 
+def table_definition(info):
+    # lives 和 migrations 是实例运行态元信息，逻辑导出仅携带表定义。
+    return {key: value for key, value in info.items() if key not in ("lives", "migrations")}
+
+
 def table_catalog(endpoint, auth, ns, db, tables):
     names = sorted(tables)
     statements = [f"INFO FOR TABLE {upgrade.identifier(name)};" for name in names]
     results = upgrade.sql_batch(endpoint, auth, statements, ns, db)
     return {
-        name: {key: value for key, value in result.items() if key != "lives"}
+        name: table_definition(result)
         for name, result in zip(names, results, strict=True)
     }
 
@@ -217,9 +222,12 @@ def restore_bundle(endpoint, auth, path, allow_key_rotation):
 
 def verify_bundle(endpoint, auth, path):
     expected = read_bundle(path)["catalog"]
+    namespaces = expected["namespaces"]
+    # 已生成的旧清单可能包含运行态字段，按同一规则比较。
+    for _, _, metadata in databases(namespaces):
+        metadata["tables"] = {name: table_definition(info) for name, info in metadata["tables"].items()}
     if snapshot(endpoint, auth) != expected:
         raise RuntimeError("命名空间、目录定义、记录数或配额状态校验失败")
-    namespaces = expected["namespaces"]
     return {"namespaces": len(namespaces), "databases": sum(1 for _ in databases(namespaces))}
 
 

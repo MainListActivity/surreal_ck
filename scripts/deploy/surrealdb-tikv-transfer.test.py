@@ -1,4 +1,5 @@
 from collections import Counter
+from copy import deepcopy
 import hashlib
 import importlib.util
 import json
@@ -95,7 +96,11 @@ class TransferTests(unittest.TestCase):
                     later_catalog_read.set()
                 values = [{"tables": tables}]
             elif sql == info_sql:
-                values = [{"indexes": {"a_unique": "definition"}, "lives": {"ephemeral": "definition"}}, {}]
+                values = [{
+                    "indexes": {"a_unique": "definition"},
+                    "lives": {"ephemeral": "definition"},
+                    "migrations": {"generation": 27},
+                }, {}]
             elif sql == count_sql:
                 values = [[{"count": 1}], []]
             else:
@@ -156,6 +161,83 @@ class TransferTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "导出期间数据目录或配额状态发生变化"):
                     transfer.export_bundle("source", ("root", "fixture"), exported)
             self.assertFalse((exported / transfer.MANIFEST).exists())
+
+    def test_verify_ignores_runtime_metadata_in_old_manifest_and_checks_definitions(self):
+        catalog = self.manifest["catalog"]
+        definitions = {
+            "fields": {"migrations": "DEFINE FIELD migrations ON sample TYPE string"},
+            "indexes": {"unique_index": "DEFINE INDEX unique_index ON sample FIELDS migrations UNIQUE"},
+            "events": {"sample_event": "DEFINE EVENT sample_event ON sample WHEN true THEN RETURN NONE"},
+        }
+        metadata = catalog["namespaces"]["ns"]["databases"]["db"]
+        metadata["tables"] = {"sample": {
+            **definitions,
+            "lives": {"old_subscription": "definition"},
+            "migrations": {"generation": 27, "verification": ["source history"]},
+        }}
+        manifest = self.bundle / transfer.MANIFEST
+        manifest.write_text(json.dumps(self.manifest))
+
+        restored = deepcopy(catalog)
+        restored_table = deepcopy(definitions)
+        restored["namespaces"]["ns"]["databases"]["db"]["tables"]["sample"] = restored_table
+        auth = ("root", "fixture")
+        with patch.object(transfer, "snapshot", return_value=restored):
+            self.assertEqual(transfer.verify_bundle("target", auth, self.bundle),
+                             {"namespaces": 1, "databases": 1})
+            for section in ("fields", "indexes", "events"):
+                with self.subTest(section=section), patch.dict(restored_table, {section: {}}):
+                    with self.assertRaisesRegex(RuntimeError, "目录定义.*校验失败"):
+                        transfer.verify_bundle("target", auth, self.bundle)
+
+    def test_restore_rechecks_legacy_manifest_against_target_table_info(self):
+        catalog = self.manifest["catalog"]
+        namespace = catalog["namespaces"]["ns"]
+        definitions = {
+            "fields": {"name": "DEFINE FIELD name ON employee TYPE string"},
+            "indexes": {"employee_name": "DEFINE INDEX employee_name ON employee FIELDS name"},
+            "events": {"changed": "DEFINE EVENT changed ON employee WHEN true THEN RETURN NONE"},
+        }
+        database = {"tables": {"employee": "DEFINE TABLE employee SCHEMAFULL"}}
+        namespace["databases"]["db"] = {
+            "definition": "DEFINE DATABASE db",
+            "catalog": database,
+            "tables": {"employee": {**definitions, "migrations": {"generation": 27}}},
+            "counts": {"employee": 1},
+            "quota": None,
+        }
+        self.manifest["artifacts"][0]["access_key_replacements"] = 0
+        (self.bundle / transfer.MANIFEST).write_text(json.dumps(self.manifest))
+
+        target_info = {**definitions, "migrations": {"generation": 1}, "lives": {}}
+        replies = {
+            b"DEFINE NAMESPACE ns;": None,
+            b"DEFINE DATABASE db;": None,
+            b"INFO FOR NS;": {"databases": {"db": "DEFINE DATABASE db"}},
+            b"INFO FOR DB;": database,
+            b"INFO FOR TABLE `employee`;": target_info,
+            b"INFO FOR QUOTA ON DATABASE `db` STRUCTURE;": {"policy": None},
+            b"SELECT count() AS count FROM `employee` GROUP ALL;": [{"count": 1}],
+        }
+
+        def request(url, sql, headers, **options):
+            if sql == b"INFO FOR ROOT;":
+                namespaces = {"ns": "DEFINE NAMESPACE ns"} if upload.called else {}
+                result = {"users": {"root": "definition"}, "namespaces": namespaces}
+            else:
+                result = replies[sql]
+            return [{"status": "OK", "result": result}]
+
+        endpoint, auth = "http://127.0.0.1:1234", ("root", "fixture")
+        with (patch.object(transfer.upgrade, "http_transfer") as upload,
+              patch.object(transfer.upgrade, "request", side_effect=request)):
+            self.assertEqual(transfer.restore_bundle(endpoint, auth, self.bundle, False),
+                             {"namespaces": 1, "databases": 1})
+            upload.assert_called_once_with(endpoint, auth, "ns", "db", self.dump, importing=True)
+            for section in ("fields", "indexes", "events"):
+                with self.subTest(section=section), patch.dict(target_info, {section: {}}):
+                    with self.assertRaisesRegex(RuntimeError, "目录定义.*校验失败"):
+                        transfer.verify_bundle(endpoint, auth, self.bundle)
 
     def test_non_loopback_endpoint_never_contacts_server(self):
         with patch.object(transfer.upgrade, "request") as request:
