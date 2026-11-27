@@ -1,4 +1,5 @@
 from collections import Counter
+from copy import deepcopy
 import hashlib
 import importlib.util
 import json
@@ -95,7 +96,11 @@ class TransferTests(unittest.TestCase):
                     later_catalog_read.set()
                 values = [{"tables": tables}]
             elif sql == info_sql:
-                values = [{"indexes": {"a_unique": "definition"}, "lives": {"ephemeral": "definition"}}, {}]
+                values = [{
+                    "indexes": {"a_unique": "definition"},
+                    "lives": {"ephemeral": "definition"},
+                    "migrations": {"generation": 27},
+                }, {}]
             elif sql == count_sql:
                 values = [[{"count": 1}], []]
             else:
@@ -156,6 +161,34 @@ class TransferTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "导出期间数据目录或配额状态发生变化"):
                     transfer.export_bundle("source", ("root", "fixture"), exported)
             self.assertFalse((exported / transfer.MANIFEST).exists())
+
+    def test_verify_ignores_runtime_metadata_in_old_manifest_and_checks_definitions(self):
+        catalog = self.manifest["catalog"]
+        definitions = {
+            "fields": {"migrations": "DEFINE FIELD migrations ON sample TYPE string"},
+            "indexes": {"unique_index": "DEFINE INDEX unique_index ON sample FIELDS migrations UNIQUE"},
+            "events": {"sample_event": "DEFINE EVENT sample_event ON sample WHEN true THEN RETURN NONE"},
+        }
+        metadata = catalog["namespaces"]["ns"]["databases"]["db"]
+        metadata["tables"] = {"sample": {
+            **definitions,
+            "lives": {"old_subscription": "definition"},
+            "migrations": {"generation": 27, "verification": ["source history"]},
+        }}
+        manifest = self.bundle / transfer.MANIFEST
+        manifest.write_text(json.dumps(self.manifest))
+
+        restored = deepcopy(catalog)
+        restored_table = deepcopy(definitions)
+        restored["namespaces"]["ns"]["databases"]["db"]["tables"]["sample"] = restored_table
+        auth = ("root", "fixture")
+        with patch.object(transfer, "snapshot", return_value=restored):
+            self.assertEqual(transfer.verify_bundle("target", auth, self.bundle),
+                             {"namespaces": 1, "databases": 1})
+            for section in ("fields", "indexes", "events"):
+                with self.subTest(section=section), patch.dict(restored_table, {section: {}}):
+                    with self.assertRaisesRegex(RuntimeError, "目录定义.*校验失败"):
+                        transfer.verify_bundle("target", auth, self.bundle)
 
     def test_non_loopback_endpoint_never_contacts_server(self):
         with patch.object(transfer.upgrade, "request") as request:
