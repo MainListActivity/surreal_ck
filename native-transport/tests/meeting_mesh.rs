@@ -20,16 +20,18 @@ use surreal_ck_peer_transport::{
 use tokio::sync::Mutex;
 
 #[tokio::test]
-#[ignore = "requires isolated coturn on 127.0.0.1 with fixture credentials"]
+#[ignore = "requires coturn: isolated 127.0.0.1 fixture or M04_TURN_URL with short-lived credentials"]
 async fn meeting_edge_uses_only_coturn_relay_and_observes_selected_relay() {
-    let port: u16 = std::env::var("M04_COTURN_TEST_PORT")
-        .unwrap()
-        .parse()
-        .unwrap();
+    let env = |key: &str| std::env::var(key).ok().filter(|value| !value.is_empty());
     let route = Route::RelayFallback {
-        urls: vec![format!("turn:127.0.0.1:{port}?transport=udp")],
-        username: "fixture-user".into(),
-        credential: "fixture-password".into(),
+        urls: env("M04_TURN_URLS")
+            .map(|urls| urls.split(',').map(str::to_owned).collect())
+            .unwrap_or_else(|| {
+                let port = env("M04_COTURN_TEST_PORT").unwrap();
+                vec![format!("turn:127.0.0.1:{port}?transport=udp")]
+            }),
+        username: env("M04_TURN_USERNAME").unwrap_or_else(|| "fixture-user".into()),
+        credential: env("M04_TURN_CREDENTIAL").unwrap_or_else(|| "fixture-password".into()),
     };
     let a = JoinId::new("a").unwrap();
     let b = JoinId::new("b").unwrap();
