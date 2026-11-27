@@ -44,6 +44,7 @@
     type MeetingInvitation,
   } from "../../lib/meeting/rpc";
   import type { MeetingSource } from "../../lib/meeting/sdp";
+  import { createMeetingV1Connection } from "../../lib/meeting/v1-connection";
   import { createMeetingV2Rpc, isV2MeetingCode } from "../../lib/meeting/v2";
 
   // M-05 浏览器会议：工作区内部成员免安装入会，与原生 App 共用 V1 网状房间。
@@ -52,7 +53,8 @@
   type Pending = { kind: "create"; external?: boolean } | { kind: "join"; code: string };
 
   const support = checkMeetingSupport(readMeetingSupportEnv());
-  const rpc = createMeetingRpc(getSurreal());
+  const v1Connection = createMeetingV1Connection(getCurrentWorkspace()?.dbName ?? "", getSurreal());
+  const rpc = createMeetingRpc(v1Connection);
   const media = new LocalMedia(
     typeof navigator !== "undefined" && navigator.mediaDevices
       ? navigator.mediaDevices
@@ -155,7 +157,7 @@
   onDestroy(() => {
     if (invitationTimer) clearInterval(invitationTimer);
     if (typeof window !== "undefined") window.removeEventListener("pagehide", onPageHide);
-    void controller?.leave();
+    void (controller?.leave() ?? Promise.resolve()).finally(() => v1Connection.close());
     unsubscribe?.();
     unsubscribeMedia();
     media.stopAll();
