@@ -162,6 +162,10 @@ class OnlinePreflightTests(unittest.TestCase):
                     _, version = readiness.load_installers(root, commit='a'*40, require_release_eligibility=False)
                     self.assertEqual(version, '0.1.3')
             desktop.assert_called_with(receipt, mock.ANY, require_release_eligibility=False)
+            readiness.load_installers(root, commit='a'*40, require_release_eligibility=True)
+            index.write_text(json.dumps([asset | dict(signing='unsigned')]))
+            with self.assertRaisesRegex(ValueError, 'must be authenticode'):
+                readiness.check_release(root, 'owner/repo', 'v0.1.3', commit='a'*40)
 
     def test_evidence_upload_never_includes_installers_or_overwrites(self):
         helper=SCRIPT.with_name('attach-release-evidence.py')

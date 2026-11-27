@@ -32,7 +32,7 @@ NSH 0.4 的 `package` 没有 `--features` 参数；前置 desktop binary 编译�
 脚本支持合法签名配置，但必须先单独授权凭据配置/持久访问，再接入受保护签名 runner 或签名服务：
 
 - macOS：已安装的 `MACOS_SIGN_IDENTITY`，和已有 keychain 的 `APPLE_NOTARY_PROFILE`。脚本使用 hardened runtime 签名、等待公证、staple 与验证。缺身份时不尝试公证；配置后任何签名/公证失败会使构建失败，不静默降级。
-- Windows：可以选择对应用 EXE 和安装器做 Authenticode 与时间戳。CI 配置签名后须提供指纹和受密码保护的 PFX，验证状态必须为 Valid。未配置时保留 `unsigned` 回执。
+- Windows：CI 可以产出记录为 `unsigned` 的验收包。进入强制更新渠道前，应用 EXE 和安装器都须通过 Authenticode，更新器会核验当前客户端与目标安装器的发布者。CI 配置签名时须提供指纹和受密码保护的 PFX，验证状态必须为 Valid。
 - Android：本地构建使用 `ANDROID_KEYSTORE_PATH`、`ANDROID_KEY_ALIAS`、`NSH_KEYSTORE_PASSWORD`。生产 CI 从 `ANDROID_KEYSTORE_BASE64` 和 `NSH_KEYSTORE_PASSWORD` secrets 以及 `ANDROID_KEY_ALIAS` 变量加载已有发布密钥，构建后删除临时文件。生成包必须通过 apksigner verify 与 zipalign 16KiB 对齐检查。
 
 生产 CI 在临时系统证书存储中导入已有 Developer ID 与 Windows 代码签名身份，并用既有 Apple API key 申请公证。批准后的桌面媒体运行时通过 `media-runtime.lock.json` 固定。启用前分别锁定三个目标的 `run_id` 和 `manifest_sha256`。同仓库 Actions 运行须保留名为 `approved-media-<平台>-<架构>` 的 artifact，其中包含批准的 `manifest.json` 和 `runtime/`。macOS 输入中的媒体程序须已完成签名。打包会检查完整运行时清单、原生测试回执和包内最终 SHA-256。

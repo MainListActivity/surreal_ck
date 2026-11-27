@@ -167,8 +167,10 @@ def load_installers(root, *, commit, require_release_eligibility):
             expected_signing = REQUIRED_SIGNING.get(item['platform'])
             if expected_signing and item.get('signing') != expected_signing:
                 raise ValueError(f'{item["platform"]} installer requires signing status {expected_signing}')
-            if item['platform'] == 'windows' and item.get('signing') not in ('unsigned', 'authenticode'):
-                raise ValueError('Windows installer signing status must be unsigned or authenticode')
+            if item['platform'] == 'windows':
+                allowed_signing = ('authenticode',) if require_release_eligibility else ('unsigned', 'authenticode')
+                if item.get('signing') not in allowed_signing:
+                    raise ValueError('Windows installer signing status must be ' + ' or '.join(allowed_signing))
             seen.add(target)
         installers.append((config, key, items))
     if seen != EXPECTED_TARGETS: raise ValueError('Complete expected release target set required')
