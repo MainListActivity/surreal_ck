@@ -439,6 +439,13 @@ pub fn Collaboration() -> impl IntoElement {
                             .get(index)
                             .is_some_and(|message| message.delivery == Delivery::Failed)
                     };
+                    let grouped = move || {
+                        let list = messages.get();
+                        index > 0
+                            && list
+                                .get(index)
+                                .is_some_and(|message| message.continues(&list[index - 1]))
+                    };
                     view()
                         .flex_row()
                         .px_5()
@@ -450,10 +457,21 @@ pub fn Collaboration() -> impl IntoElement {
                                 .gap_1()
                                 .style_when(mine, |style| style.items_end())
                                 .child(
-                                    text("对方")
-                                        .text_size(px(12.0))
-                                        .text_color(move || theme().muted_foreground)
-                                        .style_when(mine, |style| style.hidden()),
+                                    text(move || {
+                                        messages.get().get(index).map_or_else(
+                                            String::new,
+                                            |message| {
+                                                format!(
+                                                    "{} · {}",
+                                                    if message.mine { "我" } else { "对方" },
+                                                    message.time_label()
+                                                )
+                                            },
+                                        )
+                                    })
+                                    .text_size(px(12.0))
+                                    .text_color(move || theme().muted_foreground)
+                                    .style_when(grouped, |style| style.hidden()),
                                 )
                                 .child(
                                     view()
@@ -468,7 +486,14 @@ pub fn Collaboration() -> impl IntoElement {
                                         .py_2()
                                         .rounded(px(12.0))
                                         .border_1()
-                                        .border_color(move || bubble_border(mine()))
+                                        .border_color(move || {
+                                            if failed() {
+                                                theme().destructive
+                                            } else {
+                                                bubble_border(mine())
+                                            }
+                                        })
+                                        .style_when(failed, |style| style.border_dashed())
                                         .bg(move || bubble_fill(mine()))
                                         .child(
                                             text(move || {

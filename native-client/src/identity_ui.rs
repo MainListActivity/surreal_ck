@@ -1189,7 +1189,7 @@ pub(crate) fn enterprise_identity(
                     move || {
                         #[cfg(feature = "experimental-enterprise-signaling")]
                         let contact_start = contact_start.clone();
-                        let mut card = ui::card()
+                        let card = ui::card()
                             .child(
                                 text(move || {
                                     member_dialog
@@ -1218,8 +1218,8 @@ pub(crate) fn enterprise_identity(
                                     .unwrap_or_default()
                             }));
                         #[cfg(feature = "experimental-enterprise-signaling")]
-                        {
-                            card = card.child(ui::action(
+                        let card = {
+                            card.child(ui::action(
                                 "发消息",
                                 move || {
                                     let current = state.get();
@@ -1249,11 +1249,11 @@ pub(crate) fn enterprise_identity(
                                         }
                                     }
                                 },
-                            ));
-                        }
+                            ))
+                        };
                         #[cfg(feature = "experimental-enterprise-meeting")]
-                        {
-                            card = card.child(ui::secondary(
+                        let card = {
+                            card.child(ui::secondary(
                                 "发起会议",
                                 move || {
                                     !meeting_state.get().can_enter()
@@ -1272,8 +1272,8 @@ pub(crate) fn enterprise_identity(
                                         ));
                                     }
                                 },
-                            ));
-                        }
+                            ))
+                        };
                         nsh_base::dialog()
                             .on_cancel(move || member_dialog.set(None))
                             .child(card.child(ui::secondary(
