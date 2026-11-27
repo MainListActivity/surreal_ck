@@ -1,5 +1,7 @@
 # GitHub production release
 
+公开入口配置与验收见 [Turnstile 运维手册](public-entry-protection.md)。生产数据库归档与恢复见 [异地备份手册](surrealdb-offsite-backup.md)。
+
 生产发布由 GitHub Actions 串成一条不可绕过的链：
 
 1. 变更通过 Pull Request 进入 `main`。

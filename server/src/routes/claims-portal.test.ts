@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Hono } from "hono";
 import type { MiddlewareHandler } from "hono";
 import type { AppBindings } from "../hono-types";
+import { createPublicProtection } from "../public-entry/protection";
 import { handleError } from "../middleware/error";
 import { ClaimsPortalService, type ClaimsQueryable } from "../claims-portal/service";
 import { SESSION_COOKIE_NAME } from "../claims-portal/constants";
@@ -534,4 +535,32 @@ describe("claims-portal routes", () => {
     expect(download.headers.get("content-disposition")).toContain("a.pdf");
     expect(await download.text()).toBe("%PDF-1.4 mock");
   });
+});
+
+
+test("门户公开入口在访问工作区前拒绝缺少 Turnstile 的核验与写入", async () => {
+  let resolved = 0;
+  const service = new ClaimsPortalService({
+    resolveWorkspace: async () => { resolved++; return null; },
+  });
+  const protection = createPublicProtection({ enabled: true, verify: async token => token === "verified" });
+  const app = new Hono().onError(handleError).route("/", createClaimsPortalRoutes({ service, protection }));
+  const base = "/api/claims-portal/case/unknown";
+  const session = { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "测试", identityCode: "测试编码" }) };
+  const missing = await app.request(base + "/session", session);
+  expect(missing.status).toBe(401);
+  const error = await missing.json();
+  for (const suffix of ["/submission/submit", "/submission/supplement", "/attachments"]) {
+    const response = await app.request(base + suffix, { method: "POST" });
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual(error);
+  }
+  expect(resolved).toBe(0);
+  const wrongLink = await app.request(base + "/session", {
+    ...session, body: JSON.stringify({ name: "测试", identityCode: "测试编码", turnstileToken: "verified" }),
+  });
+  expect(wrongLink.status).toBe(401);
+  expect(await wrongLink.json()).toEqual(error);
+  expect(resolved).toBe(1);
 });

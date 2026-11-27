@@ -60,8 +60,8 @@ export function createPublicRosterApi(fetcher?: typeof fetch) {
     (await rosterRequest(`${publicBase}/${operation}`, { method, body, fetcher })).json() as Promise<T>;
   const pollPath = (poll: string) => `polls/${encodeURIComponent(poll)}`;
   return {
-    verify: (pass: string, code: string, check?: string) =>
-      request<RosterSession>("verify", "POST", { pass, code, check }),
+    verify: (pass: string, code: string, check?: string, turnstileToken?: string) =>
+      request<RosterSession>("verify", "POST", { pass, code, check, turnstileToken }),
     session: () => request<RosterSession>("session"),
     credentials: (consent = false) => request<MeetingSfuCredentials>("credentials", "POST", consent ? { consent } : undefined),
     raiseHand: () => rosterRequest(`${publicBase}/raise-hand`, { method: "POST", fetcher }),

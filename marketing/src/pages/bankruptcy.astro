@@ -11,6 +11,7 @@ import {
   Scale,
   ShieldCheck,
   Sparkles,
+  Users,
   X,
 } from "@lucide/astro";
 import Brand from "../components/Brand.astro";
@@ -34,6 +35,8 @@ const iconByName = {
   fileSpreadsheet: FileSpreadsheet,
   listChecks: ListChecks,
   bookMarked: BookMarked,
+  users: Users,
+  shield: ShieldCheck,
 } as const;
 ---
 
@@ -73,7 +76,7 @@ const iconByName = {
             AI 法律研究的结论与引用留在同一处，随时回溯出处。
           </p>
           <div class="hero-actions">
-            <a class="button button-primary" href="#trial">联系邀请人开通试用 <ArrowRight size={15} /></a>
+            <a class="button button-primary" href="/trial/">申请机构试用 <ArrowRight size={15} /></a>
             <a class="button button-secondary" href="#capabilities">看看能做什么</a>
           </div>
           <div class="hero-notes" aria-label="产品特点">
@@ -204,7 +207,7 @@ const iconByName = {
         <div class="container final-inner">
           <p>第一阶段 · 邀请制免费试用</p>
           <h2>把债权核对，<br /><em>放回一条完整的工作路径上。</em></h2>
-          <a class="button final-button" href="#trial">联系邀请人开通 <ArrowRight size={15} /></a>
+          <a class="button final-button" href="/trial/">申请机构试用 <ArrowRight size={15} /></a>
         </div>
       </section>
     </main>
@@ -221,9 +224,7 @@ const iconByName = {
       <div class="container footer-bottom">
         <span>© {new Date().getFullYear()} 吉吉 Workspace</span>
         <span class="legal-links">
-          {legalLinks.map((link) =>
-            link.href ? <a href={link.href}>{link.label}</a> : <span class="legal-pending">{link.label}（即将上线）</span>
-          )}
+          {legalLinks.map((link) => <a href={link.href}>{link.label}</a>)}
         </span>
       </div>
     </footer>

@@ -27,6 +27,7 @@ import Brand from "../components/Brand.astro";
 import LoginDialog from "../components/LoginDialog.astro";
 import ProductStage from "../components/ProductStage.astro";
 import BaseLayout from "../layouts/BaseLayout.astro";
+import { legalLinks } from "../data/bankruptcy";
 import { capabilityCards, navigation, templateCards, workflowSteps } from "../data/product";
 
 // 静态营销站与应用不同源：登录类按钮必须落到应用域名，同域 /auth/login 会被
@@ -294,7 +295,7 @@ const iconByName = {
           <div class="final-seed seed-b" aria-hidden="true"></div>
           <p>从一张熟悉的表格开始</p>
           <h2>让团队的数据，<br /><em>自己长出答案。</em></h2>
-          <a class="button final-button" data-login-trigger href={appUrl}>开始使用吉吉 <ArrowRight size={15} /></a>
+          <a class="button final-button" href="/trial/">申请机构试用 <ArrowRight size={15} /></a>
         </div>
       </section>
     </main>
@@ -302,7 +303,11 @@ const iconByName = {
     <footer>
       <div class="container footer-main">
         <div><Brand inverted /><p>AI 原生的数据工作空间</p></div>
-        <nav aria-label="页脚导航">{navigation.map((item) => <a href={item.href}>{item.label}</a>)}</nav>
+        <nav aria-label="页脚导航">
+          {navigation.map((item) => <a href={item.href}>{item.label}</a>)}
+          <a href="/bankruptcy/">破产债权与保密会议</a>
+          {legalLinks.map((link) => <a href={link.href}>{link.label}</a>)}
+        </nav>
         <a class="footer-login" data-login-trigger href={appUrl}>进入工作空间 <ArrowRight size={14} /></a>
       </div>
       <div class="container footer-bottom"><span>© {new Date().getFullYear()} 吉吉 Workspace</span><span>让数据自然生长</span></div>

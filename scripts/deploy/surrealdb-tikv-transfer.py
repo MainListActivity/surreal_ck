@@ -102,8 +102,8 @@ def databases(catalog):
 def private_workspace(path):
     if path.is_symlink() or not path.is_dir():
         raise RuntimeError("数据包必须位于非符号链接目录")
-    if path.stat().st_uid != 0 or path.stat().st_mode & 0o077:
-        raise RuntimeError("数据包目录必须由 root 独占")
+    if path.stat().st_uid != os.geteuid() or path.stat().st_mode & 0o077:
+        raise RuntimeError("数据包目录必须由当前操作用户独占")
 
 
 def export_bundle(endpoint, auth, path):
@@ -140,7 +140,9 @@ def read_bundle(path):
 def private_artifact(path):
     if not path.is_file() or path.is_symlink():
         raise RuntimeError("数据包只接受普通文件")
-    upgrade.trusted_file(path, forbidden=0o077)
+    info = path.stat()
+    if info.st_uid != os.geteuid() or info.st_mode & 0o077:
+        raise RuntimeError("数据包文件必须由当前操作用户独占")
 
 
 def restore_bundle(endpoint, auth, path, allow_key_rotation):
@@ -158,9 +160,9 @@ def restore_bundle(endpoint, auth, path, allow_key_rotation):
             raise RuntimeError("数据包文件校验失败")
     namespaces, defaults, config = root_catalog(endpoint, auth)
     if namespaces or defaults:
-        raise RuntimeError("TiKV 目标必须为空")
+        raise RuntimeError("恢复目标必须为空")
     if config != catalog["config"]:
-        raise RuntimeError("TiKV 目标的实例配置与来源不符")
+        raise RuntimeError("恢复目标的实例配置与来源不符")
     for ns, cfg in catalog["namespaces"].items():
         upgrade.identifier(ns)
         upgrade.sql(endpoint, auth, cfg["definition"])

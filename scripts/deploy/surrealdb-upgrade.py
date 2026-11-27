@@ -465,7 +465,8 @@ def private_file(path):
     stream = open(path, "xb")
     try:
         os.fchmod(stream.fileno(), 0o600)
-        os.fchown(stream.fileno(), 0, 0)
+        if os.geteuid() == 0:
+            os.fchown(stream.fileno(), 0, 0)
     except BaseException:
         stream.close()
         raise

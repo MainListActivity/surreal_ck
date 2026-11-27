@@ -83,12 +83,18 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Install Python 3.10 for production maintenance tests
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.10"
+
       - name: Test SurrealDB maintenance scripts
         env:
           PYTHONDONTWRITEBYTECODE: "1"
         run: |
           python3 scripts/deploy/surrealdb-upgrade.test.py
           python3 scripts/deploy/surrealdb-tikv-transfer.test.py
+          python3 scripts/deploy/surrealdb-offsite-backup.test.py
 
       - name: Build web application
         run: pnpm --filter @surreal-ck/web build

@@ -26,3 +26,7 @@ Status: ready-for-agent
 
 **依赖**：`01`、`07`（复用 `external-collaborator-portal` 令牌安全契约）。  
 **验证方式**：真实 fork 集成测试 + 模板包测试 + 浏览器多端互踢/吊销实测。
+
+## 公开入口防滥用联动
+
+浏览器入口复用 P-04。站点配置、action、限流和原生名册发布前置见[公开入口保护手册](../../../docs/runbooks/public-entry-protection.md)。

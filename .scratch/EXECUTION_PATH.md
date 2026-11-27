@@ -4,6 +4,8 @@ Updated: 2026-11-16 (basis: `origin/main` at 7263024b; corrected after checking 
 
 This file is the canonical scheduling order for the next agents.
 
+2026-11-27 生产读回为 a06046e1。PR #278 仍开放，已核对部分历史验收记录。登录态复验与生产配额裁决见[生产验真记录](../docs/runbooks/pilot-production-acceptance.md)。
+
 Current entry point: no code ticket is open for dispatch in the virtual employee runtime (VER-01..06), the virtual office (VO-01..06), or the platform legal content MCP (`legal-content-mcp` 01..10, including `07-mcp-oauth`). Their implementation is on `main`. Next work is evidence collection, ticket bookkeeping, and operations, listed under "Open items" and "Operations-only remainders".
 
 A ticket header `Status: done` means the implementation was recorded as complete. It does not mean acceptance boxes are checked, and it does not mean production acceptance. Do not re-dispatch implementation for these tickets. Do not report a production result from a header alone.

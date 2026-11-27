@@ -228,6 +228,8 @@ jobs:
           VITE_OPS_OIDC_CLIENT_ID: ${{ vars.VITE_OPS_OIDC_CLIENT_ID }}
           VITE_OPS_OIDC_AUDIENCE: ${{ vars.VITE_OPS_OIDC_AUDIENCE }}
           VITE_OPS_API_BASE_URL: ${{ vars.VITE_OPS_API_BASE_URL }}
+          VITE_TURNSTILE_SITEKEY: ${{ vars.VITE_TURNSTILE_SITEKEY }}
+          PUBLIC_TURNSTILE_SITEKEY: ${{ vars.VITE_TURNSTILE_SITEKEY }}
           SCK_RELEASE_SHA: ${{ env.RELEASE_SHA }}
           SCK_DEPLOYMENT_ID: ${{ github.run_id }}-${{ github.run_attempt }}
         run: |

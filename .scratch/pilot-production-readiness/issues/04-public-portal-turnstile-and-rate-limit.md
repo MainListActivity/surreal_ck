@@ -26,3 +26,7 @@ Status: ready-for-agent
 
 **依赖**：无（可立即开工；需在生产环境配置 Cloudflare Turnstile sitekey/secret）。  
 **验证方式**：服务端单元/集成测试 + Cloudflare/origin 实测限流与 Turnstile 正反例。
+
+## 2026-11-27 核对记录
+
+浏览器入口和源站已接入 Siteverify。边缘与源站共用公开路径及 429 契约。单测覆盖失败关闭、跨 action/hostname、重放和限流。生产 widget 和原生名册衔接见[发布与验收手册](../../../docs/runbooks/public-entry-protection.md)。
