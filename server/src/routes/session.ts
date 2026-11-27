@@ -87,7 +87,7 @@ export function createSessionRoutes(
         expiresIn: scopeToken.expiresIn,
       });
     })
-    // 原生客户端协作专用：把当前主体在同一 workspace 内降为 participant RECORD 会话，
+    // 客户端协作专用：把当前主体在同一 workspace 内降为 participant RECORD 会话，
     // 让信令 `sender = $auth.id` 绑定到其本人 user 行。不是通用「申请任意 ac」接口，
     // 也不改变 switch-workspace 对管理员仍签 admin 的默认行为。
     .post("/api/session/collaboration-scope", requireUser(), async (c) => {
