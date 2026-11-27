@@ -33,10 +33,12 @@ def run(*command):
 def remote_digest(command, destination):
     with subprocess.Popen([*command, "cat", destination], stdout=subprocess.PIPE,
                           stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as process:
-        result = hashlib.file_digest(process.stdout, "sha256").hexdigest()
+        digest = hashlib.sha256()
+        while chunk := process.stdout.read(upgrade.TRANSFER_CHUNK):
+            digest.update(chunk)
         if process.wait() != 0:
             raise RuntimeError("异地读取校验失败")
-        return result
+        return digest.hexdigest()
 
 
 def archive(bundle, output, certificate):
