@@ -5,9 +5,15 @@
   "compatibility_date": "2025-01-01",
   "workers_dev": true,
   "vars": {
-    "ORIGIN_BASE_URL": "https://data.maplayer.top"
+    "ORIGIN_BASE_URL": "https://data.maplayer.top",
+    "TRIAL_REQUEST_ORIGIN": "https://www.maplayer.top"
   },
+  "ratelimits": [
+    { "name": "PUBLIC_ENTRY_LIMIT", "namespace_id": "27904", "simple": { "limit": 240, "period": 60 } },
+    { "name": "PUBLIC_MEETING_LIMIT", "namespace_id": "27905", "simple": { "limit": 2400, "period": 60 } }
+  ],
   "observability": {
-    "enabled": true
+    "enabled": true,
+    "logs": { "invocation_logs": false }
   }
 }

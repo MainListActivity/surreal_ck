@@ -1,4 +1,12 @@
 <script lang="ts">
+  import PublicTurnstile from "../components/PublicTurnstile.svelte";
+  import { PUBLIC_ACTION } from "@surreal-ck/shared/public-entry";
+
+  let turnstileToken = $state("");
+  let resetTurnstile = $state<() => void>(() => {});
+  let writeToken = $state("");
+  let resetWrite = $state<() => void>(() => {});
+  const challengeRequired = import.meta.env.PROD || !!import.meta.env.VITE_TURNSTILE_SITEKEY;
   import { parseRateSegmentsJson } from "../lib/claims-interest";
   import { CLAIM_PROGRESS_LABELS, type ClaimProgressEvent, type ClaimProgressStage, type PublishedClaimDecision } from "@surreal-ck/shared/claims-portal";
 
@@ -60,6 +68,7 @@
   let supplementReply = $state("");
   let supplementBusy = $state(false);
   let submitted = $state(false);
+  const writeBlocked = $derived(challengeRequired && !writeToken);
   const attachmentsLocked = $derived(submission?.status === "closed" || progress.stage === "final");
   const managerRequests = $derived(supplements.filter((row) => row.direction === "manager_request" && row.id));
   const attachmentNames = $derived(new Map(attachments.map((row) => [row.id, row.fileName])));
@@ -89,7 +98,7 @@
   }
 
   async function openSession() {
-    if (busy) return;
+    if (busy || (challengeRequired && !turnstileToken)) return;
     busy = true;
     error = null;
     try {
@@ -97,7 +106,7 @@
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), identityCode: identityCode.trim() }),
+        body: JSON.stringify({ name: name.trim(), identityCode: identityCode.trim(), turnstileToken }),
       });
       if (!res.ok) {
         error = await readError(res);
@@ -108,6 +117,7 @@
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
     } finally {
+      resetTurnstile();
       busy = false;
     }
   }
@@ -194,14 +204,14 @@
 
   async function sendSupplementReply() {
     const text = supplementReply.trim();
-    if (busy || supplementBusy || !requestId || text.length === 0) return;
+    if (busy || supplementBusy || writeBlocked || !requestId || text.length === 0) return;
     supplementBusy = true;
     error = null;
     try {
       const res = await fetch(portalUrl("/submission/supplement"), {
         method: "POST",
         credentials: "include",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-turnstile-token": writeToken },
         body: JSON.stringify({ body: text, requestId, attachmentIds: replyAttachments }),
       });
       if (!res.ok) {
@@ -214,12 +224,13 @@
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
     } finally {
+      resetWrite();
       supplementBusy = false;
     }
   }
 
   async function uploadAttachment(file: File | undefined, includeInReply = false) {
-    if (!file || busy || supplementBusy || attachmentsLocked) return;
+    if (!file || busy || supplementBusy || writeBlocked || attachmentsLocked) return;
     busy = true;
     error = null;
     try {
@@ -229,6 +240,7 @@
       const res = await fetch(portalUrl("/attachments"), {
         method: "POST",
         credentials: "include",
+        headers: { "x-turnstile-token": writeToken },
         body: form,
       });
       if (!res.ok) {
@@ -243,12 +255,13 @@
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
     } finally {
+      resetWrite();
       busy = false;
     }
   }
 
   async function submitClaim() {
-    if (busy || submitted) return;
+    if (busy || supplementBusy || writeBlocked || submitted) return;
     await saveDraft();
     if (error) return;
     busy = true;
@@ -257,6 +270,7 @@
       const res = await fetch(portalUrl("/submission/submit"), {
         method: "POST",
         credentials: "include",
+        headers: { "x-turnstile-token": writeToken },
       });
       if (!res.ok) {
         error = await readError(res);
@@ -267,6 +281,7 @@
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
     } finally {
+      resetWrite();
       busy = false;
     }
   }
@@ -288,7 +303,8 @@
         唯一识别码
         <input bind:value={identityCode} autocomplete="off" disabled={busy} />
       </label>
-      <button type="button" class="primary" disabled={busy || !name.trim() || !identityCode.trim()} onclick={() => void openSession()}>
+      <PublicTurnstile action={PUBLIC_ACTION.claims} bind:token={turnstileToken} bind:reset={resetTurnstile} />
+      <button type="button" class="primary" disabled={busy || (challengeRequired && !turnstileToken) || !name.trim() || !identityCode.trim()} onclick={() => void openSession()}>
         {busy ? "校验中…" : "进入申报"}
       </button>
     </section>
@@ -323,6 +339,10 @@
       </section>
     {/if}
     <section class="card" aria-label="申报表单">
+      {#if challengeRequired && !attachmentsLocked}
+        <p class="hint">提交申报、回复补正或上传附件前，请完成安全验证。</p>
+        <PublicTurnstile action={PUBLIC_ACTION.claimsWrite} bind:token={writeToken} bind:reset={resetWrite} />
+      {/if}
       {#if submitted}
         <p class="ok">已提交。如需补充材料，请等待管理人联系。</p>
         <a href={portalUrl("/submission.pdf")} rel="noreferrer" download="claim-record.pdf">下载我的申报与往来记录（PDF）</a>
@@ -384,7 +404,7 @@
         <input
           type="file"
           accept=".pdf,image/png,image/jpeg,application/pdf"
-          disabled={busy || attachmentsLocked}
+          disabled={busy || supplementBusy || writeBlocked || attachmentsLocked}
           onchange={(event) => {
             const input = event.currentTarget as HTMLInputElement;
             void uploadAttachment(input.files?.[0]);
@@ -433,7 +453,7 @@
             <label>
               上传并关联到本次回复
               <input type="file" accept=".pdf,image/png,image/jpeg,application/pdf"
-                disabled={busy || supplementBusy || replyAttachments.length >= 20}
+                disabled={busy || supplementBusy || writeBlocked || replyAttachments.length >= 20}
                 onchange={(event) => {
                   const input = event.currentTarget;
                   void uploadAttachment(input.files?.[0], true);
@@ -449,7 +469,7 @@
                 </label>
               {/if}
             {/each}
-            <button type="button" class="secondary" disabled={busy || supplementBusy || !requestId || supplementReply.trim().length === 0} onclick={() => void sendSupplementReply()}>
+            <button type="button" class="secondary" disabled={busy || supplementBusy || writeBlocked || !requestId || supplementReply.trim().length === 0} onclick={() => void sendSupplementReply()}>
               {supplementBusy ? "发送中…" : "发送回复"}
             </button>
           {/if}
@@ -458,7 +478,7 @@
 
       <div class="actions">
         <button type="button" class="secondary" disabled={busy || submitted} onclick={() => void saveDraft()}>保存草稿</button>
-        <button type="button" class="primary" disabled={busy || submitted} onclick={() => void submitClaim()}>提交申报</button>
+        <button type="button" class="primary" disabled={busy || supplementBusy || writeBlocked || submitted} onclick={() => void submitClaim()}>提交申报</button>
       </div>
     </section>
   {/if}

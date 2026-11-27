@@ -1,4 +1,10 @@
 <script lang="ts">
+  import PublicTurnstile from "../../components/PublicTurnstile.svelte";
+  import { PUBLIC_ACTION } from "@surreal-ck/shared/public-entry";
+
+  let turnstileToken = $state("");
+  let resetTurnstile = $state<() => void>(() => {});
+  const challengeRequired = import.meta.env.PROD || !!import.meta.env.VITE_TURNSTILE_SITEKEY;
   import { onMount } from "svelte";
   import RosterMeetingPolls from "./RosterMeetingPolls.svelte";
   import { Room, RoomEvent, Track, type RemoteTrack, type RemoteTrackPublication } from "livekit-client";
@@ -216,15 +222,16 @@
 
   async function verify(event: SubmitEvent) {
     event.preventDefault();
-    if (!pass || busy) return;
+    if (!pass || busy || (challengeRequired && !turnstileToken)) return;
     busy = true;
     error = "";
     try {
-      const next = await api.verify(pass, code, check.trim() || undefined);
+      const next = await api.verify(pass, code, check.trim() || undefined, turnstileToken);
       if (!stopped) applySession(next);
     } catch (cause) {
       error = rosterVerifyMessage(cause);
     } finally {
+      resetTurnstile();
       code = "";
       check = "";
       busy = false;
@@ -299,7 +306,8 @@
     <form onsubmit={verify}>
       <label>访问码 <input required inputmode="numeric" pattern={"[0-9]{6,32}"} autocomplete="off" bind:value={code} /></label>
       <label>{checkLabel || "名册校对（如有要求）"} <input type="password" maxlength="512" autocomplete="off" bind:value={check} /></label>
-      <button disabled={busy}>核验并参会</button>
+      <PublicTurnstile action={PUBLIC_ACTION.roster} bind:token={turnstileToken} bind:reset={resetTurnstile} />
+      <button disabled={busy || (challengeRequired && !turnstileToken)}>核验并参会</button>
     </form>
   {:else}
     <p>请打开主持人提供的专属参会链接。</p>

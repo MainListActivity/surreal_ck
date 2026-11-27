@@ -1,3 +1,5 @@
+import { PUBLIC_ACTION } from "@surreal-ck/shared/public-entry";
+import { publicClientIp, publicProtection } from "../public-entry/protection";
 import { isIP } from "node:net";
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
@@ -34,6 +36,7 @@ const verifyBody = z.strictObject({
   pass: z.string().max(160),
   code: z.string().max(32),
   check: z.string().max(512).optional(),
+  turnstileToken: z.string().max(2048).optional(),
 });
 const batchBody = z.strictObject({ row_ids: z.array(recordId).min(1).max(MAX_ROSTER_BATCH) });
 const reissueBody = z.strictObject({ row_id: recordId });
@@ -47,6 +50,7 @@ const moderationBody = z.discriminatedUnion("action", [
 ]);
 
 type Options = {
+  protection?: typeof publicProtection;
   service?: RosterMeetingService;
   origin?: string;
   trustedProxy?: boolean;
@@ -112,6 +116,7 @@ function param(c: Context<AppBindings>, name: "slug" | "meeting" | "pass" | "pol
 
 export function createMeetingRosterRoutes(options: Options = {}) {
   const app = new Hono<AppBindings>();
+  const protection = options.protection ?? publicProtection;
   const service = options.service ?? new RosterMeetingService();
   const origin = options.origin ?? env.MEETING_ROSTER_ORIGIN;
   const proxy = options.trustedProxy ?? env.MEETING_GUEST_TRUST_PROXY === "1";
@@ -158,9 +163,15 @@ export function createMeetingRosterRoutes(options: Options = {}) {
 
   app.use(publicPath + "/*", headers);
   app.post(publicPath + "/verify", requireOrigin, async (c) => {
-    const parsed = verifyBody.safeParse(await json(c, 2048));
-    const result = await service.verify(parsed.success ? parsed.data : { pass: "", code: "" },
-      options.sourceIp?.(c) ?? clientIp(c, proxy), c.req.header("user-agent"));
+    const parsed = verifyBody.safeParse(await json(c, 8192));
+    const { pass, code, check, turnstileToken } = parsed.success ? parsed.data : { pass: "", code: "" };
+    const blocked = await protection.challenge(c, PUBLIC_ACTION.roster, pass, turnstileToken, rosterDenied);
+    if (blocked) return blocked;
+    const source = options.sourceIp?.(c) ?? (protection.enabled ? publicClientIp(c) : clientIp(c, proxy));
+    const result = await service.verify({ pass, code, check }, source, c.req.header("user-agent")).catch((error: unknown) => {
+      if (protection.enabled && error instanceof HttpError && error.status === 429) throw rosterDenied();
+      throw error;
+    });
     setCookie(c, cookieName, result.cookie, {
       path: publicPath, secure: true, httpOnly: true, sameSite: "Strict", maxAge: result.maxAge,
     });

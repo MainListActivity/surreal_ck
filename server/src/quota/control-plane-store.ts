@@ -8,6 +8,7 @@ import {
 } from "@surreal-ck/shared/native-quota";
 import { omitNullishSurrealFields } from "@surreal-ck/shared";
 import { DateTime, jsonify, StringRecordId } from "surrealdb";
+import { retryAtomicConflict } from "../db/atomic-conflict-retry";
 import { toStringRecordId } from "../db/surreal-values";
 import { stableSha256 } from "./canonical";
 import type {
@@ -699,7 +700,7 @@ export class SurrealQuotaControlPlaneStore
     leaseDurationMs: number;
   }): Promise<SweepLease | undefined> {
     const leaseExpiresAt = addMilliseconds(input.now, input.leaseDurationMs);
-    const claim = async () => await this.db.query(
+    const result = await retryAtomicConflict(() => this.db.query(
       `
         BEGIN TRANSACTION;
         INSERT INTO quota_sweep_cursor {
@@ -735,13 +736,7 @@ export class SurrealQuotaControlPlaneStore
         now: input.now,
         leaseExpiresAt,
       },
-    );
-    let result: unknown;
-    try {
-      result = await claim();
-    } catch {
-      result = await claim();
-    }
+    ));
     const row = optionalRecord(statementValue(result, 3));
     if (!row) return undefined;
     return Object.freeze({

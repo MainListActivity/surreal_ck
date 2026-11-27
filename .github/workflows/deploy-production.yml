@@ -44,6 +44,12 @@ jobs:
       VITE_OPS_OIDC_CLIENT_ID: ${{ vars.VITE_OPS_OIDC_CLIENT_ID }}
       VITE_OPS_OIDC_AUDIENCE: ${{ vars.VITE_OPS_OIDC_AUDIENCE }}
       VITE_OPS_API_BASE_URL: ${{ vars.VITE_OPS_API_BASE_URL }}
+      VITE_TURNSTILE_SITEKEY: ${{ vars.VITE_TURNSTILE_SITEKEY }}
+      ORIGIN_ENV_TURNSTILE_SECRET: ${{ secrets.ORIGIN_ENV_TURNSTILE_SECRET }}
+      ORIGIN_ENV_TURNSTILE_HOSTNAMES: ${{ secrets.ORIGIN_ENV_TURNSTILE_HOSTNAMES }}
+      ORIGIN_ENV_EDGE_PROXY_SECRET: ${{ secrets.ORIGIN_ENV_EDGE_PROXY_SECRET }}
+      ORIGIN_ENV_TRIAL_REQUEST_ORIGIN: ${{ secrets.ORIGIN_ENV_TRIAL_REQUEST_ORIGIN }}
+      ORIGIN_ENV_TRIAL_FEEDBACK_URL: ${{ secrets.ORIGIN_ENV_TRIAL_FEEDBACK_URL }}
     steps:
       - name: Validate required configuration
         run: |
@@ -65,6 +71,12 @@ jobs:
             VITE_OPS_OIDC_CLIENT_ID
             VITE_OPS_OIDC_AUDIENCE
             VITE_OPS_API_BASE_URL
+            VITE_TURNSTILE_SITEKEY
+            ORIGIN_ENV_TURNSTILE_SECRET
+            ORIGIN_ENV_TURNSTILE_HOSTNAMES
+            ORIGIN_ENV_EDGE_PROXY_SECRET
+            ORIGIN_ENV_TRIAL_REQUEST_ORIGIN
+            ORIGIN_ENV_TRIAL_FEEDBACK_URL
           )
           for name in "${required[@]}"; do
             if [ -z "${!name:-}" ]; then
@@ -190,6 +202,8 @@ jobs:
           SCK_DEPLOYMENT_ID: ${{ github.run_id }}-${{ github.run_attempt }}
           # 营销站登录按钮目标；未配置 vars 时由代码回退到生产应用域名。
           PUBLIC_APP_URL: ${{ vars.PUBLIC_APP_URL || 'https://l.maplayer.top/auth/login' }}
+          VITE_TURNSTILE_SITEKEY: ${{ vars.VITE_TURNSTILE_SITEKEY }}
+          PUBLIC_TURNSTILE_SITEKEY: ${{ vars.VITE_TURNSTILE_SITEKEY }}
         run: |
           set -euo pipefail
           pnpm --filter @surreal-ck/web build

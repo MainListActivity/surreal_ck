@@ -13,6 +13,8 @@
       "default": "./sql/workspace-template/index.ts"
     },
     "./platform-content-schema": "./sql/platform-content/index.ts",
+    "./public-entry": "./src/public-entry.ts",
+    "./turnstile-widget": "./src/turnstile-widget.ts",
     "./*": "./src/*"
   },
   "dependencies": {

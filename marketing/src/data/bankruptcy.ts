@@ -7,7 +7,7 @@ export const bankruptcyNavigation = [
 ] as const;
 
 export const capabilityCards: ReadonlyArray<{
-  icon: "scale" | "fileSpreadsheet" | "listChecks" | "bookMarked";
+  icon: "scale" | "fileSpreadsheet" | "listChecks" | "bookMarked" | "users" | "shield";
   eyebrow: string;
   title: string;
   description: string;
@@ -39,6 +39,18 @@ export const capabilityCards: ReadonlyArray<{
     title: "研究与引用留在工作台",
     description:
       "法律检索与研究在工作区内进行，研究结果连同引用与证据一并保存进资料库，与相关案件记录关联，随时回读出处。",
+  },
+  {
+    icon: "users",
+    eyebrow: "外部协作者门户",
+    title: "让外部人员在自己的入口填报",
+    description: "按名册分发专属链接，债权人提交申报或补正，管理人集中跟进、发布结论。",
+  },
+  {
+    icon: "shield",
+    eyebrow: "保密协同与会议",
+    title: "日常协作与债权人会议共用工作区",
+    description: "团队在独立工作区按权限协作。外部参会人可用专属链接和访问码在浏览器参会，免下载、免注册，会议媒体经自有会议服务传输。",
   },
 ];
 
@@ -81,9 +93,8 @@ export const onboardingSteps = [
 
 export const trialPoints = [
   {
-    title: "两条试用路径",
-    description:
-      "受邀客户的工作区与成员账号由邀请人开通；现有受邀试用维持其获批范围不变。具备显式试用资格的计费账户管理员，也可以登录后在产品内经显式确认启动七日 Pro 试用。产品暂不开放自助注册，并非所有新用户都能新建工作区。",
+    title: "申请与审核",
+    description: "机构可在线申请，审核通过后由运营人员安排开通七日 Pro 试用。已有邀请的团队可联系邀请人了解开通方式。",
   },
   {
     title: "第一阶段免费",
@@ -101,9 +112,8 @@ export const trialPoints = [
       "启动前展示完整试用范围（内容、额度、容量、期限），须人工勾选确认才开始计时；交付失败可按原请求重试，不重新计时。",
   },
   {
-    title: "内部验收配置",
-    description:
-      "当前试用配置为内部验收用途（fixture），用于受控验证，不代表正式商业承诺；语义检索的销售范围需另行获批。",
+    title: "正式试点范围",
+    description: "Plus 面向单一业务流程，Pro 面向同一工作区内的多表协作，Max 面向需要更大表数、字段及记录容量的团队。容量、AI 额度和法律内容范围以获批方案为准。",
   },
   {
     title: "反馈找邀请人",
@@ -117,8 +127,7 @@ export const factPoints = [
   "所有操作保留真实身份归因",
 ] as const;
 
-// 页脚合规链接位：文档上线前保持占位（href 为 null），文档就绪后填入实际路径即可。
-export const legalLinks: ReadonlyArray<{ label: string; href: string | null }> = [
-  { label: "隐私政策", href: null },
-  { label: "用户协议", href: null },
-];
+export const legalLinks = [
+  { label: "隐私政策", href: "/privacy/" },
+  { label: "用户协议", href: "/terms/" },
+] as const;
