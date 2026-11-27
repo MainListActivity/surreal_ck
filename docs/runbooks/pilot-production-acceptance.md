@@ -2,7 +2,9 @@
 
 ## 2026-11-27 UTC 核对
 
-生产应用读回 `a06046e1a16e7752acc48e274fe9af83e20e080f`，部署 ID `45838340844-1`。[部署运行](https://github.com/MainListActivity/surreal_ck/actions/runs/45838340844) 的 origin 与 Cloudflare 作业均成功。公开 `/health` 返回 200，数据库状态为 `up`。配额 worker 各循环上报 `ok: true`，其中 native-audit 同时保留 `lastError: QueryError`，需要运营对照日志。源站精确运行版本仍需通过运营只读接口核验。
+生产应用读回 `a06046e1a16e7752acc48e274fe9af83e20e080f`，部署 ID `45838340844-1`。[部署运行](https://github.com/MainListActivity/surreal_ck/actions/runs/45838340844) 的 origin 与 Cloudflare 作业均成功。公开 `/health` 返回 200，数据库状态为 `up`。配额 worker 各循环上报 `ok: true`，其中 native-audit 保留了 `lastError: QueryError`。源站精确运行版本仍需通过运营只读接口核验。
+
+生产日志确认，native-audit 的 `quota_sweep_cursor` 认领事务提交时遇到 RocksDB 的 `!qm` 键并发冲突。原实现只立即重试一次，连续冲突仍会结束该轮。修复复用 [PR #301](https://github.com/MainListActivity/surreal_ck/pull/301) 的事务重试策略，仅在确认事务已回滚的冲突上退避重跑整笔事务，最多执行 24 次（含首次）。耗尽后保留原始错误。发布后复核 native-audit 最近成功时间与新增冲突日志。
 
 | 验收项 | 已有证据 | 待核验 |
 | --- | --- | --- |
