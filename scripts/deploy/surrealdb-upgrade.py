@@ -170,12 +170,15 @@ def validate_image(image):
         raise RuntimeError("only a digest-pinned company fork image is supported")
 
 
-def request(url, data=None, headers=None):
+REQUEST_TIMEOUT = 60
+
+
+def request(url, data=None, headers=None, *, timeout=REQUEST_TIMEOUT):
     endpoint = urllib.parse.urlsplit(url)
     if (endpoint.scheme != "http" or endpoint.hostname != "127.0.0.1"
             or endpoint.username is not None or endpoint.fragment):
         raise RuntimeError("database request requires a loopback HTTP endpoint")
-    connection = http.client.HTTPConnection(endpoint.hostname, endpoint.port or 80, timeout=60)
+    connection = http.client.HTTPConnection(endpoint.hostname, endpoint.port or 80, timeout=timeout)
     try:
         path = urllib.parse.urlunsplit(("", "", endpoint.path, endpoint.query, ""))
         connection.request("GET" if data is None else "POST", path, body=data, headers=headers or {})
@@ -219,23 +222,42 @@ def credentials():
     return user, password
 
 
-def sql(endpoint, auth, query, namespace=None, database=None):
+def sql_batch(endpoint, auth, statements, namespace=None, database=None):
+    if not statements:
+        return []
     token = base64.b64encode(":".join(auth).encode()).decode()
     headers = {"Authorization": "Basic " + token, "Accept": "application/json", "Content-Type": "text/plain"}
     if namespace is not None:
         headers["surreal-ns"] = namespace
     if database is not None:
         headers["surreal-db"] = database
-    result = request(endpoint + "/sql", query.encode(), headers)
-    if not isinstance(result, list) or len(result) != 1 or result[0].get("status") != "OK":
+    query = ";\n".join(statement.rstrip().removesuffix(";") for statement in statements) + ";"
+    # A database's batched scans can exceed the budget of a single statement.
+    timeout = TRANSFER_TIMEOUT if len(statements) > 1 else REQUEST_TIMEOUT
+    result = request(endpoint + "/sql", query.encode(), headers, timeout=timeout)
+    if not isinstance(result, list) or len(result) != len(statements) or any(
+        not isinstance(entry, dict) or entry.get("status") != "OK" or "result" not in entry
+        for entry in result
+    ):
         raise RuntimeError("database inventory query failed")
-    return result[0]["result"]
+    return [entry["result"] for entry in result]
+
+
+def sql(endpoint, auth, query, namespace=None, database=None):
+    return sql_batch(endpoint, auth, [query], namespace, database)[0]
 
 
 def identifier(name):
     if not re.fullmatch(r"[A-Za-z0-9_]+", name):
         raise RuntimeError("unsupported namespace/database/table identifier; operator review required")
     return "`" + name + "`"
+
+
+def database_counts(endpoint, auth, namespace, database, tables):
+    names = sorted(name for name, definition in tables.items() if " AS SELECT " not in definition.upper())
+    statements = [f"SELECT count() AS count FROM {identifier(name)} GROUP ALL;" for name in names]
+    counts = sql_batch(endpoint, auth, statements, namespace, database)
+    return {name: rows[0]["count"] if rows else 0 for name, rows in zip(names, counts, strict=True)}
 
 
 def inventory(endpoint, auth):
@@ -245,13 +267,7 @@ def inventory(endpoint, auth):
         for database in sorted(sql(endpoint, auth, "INFO FOR NS;", namespace)["databases"]):
             identifier(database)
             tables = sql(endpoint, auth, "INFO FOR DB;", namespace, database)["tables"]
-            counts = {}
-            for table, definition in sorted(tables.items()):
-                if " AS SELECT " in definition.upper():
-                    continue
-                rows = sql(endpoint, auth, f"SELECT count() AS count FROM {identifier(table)} GROUP ALL;", namespace, database)
-                counts[table] = rows[0]["count"] if rows else 0
-            result[(namespace, database)] = counts
+            result[(namespace, database)] = database_counts(endpoint, auth, namespace, database, tables)
     if not result:
         raise RuntimeError("refusing to upgrade an empty/unreadable inventory")
     return result

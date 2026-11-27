@@ -42,8 +42,8 @@ def remote_digest(command, destination):
 
 
 def archive(bundle, output, certificate):
-    plaintext = bundle.parent / "backup.tar"
-    with tarfile.open(plaintext, "w") as tar:
+    plaintext = bundle.parent / "backup.tar.gz"
+    with tarfile.open(plaintext, "w:gz", compresslevel=1) as tar:
         tar.add(bundle / transfer.MANIFEST, arcname=transfer.MANIFEST)
         for artifact in sorted(bundle.glob("*.import.surql")):
             tar.add(artifact, arcname=artifact.name)
@@ -56,7 +56,7 @@ def unpack(archive_path, bundle, certificate, key):
     run("openssl", "cms", "-decrypt", "-binary", "-inform", "DER", "-in", str(archive_path),
         "-recip", str(certificate), "-inkey", str(key), "-out", str(plaintext))
     bundle.mkdir(mode=0o700)
-    with tarfile.open(plaintext, "r:") as tar:
+    with tarfile.open(plaintext, "r:*") as tar:
         for member in tar:
             if not member.isfile() or (member.name != transfer.MANIFEST and
                                        not re.fullmatch(r"[0-9]+\.import\.surql", member.name)):

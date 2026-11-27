@@ -2,6 +2,7 @@
 """将已停写的 RocksDB 数据逻辑导入专用 TiKV；不操作服务、流量或 RocksDB 目录。"""
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import json
 import os
@@ -16,6 +17,7 @@ spec.loader.exec_module(upgrade)
 
 MANIFEST = "transfer.json"
 ENDPOINT = re.compile(r"http://127\.0\.0\.1:([1-9][0-9]{0,4})/?")
+MAX_DATABASE_WORKERS = 4
 
 
 def check_server(endpoint, backend, git_sha):
@@ -44,15 +46,12 @@ def root_catalog(endpoint, auth):
 
 
 def table_catalog(endpoint, auth, ns, db, tables):
+    names = sorted(tables)
+    statements = [f"INFO FOR TABLE {upgrade.identifier(name)};" for name in names]
+    results = upgrade.sql_batch(endpoint, auth, statements, ns, db)
     return {
-        name: {
-            key: value
-            for key, value in upgrade.sql(
-                endpoint, auth, f"INFO FOR TABLE {upgrade.identifier(name)};", ns, db
-            ).items()
-            if key != "lives"
-        }
-        for name in sorted(tables)
+        name: {key: value for key, value in result.items() if key != "lives"}
+        for name, result in zip(names, results, strict=True)
     }
 
 
@@ -70,29 +69,58 @@ def quota_state(endpoint, auth, ns, db):
     }
 
 
-def snapshot(endpoint, auth):
+def snapshot(endpoint, auth, *, include_counts=True):
     namespaces, defaults, config = root_catalog(endpoint, auth)
     if not namespaces:
         raise RuntimeError("来源没有可迁移的命名空间")
-    counts = upgrade.inventory(endpoint, auth)
     output = {}
+    entries = []
     for ns, definition in sorted(namespaces.items()):
         upgrade.identifier(ns)
         metadata = upgrade.sql(endpoint, auth, "INFO FOR NS;", ns)
         if any(value for key, value in metadata.items() if key != "databases"):
             raise RuntimeError("存在需单独迁移的命名空间级定义")
-        databases = {}
+        output[ns] = {"definition": definition, "databases": {}}
         for db, ddl in sorted(metadata["databases"].items()):
-            catalog = upgrade.sql(endpoint, auth, "INFO FOR DB;", ns, db)
-            databases[db] = {
-                "definition": ddl,
-                "catalog": catalog,
-                "tables": table_catalog(endpoint, auth, ns, db, catalog["tables"]),
-                "counts": counts[ns, db],
-                "quota": quota_state(endpoint, auth, ns, db),
-            }
-        output[ns] = {"definition": definition, "databases": databases}
+            upgrade.identifier(db)
+            entries.append((ns, db, ddl))
+    if not entries:
+        raise RuntimeError("来源没有可迁移的数据库")
+
+    def collect(entry):
+        ns, db, ddl = entry
+        catalog = upgrade.sql(endpoint, auth, "INFO FOR DB;", ns, db)
+        tables = catalog["tables"]
+        metadata = {
+            "definition": ddl,
+            "catalog": catalog,
+            "tables": table_catalog(endpoint, auth, ns, db, tables),
+            "quota": quota_state(endpoint, auth, ns, db),
+        }
+        if include_counts:
+            metadata["counts"] = upgrade.database_counts(endpoint, auth, ns, db, tables)
+        return ns, db, metadata
+
+    with ThreadPoolExecutor(max_workers=MAX_DATABASE_WORKERS) as pool:
+        for ns, db, metadata in pool.map(collect, entries):
+            output[ns]["databases"][db] = metadata
     return {"namespaces": output, "defaults": defaults, "config": config}
+
+
+def without_counts(catalog):
+    return {
+        **catalog,
+        "namespaces": {
+            ns: {
+                **namespace,
+                "databases": {
+                    db: {key: value for key, value in metadata.items() if key != "counts"}
+                    for db, metadata in namespace["databases"].items()
+                },
+            }
+            for ns, namespace in catalog["namespaces"].items()
+        },
+    }
 
 
 def databases(catalog):
@@ -110,17 +138,22 @@ def export_bundle(endpoint, auth, path):
     path.mkdir(mode=0o700)
     private_workspace(path)
     catalog = snapshot(endpoint, auth)
-    artifacts = []
-    for i, (ns, db, _) in enumerate(databases(catalog["namespaces"])):
+
+    def export_entry(entry):
+        i, (ns, db, _) = entry
         raw = path / f"{i}.surql"
         restore = path / f"{i}.import.surql"
         upgrade.export_database(endpoint, auth, ns, db, raw)
         access = upgrade.transform_export(raw, restore)
-        artifacts.append({
+        return {
             "sha256": upgrade.digest(restore),
             "access_key_replacements": access["replacements"],
-        })
-    if snapshot(endpoint, auth) != catalog:
+        }
+
+    with ThreadPoolExecutor(max_workers=MAX_DATABASE_WORKERS) as pool:
+        artifacts = list(pool.map(export_entry, enumerate(databases(catalog["namespaces"]))))
+    # 来源已围栏。保留导出前的完整计数供恢复核对，导出后只重查目录和可信用量。
+    if snapshot(endpoint, auth, include_counts=False) != without_counts(catalog):
         raise RuntimeError("导出期间数据目录或配额状态发生变化")
     with upgrade.private_file(path / MANIFEST) as f:
         f.write(json.dumps({"version": 1, "catalog": catalog, "artifacts": artifacts}).encode())

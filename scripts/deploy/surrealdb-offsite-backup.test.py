@@ -83,6 +83,8 @@ class ArchiveTests(unittest.TestCase):
         expected = self.create_archive()
         backup.unpack(self.archive, self.restored, self.certificate, self.key)
 
+        with tarfile.open(self.work / "restore.tar", "r:gz") as tar:
+            self.assertEqual(set(tar.getnames()), set(expected))
         restored = {path.name: path.read_bytes() for path in self.restored.iterdir()}
         self.assertEqual(restored, expected)
         self.assertEqual(stat.S_IMODE(self.restored.stat().st_mode), 0o700)
@@ -106,16 +108,31 @@ class ArchiveTests(unittest.TestCase):
             entry = tarfile.TarInfo("../escaped.import.surql")
             entry.size = len(data)
             tar.addfile(entry, io.BytesIO(data))
-        subprocess.run(
-            ["openssl", "cms", "-encrypt", "-binary", "-stream", "-aes-256-gcm",
-             "-outform", "DER", "-in", str(plaintext), "-out", str(self.archive), str(self.certificate)],
-            check=True, capture_output=True,
-        )
+        self.encrypt_tar(plaintext)
 
         with self.assertRaisesRegex(RuntimeError, "归档成员无效"):
             backup.unpack(self.archive, self.restored, self.certificate, self.key)
         self.assertEqual(list(self.restored.iterdir()), [])
         self.assertFalse((self.work / "escaped.import.surql").exists())
+
+    def test_restores_legacy_uncompressed_archive(self):
+        plaintext = self.work / "legacy.tar"
+        data = b'{"version": 1}'
+        with tarfile.open(plaintext, "w") as tar:
+            entry = tarfile.TarInfo(backup.transfer.MANIFEST)
+            entry.size = len(data)
+            tar.addfile(entry, io.BytesIO(data))
+        self.encrypt_tar(plaintext)
+
+        backup.unpack(self.archive, self.restored, self.certificate, self.key)
+        self.assertEqual((self.restored / backup.transfer.MANIFEST).read_bytes(), data)
+
+    def encrypt_tar(self, plaintext):
+        subprocess.run(
+            ["openssl", "cms", "-encrypt", "-binary", "-stream", "-aes-256-gcm",
+             "-outform", "DER", "-in", str(plaintext), "-out", str(self.archive), str(self.certificate)],
+            check=True, capture_output=True,
+        )
 
 
 class CommandTests(unittest.TestCase):
