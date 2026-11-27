@@ -287,6 +287,24 @@ describe("server startup", () => {
     expect(calls).toEqual(["listen", "server:stop", "root:close"]);
   });
 
+  test("引用解析校对在监听之后后台运行，桥接进程不运行", async () => {
+    for (const backgroundWorkers of [true, false]) {
+      const calls: string[] = [];
+      const running = await startServer({
+        ...minimalDeps(),
+        backgroundWorkers,
+        reconcileCitationResolutions: async () => { calls.push("citations"); },
+        serve: () => {
+          calls.push("listen");
+          return { stop: () => {} };
+        },
+      });
+      await Bun.sleep(0);
+      await running.shutdown("SIGTERM");
+      expect(calls).toEqual(backgroundWorkers ? ["listen", "citations"] : ["listen"]);
+    }
+  });
+
   test("原生配额 runtime 启动失败时关闭 root 且不监听", async () => {
     const calls: string[] = [];
     const failure = new Error("quota-runtime-failed");

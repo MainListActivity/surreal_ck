@@ -239,24 +239,16 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
       message: cause instanceof Error ? cause.message : String(cause),
     });
   }
-  await ensureSchema();
-  await ensureContentSchema();
-  await assertContentMigrated();
-  await initPublisher();
-  await defineReader();
-  await initProjection();
-  try {
-    const result = await reconcileContentCitations();
-    if (envName !== "test") console.info("[platform-content] citation resolutions reconciled", result);
-  } catch (cause) {
-    console.error("[platform-content] citation resolution reconciliation failed during startup", {
-      message: cause instanceof Error ? cause.message : String(cause),
-    });
-  }
-  await seedAdmins();
-  await seedOperators();
-  await seedPlans();
-  await migrateWorkspaces();
+  await bootStep("system-schema", ensureSchema);
+  await bootStep("content-schema", ensureContentSchema);
+  await bootStep("content-migrated", assertContentMigrated);
+  await bootStep("content-publisher", initPublisher);
+  await bootStep("content-reader", defineReader);
+  await bootStep("content-projection", initProjection);
+  await bootStep("seed-admins", seedAdmins);
+  await bootStep("seed-operators", seedOperators);
+  await bootStep("seed-plans", seedPlans);
+  await bootStep("workspace-migrations", migrateWorkspaces);
 
   let quotaRuntime: NativeQuotaRuntimeHandle;
   try {
@@ -287,6 +279,8 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
   console.info("[server] listening", { host, port, env: envName, backgroundWorkers });
 
   const handles = backgroundWorkers ? startBackgroundWorkers() : {};
+  // 引用解析校对是可重放的派生数据，扫描全部引用需数分钟：放到监听之后由正式进程后台跑，桥接进程不跑。
+  const citationReconcile = backgroundWorkers ? runCitationReconcile() : undefined;
   const { reconcileLoop, funnelLoop, claimsRiskDispatcher, testSubjectReaper, officeReconciler } = handles;
 
   return {
@@ -308,12 +302,38 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
         });
         await stopEmployeeRuntime();
       }
+      citationReconcile?.abandon();
       await (deps.closeContentPublisherSession ?? closeContentPublisherSession)();
       await (deps.closeContentProjectionSession ?? closeContentProjectionSession)();
       await closeProbe();
       await closeRoot();
     },
   };
+
+  async function bootStep(step: string, run: () => Promise<unknown>): Promise<void> {
+    const startedAt = Date.now();
+    await run();
+    if (envName !== "test") console.info("[server] boot step", { step, durationMs: Date.now() - startedAt });
+  }
+
+  function runCitationReconcile(): { abandon(): void } {
+    let abandoned = false;
+    const startedAt = Date.now();
+    reconcileContentCitations().then(
+      (result) => {
+        if (envName !== "test") {
+          console.info("[platform-content] citation resolutions reconciled", { result, durationMs: Date.now() - startedAt });
+        }
+      },
+      (cause: unknown) => {
+        if (abandoned) return;
+        console.error("[platform-content] citation resolution reconciliation failed after startup", {
+          message: cause instanceof Error ? cause.message : String(cause),
+        });
+      },
+    );
+    return { abandon: () => { abandoned = true; } };
+  }
 
   function startBackgroundWorkers(): BackgroundWorkerHandles {
     // 校对心跳不阻塞 boot：启动失败只告警，server 照常对外服务（下次重启再试）。
