@@ -19,11 +19,14 @@ Status: ready-for-agent
 - [ ] `www.maplayer.top` 与 `/bankruptcy` 页面不再出现 `fixture` / “内部验收用途” 等工程测试文案，页脚《隐私政策》《用户协议》可点击打开且内容完整。
 - [ ] 官网明确呈现“破产债权管理 + 外部协作者门户 + 保密日常协同与免安装债权人会议”完整场景与上手路径。
 - [ ] 试用申请表单在真实浏览器提交后，正确写入公司反馈/商机通道并返回收件回执号；缺 Turnstile 令牌、超长输入或高频提交被拒绝；联系方式按既有隐私策略不进入模型上下文。
-- [ ] `marketing` 构建、类型检查及上线后生产 URL 可访问性检查全部通过。
+- [x] `marketing` 构建、类型检查及上线后生产 URL 可访问性检查通过。
 
 **依赖**：表单防滥用接入依赖 `04`（文案与协议页面可先独立完成上线）。  
 **验证方式**：`pnpm --filter @surreal-ck/marketing build` + 真实生产域名浏览器验收截图 + 反馈通道落库核对。
 
-## 2026-11-27 核对记录
+## 2026-11-27 UTC 生产实测
 
-官网源码与静态构建包含隐私政策、用户协议、试用表单和审核后开通说明。反馈转发使用既有幂等接收合约。正式条款待负责人或法务确认，线上反馈需配置来源和专用验收物料。 本地浏览器使用 Cloudflare 测试 sitekey、显式 Siteverify 夹具和模拟反馈回执完成提交。
+- 官网首页及 `/bankruptcy/`、`/privacy/`、`/terms/`、`/trial/` 均返回 200。破产页已移除 `fixture` 文案，试用页渲染生产 Turnstile 小组件。发布前构建与类型检查已有通过记录。[Quality gate](https://github.com/MainListActivity/surreal_ck/actions/runs/45977101085)
+- 试用 API 对缺令牌、伪造令牌及非法 Origin 均返回 403。
+- 老板端已启用 `surreal_ck` 的 `product_iteration`，反馈允许来源为 `https://www.maplayer.top` 和 `https://l.maplayer.top`。面向官网来源的 `OPTIONS https://company.maplayer.top/api/feedback/surreal_ck` 返回 204，响应头 `access-control-allow-origin` 为 `https://www.maplayer.top`。
+- 生产正向链路待一次真实浏览器人工通过 Turnstile 后提交，核对收件回执与公司反馈落库。正式条款仍以负责人或法务的确认记录为准。

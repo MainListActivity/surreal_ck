@@ -1,6 +1,6 @@
 # 接下来要做
 
-更新时间：2026-11-25（核对基线：`origin/main` PR `#301`；延续 `2026-11-17` 纠偏索引并补齐种子律所反馈的协同会议与生产就绪主线）
+更新于 2026-11-27 UTC，依据 `origin/main` 的 `c92bea36`（PR #332）及同日生产实测。
 
 本文是仓库级的下一步工作索引。详细需求、验收条件和讨论记录仍放在 `.scratch/<feature>/issues/*.md`；这里只维护当前优先级、开工顺序和容易忘掉的跨主题风险。
 
@@ -44,23 +44,23 @@
 
 依据：[`.scratch/pilot-production-readiness/PRD.md`](.scratch/pilot-production-readiness/PRD.md)，共 6 张可独立验证工单：
 
-- `01-surrealdb-offsite-backup-and-restore`（`ready-for-agent`）：生产 SurrealDB 加密异地自动备份与隔离恢复演练
+- `01-surrealdb-offsite-backup-and-restore`（`ready-for-agent`）：生产 R2 全量备份与异机恢复已验收，待挂接每日定时调度
 - `02-vps-port-lockdown-and-retire-legacy`（`ready-for-human`）：VPS 通配暴露端口收口（Grafana/Prometheus/Exporter/TiKV/PD）与退役 `sck-company-mcp` 清理
-- `03-marketing-commercial-and-legal-compliance`（`ready-for-agent`，表单部分依赖 `04`）：官网补齐《隐私政策》《用户协议》、移除 fixture 提示、补保密协同与债权人会议卖点、接半自助试用申请
-- `04-public-portal-turnstile-and-rate-limit`（`ready-for-agent`）：外部协作者门户、外部会议入口与官网表单统一接入 Turnstile 与双层限流
-- `05-native-quota-rollout-decision-and-cutover`（`needs-info`，依赖 `01`）：请老板裁决 PR `#59` 冻结状态并按 runbook 完成原生配额生产切流
+- `03-marketing-commercial-and-legal-compliance`（`ready-for-agent`）：官网和试用表单已上线，公司反馈 CORS 预检通过。待人工提交并核对生产回执与落库
+- `04-public-portal-turnstile-and-rate-limit`（`ready-for-agent`）：生产 Turnstile Widget 已启用，官网与门户的拒绝路径已实测，待生产正向提交和原生名册客户端衔接
+- `05-native-quota-rollout-decision-and-cutover`（`needs-info`）：生产只读基线和 P-01 首份回执已归档，待负责人书面解冻后按 runbook 分批切流
 - `06-legacy-done-tickets-production-evidence`（`ready-for-agent`）：补齐 VER-06 / VO-04 / VO-06 / claims-vertical / external-collaborator-portal（PR `#278`）生产验收证据与工单簿记纠偏
 
-2026-11-27 生产基线为 a06046e1。公开入口和官网改动待配置发布。隔离备份演练完成，生产异地归档待启用。PR #59 已关闭未合并，灰度切流仍待书面解冻。PR #278 的历史证据已核对，待独立 QA。[生产验真记录](docs/runbooks/pilot-production-acceptance.md)
+本次生产 TiKV 全量备份覆盖 15 个 namespace / 72 个 database，异机 RocksDB 恢复耗时 227.52 秒，核对零差异。官网、试用与公开入口实测已更新。生产原生配额的 5 个有策略库用量账本均可信，native-audit 在核对期间持续零报错。PR #59 已关闭且未合并，灰度切流待书面解冻。PR #278 已合并，业务复验见 P-06。[生产验真记录](docs/runbooks/pilot-production-acceptance.md)
 
 ## 已经落地的底座（不再派发实现）
 
 Web pivot 的五个需求簇（A 仓库重组、B Hono 骨架、C workspace-as-database、D1 Router workflow、D2 前端迁移）以及 D3 dashboard 迁移、运营迭代计划（OIP-01..18）、资源检索（RR-001..014）、工作区设置、个人中心、home 重设计全部 done。此外：
 
-- **订阅配额控制面**（`.scratch/native-resource-quota/`）：SCK-NQ-01..10 全部 done，SurrealDB fork 生产已于 2026-11-21 升级到 `sck-4.0.1-native-quota.1`（镜像 `e68a34a4`，rocksdb，依据维护运行 44890559131），compose 只接受 digest 固定的自有镜像。配额切流收口见主线 2 工单 `05`。
+- **订阅配额控制面**（`.scratch/native-resource-quota/`）：SCK-NQ-01..10 全部 done，生产实测基线为认证的 `4.0.1-native-quota.1` TiKV 后端，compose 只接受 digest 固定的自有镜像。配额切流收口见主线 2 工单 `05`。
 - **虚拟员工 runtime & 虚拟办公室**（`.scratch/virtual-employee-runtime/`、`.scratch/virtual-office/`）：VER-01..06、VO-01..06 全部 `Status: done`，实现已上 `main`。生产验收证据补齐见主线 2 工单 `06`。
 - **律师破产债权垂直簇**（`.scratch/claims-vertical/`）：01..06 均 `Status: done`，实现已上 `main`。生产复测收口见主线 2 工单 `06`。
-- **外部协作者门户**（`.scratch/external-collaborator-portal/`）：主干已合入（PR `#275` 等），生产验收记录见开放 PR `#278` 及主线 2 工单 `06`。
+- **外部协作者门户**（`.scratch/external-collaborator-portal/`）：主干已合入（PR `#275` 等），生产验收记录见已合并的 PR `#278` 及主线 2 工单 `06`。
 - **原生协同客户端与内部 P2P 会议底座**（`native-client/`、`native-call/`、`062-native-signaling.surql`、`069-native-meeting.surql`）：双人信令与工作区内部成员会议骨架已合入 `main`；UI v2 改版、托管 TURN、Web 互通、外部免安装参会与私有 SFU 见主线 1。
 - **shadcn 迁移 / server-skeleton / 法律内容 MCP / 法律内容持续采集**：实现工单均标 `done`（其中法律内容真实来源授权与持续采集未生产就绪，运营侧 bootstrap 现状需在主线 2 工单 `06` 核实）。
 - **AI 产品层**（`.scratch/agentic-ai-product/`）：全部 done / wontfix，作为语义参考保留。
