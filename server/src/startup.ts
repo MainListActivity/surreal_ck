@@ -1,6 +1,6 @@
 import { createApp } from "./app";
 import { env } from "./env";
-import { closeRootConnection, getRootDatabaseSession, initRootConnection, removeRootWorkspaceDatabase } from "./db/root-connection";
+import { closeRootConnection, getRootDatabaseSession, initRootConnection, removeRootWorkspaceDatabase, withRootDatabaseSessions } from "./db/root-connection";
 import { closeHealthProbe, initHealthProbe } from "./db/health-probe";
 import { ensureSystemSchema } from "./db/system-schema";
 import { ensurePlatformContentSchema } from "./content/schema";
@@ -126,13 +126,14 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
         { deepVerify: false },
       );
     });
+  // 逐行比对耗时较长，用独占会话，避免共享池按 LRU 回收正在使用的会话。
   const verifyContentCopy = deps.verifyLegacyContentCopy
-    ?? (envName === "test" ? async () => undefined : async () => {
+    ?? (envName === "test" ? async () => undefined : () => withRootDatabaseSessions(async (get) => {
       await assertLegacyContentMigrated(
-        await getRootDatabaseSession("_system"),
-        await getRootDatabaseSession(env.CONTENT_DATABASE),
+        await get("_system", env.SURREAL_NS),
+        await get(env.CONTENT_DATABASE, env.SURREAL_NS),
       );
-    });
+    }));
   const initPublisher = deps.initContentPublisherSession
     ?? (envName === "test" ? async () => undefined : initContentPublisherSession);
   const initProjection = deps.initContentProjectionSession
