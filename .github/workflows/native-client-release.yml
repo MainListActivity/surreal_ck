@@ -98,6 +98,45 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Verify public production identity and update inputs
+        if: github.event_name == 'release'
+        env:
+          SURREAL_UPDATE_CONFIG_JSON: ${{ vars.SURREAL_UPDATE_CONFIG_JSON }}
+          SURREAL_CK_OIDC_ISSUER: ${{ vars.SURREAL_CK_OIDC_ISSUER }}
+          SURREAL_CK_API_BASE_URL: ${{ vars.SURREAL_CK_API_BASE_URL }}
+          SURREAL_CK_OIDC_CLIENT_ID: ${{ vars.SURREAL_CK_OIDC_CLIENT_ID }}
+          SURREAL_CK_OIDC_AUDIENCE: ${{ vars.SURREAL_CK_OIDC_AUDIENCE }}
+          SURREAL_CK_NATIVE_REDIRECT_URI: ${{ matrix.target == 'android' && 'top.maplayer.collaboration:/auth/callback' || vars.SURREAL_CK_NATIVE_REDIRECT_URI }}
+          SURREAL_CK_OIDC_TOKEN_MODE: ${{ vars.SURREAL_CK_OIDC_TOKEN_MODE }}
+          SURREAL_CK_OIDC_ALLOWED_HOSTS: ${{ vars.SURREAL_CK_OIDC_ALLOWED_HOSTS }}
+          SURREAL_CK_SURREAL_URL: ${{ vars.SURREAL_CK_SURREAL_URL }}
+          SURREAL_CK_SURREAL_NS: ${{ vars.SURREAL_CK_SURREAL_NS }}
+        shell: bash
+        run: |
+          for optional in SURREAL_CK_OIDC_TOKEN_MODE SURREAL_CK_OIDC_ALLOWED_HOSTS; do
+            if [[ -z "${!optional}" ]]; then unset "$optional"; fi
+          done
+          python scripts/native-client/check-public-inputs.py --platform '${{ matrix.target }}' --require-configured
+          python - <<'PY'
+          import json
+          import os
+
+          keys = (
+              'OIDC_ISSUER', 'API_BASE_URL', 'OIDC_CLIENT_ID', 'OIDC_AUDIENCE',
+              'NATIVE_REDIRECT_URI', 'OIDC_TOKEN_MODE', 'OIDC_ALLOWED_HOSTS',
+              'SURREAL_URL', 'SURREAL_NS',
+          )
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as target:
+              config = json.loads(os.environ['SURREAL_UPDATE_CONFIG_JSON'])
+              print('SURREAL_UPDATE_CONFIG_JSON=' + json.dumps(config, separators=(',', ':')), file=target)
+              for key in keys:
+                  name = 'SURREAL_CK_' + key
+                  value = os.environ.get(name)
+                  if value is not None:
+                      if '\r' in value or '\n' in value:
+                          raise SystemExit('Public identity inputs must be single-line values')
+                      print(f'{name}={value}', file=target)
+          PY
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: native-client

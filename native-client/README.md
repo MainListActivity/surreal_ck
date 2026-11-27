@@ -72,11 +72,11 @@ Linux桌面已编译；初版headless模型/门禁/协作UI测试通过。GUI窗
 
 品牌图 assets/brand.svg 与 macOS App 图标 assets/app-icon/AppIcon.{svg,icns} 由 scripts/brand_icon.py（export-brand.py 调用）从仓库原有 Logo.svelte 精确导出几何与配色，不使用生成式近似 Logo。App 图标在 1024 画布内留 100 边距，用 resvg 0.46.0 栅格化为 iconutil 同组 PNG 条目，hash 锁定在 assets/app-icon/app-icon.lock.json。预览与正式 macOS 打包器都只通过 `install_app_icon()` 安装该 icns，复制前后校验源 hash 与资源内容，并拒绝旧的顶层 assets/icon.icns。Logo 变化后需运行 `python native-client/scripts/brand_icon.py generate` 并审核；`verify` 不需要栅格化器。
 
-macOS 正式发布由 CI 在临时钥匙串导入已有的 Developer ID 证书并保存 Apple 公证凭据。仓库管理员需配置 `MACOS_SIGN_IDENTITY`、`MACOS_SIGN_CERT_P12_BASE64`、`MACOS_SIGN_CERT_PASSWORD`、`APPLE_NOTARY_KEY_P8_BASE64`、`APPLE_NOTARY_KEY_ID`、`APPLE_NOTARY_ISSUER_ID` 和 `SPARKLE_PUBLIC_ED_KEY` secrets，以及固定的 `SPARKLE_FEED_URL` 仓库变量。Windows 如使用已有代码签名证书，签名 runner 的当前用户证书仓库须预装其私钥，并在 `WINDOWS_CERT_THUMBPRINT` 指定指纹。正式分发还需要获批的桌面媒体运行时和原生安装、文件接收及升级验收回执。
-
 ## 阶段二身份与平台配置
 
 客户端只从编译环境固化公开身份端点（SURREAL_CK_OIDC_ISSUER、SURREAL_CK_API_BASE_URL、SURREAL_CK_OIDC_CLIENT_ID、SURREAL_CK_OIDC_AUDIENCE、SURREAL_CK_NATIVE_REDIRECT_URI、SURREAL_CK_SURREAL_URL、SURREAL_CK_SURREAL_NS）。不得填入client secret。身份令牌只在应用后台内存存在，退出登录或关闭应用会丢弃，折叠面板不会退出；不会写文件/日志。Android自定义scheme身份回调已接入默认关闭的实验宿主，候选回调尚未获生产注册或设备登录验收。详细协议与注册阻塞见 ../native-identity/README.md。
+
+正式发布作业从同名仓库变量读取这些公开身份配置和 `SURREAL_UPDATE_CONFIG_JSON`。Android 使用包中注册的固定回调。CI 在编译前校验输入格式和回调契约。
 
 macos-auto-update为默认关闭的实验feature。启用需要真实Sparkle SDK、相应平台构建与正确签名清单；本地Linux编译不代表macOS桥已验证。默认发行包不启用Android桥；下面的实验宿主显式打包后才启用。
 
