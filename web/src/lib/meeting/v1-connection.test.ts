@@ -44,7 +44,7 @@ describe("V1 会议成员会话", () => {
 
   test("普通成员使用现有直连，不换票或关闭业务连接", async () => {
     const f = fixture(participant);
-    expect(await f.rpc.capability()).toBe("workspace connection");
+    expect(await f.connection.query("RETURN fn::meeting_capability()")).toEqual(["workspace connection"]);
     await f.connection.close();
     expect(f.exchange).not.toHaveBeenCalled();
     expect(f.connect).not.toHaveBeenCalled();
