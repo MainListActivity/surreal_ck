@@ -316,12 +316,50 @@ class SafetyTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 upgrade.host_env(path)
 
-    def test_inventory_quotes_numeric_leading_namespace_database_and_table(self):
+    def test_sql_batch_runs_one_scoped_request_and_returns_results_in_order(self):
+        endpoint = "http://127.0.0.1:1234"
+        responses = [{"status": "OK", "result": {"indexes": {}}}, {"status": "OK", "result": [{"count": 2}]}]
+        with patch.object(upgrade, "request", return_value=responses) as request:
+            self.assertEqual(upgrade.sql_batch(endpoint, ("test", "fixture"),
+                ["INFO FOR TABLE sample;", "SELECT count() FROM sample GROUP ALL;"],
+                "test_ns", "test_db"), [{"indexes": {}}, [{"count": 2}]])
+        request.assert_called_once()
+        url, body, headers = request.call_args.args
+        self.assertEqual(url, endpoint + "/sql")
+        self.assertEqual(body, b"INFO FOR TABLE sample;\nSELECT count() FROM sample GROUP ALL;")
+        self.assertEqual(headers["surreal-ns"], "test_ns")
+        self.assertEqual(headers["surreal-db"], "test_db")
+
+    def test_sql_batch_rejects_any_failed_or_missing_result_without_echoing_response(self):
+        success = {"status": "OK", "result": 1}
+        for responses in (
+            [success, {"status": "ERR", "result": "sensitive fixture payload"}],
+            [success],
+            [success, {"status": "OK"}],
+        ):
+            with self.subTest(responses=responses), patch.object(upgrade, "request", return_value=responses):
+                with self.assertRaisesRegex(RuntimeError, "^database inventory query failed$"):
+                    upgrade.sql_batch("http://127.0.0.1:1234", ("test", "fixture"), ["RETURN 1;", "RETURN 2;"])
+
+    def test_empty_sql_batch_does_not_send_a_request(self):
+        with patch.object(upgrade, "request") as request:
+            self.assertEqual(upgrade.sql_batch("http://127.0.0.1:1234", ("test", "fixture"), []), [])
+            request.assert_not_called()
+
+    def test_inventory_batches_table_counts_and_quotes_numeric_leading_identifiers(self):
         name = '953lb2sli64ha56neo25'
-        with patch.object(upgrade, 'sql', side_effect=[{'namespaces': {name: ''}},
-                {'databases': {name: ''}}, {'tables': {name: 'DEFINE TABLE fixture'}}, [{'count': 2}]]) as sql:
-            self.assertEqual(upgrade.inventory('http://fixture', ('test', 'test')), {(name, name): {name: 2}})
-            self.assertIn('FROM `' + name + '` GROUP ALL', sql.call_args.args[2])
+        auth = ("test", "test")
+        tables = {"z_empty": "DEFINE TABLE z_empty", "a_view": "DEFINE TABLE a_view AS SELECT * FROM fixture",
+                  name: "DEFINE TABLE fixture"}
+        with (patch.object(upgrade, "sql", side_effect=[{"namespaces": {name: ""}},
+                    {"databases": {name: ""}}, {"tables": tables}]) as sql,
+              patch.object(upgrade, "sql_batch", return_value=[[{"count": 2}], []]) as batch):
+            self.assertEqual(upgrade.inventory("http://fixture", auth), {(name, name): {name: 2, "z_empty": 0}})
+        self.assertEqual(sql.call_count, 3)
+        batch.assert_called_once_with("http://fixture", auth, [
+            f"SELECT count() AS count FROM `{name}` GROUP ALL;",
+            "SELECT count() AS count FROM `z_empty` GROUP ALL;",
+        ], name, name)
         for invalid in ('', 'db`', 'a.b', 'a\nb', 'db; DELETE data;'):
             with self.assertRaises(RuntimeError):
                 upgrade.identifier(invalid)
