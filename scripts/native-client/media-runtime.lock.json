@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "enabled_for_release": false,
-  "reason": "Windows runtime execution and corresponding-source compliance remain unverified; macOS native runtimes not built.",
+  "reason": "No desktop runtime has been approved for redistribution. The Windows entry records a legacy static audit.",
   "windows-x86_64": {
     "provider": "Gyan (linked from ffmpeg.org/download.html)",
     "version": "9.0.2",
@@ -96,6 +96,5 @@
     }
   },
   "macos-aarch64": null,
-  "macos-x86_64": null,
-  "windows-x86_64": null
+  "macos-x86_64": null
 }
