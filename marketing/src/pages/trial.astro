@@ -1,0 +1,105 @@
+---
+import { TRIAL_PATH } from "@surreal-ck/shared/public-entry";
+import DocumentLayout from "../layouts/DocumentLayout.astro";
+
+const sitekey = import.meta.env.PUBLIC_TURNSTILE_SITEKEY?.trim();
+const endpoint = new URL(TRIAL_PATH, import.meta.env.PUBLIC_TRIAL_API_ORIGIN || "https://l.maplayer.top").href;
+const scenes = ["破产债权管理", "外部协作者门户", "保密日常协同", "债权人会议"];
+---
+<DocumentLayout title="申请机构试用">
+  <p>提交后由运营人员审核，通过后可开通七日 Pro 试用。请勿填写案件资料或当事人信息。</p>
+  {sitekey ? (
+    <form id="trial-request" data-sitekey={sitekey} data-endpoint={endpoint}>
+      <label>机构名称 <input name="organization" required maxlength="100" autocomplete="organization" /></label>
+      <label>联系人 <input name="name" required maxlength="50" autocomplete="name" /></label>
+      <label>联系方式（电话或邮箱） <input name="contact" required minlength="3" maxlength="120" /></label>
+      <fieldset>
+        <legend>使用场景（至少选一项）</legend>
+        {scenes.map(scene => <label><input name="scenes" type="checkbox" value={scene} /> {scene}</label>)}
+      </fieldset>
+      <p>联系方式用于处理本次申请。<a href="/privacy/">查看隐私政策</a></p>
+      <div data-turnstile></div>
+      <button type="submit" disabled>提交申请</button>
+      <p role="status" aria-live="polite" data-result></p>
+    </form>
+  ) : <p>在线申请暂不可用。已受邀的机构可联系邀请人开通试用。</p>}
+</DocumentLayout>
+
+<script>
+  import { PUBLIC_ACTION } from "@surreal-ck/shared/public-entry";
+  import { mountTurnstile } from "@surreal-ck/shared/turnstile-widget";
+
+  const form = document.querySelector<HTMLFormElement>("#trial-request");
+  const widget = form?.querySelector<HTMLElement>("[data-turnstile]");
+  const message = form?.querySelector<HTMLElement>("[data-result]");
+  const button = form?.querySelector<HTMLButtonElement>("button");
+  const { sitekey, endpoint } = form?.dataset ?? {};
+  if (form && widget && message && button && sitekey && endpoint) {
+    let token = "";
+    let busy = false;
+    let accepted = false;
+    let lastPayload = "";
+    let requestKey = "";
+    const challenge = mountTurnstile(widget, sitekey, PUBLIC_ACTION.trial, value => {
+      token = value;
+      button.disabled = !token || busy || accepted;
+    }, error => { if (error) message.textContent = error; });
+    form.addEventListener("submit", async event => {
+      event.preventDefault();
+      if (!token || busy || accepted) return;
+      const formData = new FormData(form);
+      const scenes = formData.getAll("scenes");
+      if (!scenes.length) {
+        message.textContent = "请选择至少一种使用场景。";
+        return;
+      }
+      const fields = {
+        organization: String(formData.get("organization") ?? "").trim(),
+        name: String(formData.get("name") ?? "").trim(),
+        contact: String(formData.get("contact") ?? "").trim(),
+        scenes,
+      };
+      const payload = JSON.stringify(fields);
+      if (lastPayload !== payload) {
+        requestKey = crypto.randomUUID();
+        lastPayload = payload;
+      }
+      busy = true;
+      button.disabled = true;
+      message.textContent = "正在提交申请…";
+      try {
+        const response = await fetch(endpoint, {
+          method: "POST", credentials: "omit",
+          headers: { "content-type": "application/json" },
+          signal: AbortSignal.timeout(15_000),
+          body: JSON.stringify({ ...fields, requestKey, turnstileToken: token }),
+        });
+        const body = await response.json().catch(() => null) as { receipt?: string; error?: { message?: string } } | null;
+        if (response.status !== 202 || !body?.receipt) {
+          message.textContent = body?.error?.message ?? "提交失败，请重新验证后再试。";
+          return;
+        }
+        accepted = true;
+        form.reset();
+        challenge.remove();
+        message.textContent = `已收到申请。回执号：${body.receipt}`;
+      } catch {
+        message.textContent = "暂时无法确认提交结果，请重新验证后重试。";
+      } finally {
+        busy = false;
+        if (!accepted) challenge.reset();
+      }
+    });
+  }
+</script>
+
+<style>
+  form { display: grid; gap: 1rem; margin-top: 1.5rem; }
+  label { display: grid; gap: .3rem; }
+  input:not([type="checkbox"]) { padding: .55rem; border: 1px solid #78847c; border-radius: .35rem; }
+  fieldset { border: 1px solid #78847c; border-radius: .35rem; padding: .75rem; }
+  fieldset label { display: block; }
+  button { justify-self: start; background: #15482e; color: white; border-radius: .35rem; padding: .55rem 1rem; }
+  button:disabled { opacity: .6; }
+  [data-result] { overflow-wrap: anywhere; }
+</style>

@@ -10,6 +10,15 @@ const EnvSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   HOST: z.string().min(1).default("0.0.0.0"),
   PORT: z.coerce.number().int().positive().max(65535).default(8080),
+  // 发布桥接进程以 off 启动：只服务 HTTP，不跑后台循环，避免与正式进程并发执行（见 production-release runbook）。
+  SERVER_BACKGROUND_WORKERS: z.enum(["on", "off"]).default("on"),
+  SERVER_SHUTDOWN_DRAIN_MS: z.coerce.number().int().positive().default(10000),
+
+  EDGE_PROXY_SECRET: z.string().optional(),
+  TURNSTILE_SECRET: z.string().optional(),
+  TURNSTILE_HOSTNAMES: z.string().optional(),
+  TRIAL_REQUEST_ORIGIN: z.string().url().optional(),
+  TRIAL_FEEDBACK_URL: z.string().url().optional(),
 
   TURN_SHARED_SECRET: z.preprocess(
     (value) => typeof value === "string" && value.trim() === "" ? undefined : value,

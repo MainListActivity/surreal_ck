@@ -17,6 +17,15 @@ service=${ORIGIN_SERVICE:-surreal-ck-hono}
 env_file=${ORIGIN_ENV_FILE:-/etc/surreal-ck/server.env}
 health_url=${ORIGIN_HEALTH_URL:-http://127.0.0.1:8080/health}
 keep=${ORIGIN_KEEP_RELEASES:-8}
+# 零停机桥接：重启正式 unit 前，先在旁路端口以 transient unit 拉起新发布（只服务 HTTP、不跑后台循环），
+# Caddy 以 lb_policy first 在 8080 不可用时转发到桥接端口；正式进程健康后停掉桥接。ORIGIN_BRIDGE=0 关闭。
+bridge_enabled=${ORIGIN_BRIDGE:-1}
+bridge_unit=${ORIGIN_BRIDGE_UNIT:-${service}-bridge}
+bridge_port=${ORIGIN_BRIDGE_PORT:-8081}
+bridge_health_url=${ORIGIN_BRIDGE_HEALTH_URL:-http://127.0.0.1:${bridge_port}/health}
+bridge_health_cs=$(( ${ORIGIN_BRIDGE_HEALTH_TIMEOUT_SEC:-600} * 100 ))
+bridge_settle_sec=${ORIGIN_BRIDGE_SETTLE_SEC:-5}
+bun_bin=${ORIGIN_BUN_BIN:-$HOME/.bun/bin/bun}
 staging_dir=${ORIGIN_STAGING_DIR:-/tmp}
 export PATH="$HOME/.bun/bin:$PATH"
 
@@ -46,6 +55,7 @@ settled=0
 svc_touched=0
 env_dirty=0
 switched=0
+bridge_up=0
 
 health_clock_cs() {
   local uptime
@@ -54,10 +64,12 @@ health_clock_cs() {
   printf '%s\n' "$((10#${BASH_REMATCH[1]} * 100 + 10#${BASH_REMATCH[2]}))"
 }
 
+# healthy [url] [window-cs]：默认探测正式端口，窗口 240 秒。
 healthy() {
+  local url=${1:-$health_url} window=${2:-24000}
   local now deadline remaining limit pause duration body matched
   now=$(health_clock_cs) || return 1
-  deadline=$((now + 24000))
+  deadline=$((now + window))
   while (( (remaining = deadline - now) > 0 )); do
     # 为末秒保留短间隔重试，不让一次探测耗尽末秒。
     if ((remaining > 100)); then
@@ -67,7 +79,7 @@ healthy() {
     fi
     printf -v duration '%d.%02d' "$((limit / 100))" "$((limit % 100))"
     matched=0
-    if body=$(curl -fsS --max-time "$duration" "$health_url" 2>/dev/null) \
+    if body=$(curl -fsS --max-time "$duration" "$url" 2>/dev/null) \
       && grep -q '"status":"ok","surrealdb":"up"' <<<"$body"; then
       matched=1
     fi
@@ -716,11 +728,52 @@ cleanup_old_releases() {
 # 终态之后不再有主机状态变更。
 settle() {
   settled=1
+  stop_bridge
   echo "$2" >&2
   write_state "$1" "$2"
   release_lock
   if [ -n "$archive" ]; then rm -f "$archive"; fi
   if [ -n "$env_additions" ]; then rm -f "$env_additions"; fi
+}
+
+# 桥接进程以新发布目录（非 current）启动，端口与后台循环开关经进程环境覆盖（bun --env-file 不覆盖已有变量）。
+# systemd-run 失败返回 2（调用方退回停服重启路径）；桥接健康失败返回 1（新发布本身不可用）。
+start_bridge() {
+  set_phase bridge "starting $bridge_unit from $release on port $bridge_port"
+  sudo -n systemctl stop "$bridge_unit" >/dev/null 2>&1 || true
+  sudo -n systemctl reset-failed "$bridge_unit" >/dev/null 2>&1 || true
+  if ! sudo -n systemd-run --quiet --unit="$bridge_unit" --uid="$(id -un)" --gid="$(id -gn)" \
+    --working-directory="$release" -p KillMode=mixed -p TimeoutStopSec=30 \
+    --setenv=HOME="$HOME" --setenv=PATH="$PATH" \
+    --setenv=HOST=127.0.0.1 --setenv=PORT="$bridge_port" --setenv=SERVER_BACKGROUND_WORKERS=off \
+    "$bun_bin" run --env-file="$env_file" "$release/server/src/index.ts"; then
+    echo "bridge: systemd-run $bridge_unit failed; falling back to stop-and-restart" >&2
+    return 2
+  fi
+  bridge_up=1
+  : >"$state_dir/bridge.active"
+  if ! healthy "$bridge_health_url" "$bridge_health_cs"; then
+    echo "bridge: $bridge_unit did not become healthy on port $bridge_port" >&2
+    stop_bridge
+    return 1
+  fi
+  echo "bridge: $bridge_unit is serving $release_id on port $bridge_port"
+}
+
+stop_bridge() {
+  [ "${bridge_up:-0}" = 1 ] || return 0
+  bridge_up=0
+  rm -f "$state_dir/bridge.active"
+  echo "bridge: stopping $bridge_unit"
+  sudo -n systemctl stop "$bridge_unit" >/dev/null 2>&1 || echo "bridge: WARN failed to stop $bridge_unit" >&2
+}
+
+# 发布钩子只读预检：预检脚本存在且在 stdout 输出 pre-start: not-needed 才视为无需冻结写入；其余一律走停服执行。
+hook_not_needed() {
+  local check="$release/scripts/deploy/origin-pre-start-check.sh" out
+  [ -f "$check" ] || return 1
+  out=$(cd "$release" && ORIGIN_ENV_FILE="$env_file" bash "$check" 2>/dev/null) || return 1
+  grep -qx 'pre-start: not-needed' <<<"$out"
 }
 
 # 主机是否已被本激活改动（服务被停/切换过，或 env 已写入）。
@@ -799,6 +852,7 @@ rollback_refuse() {
 # 撤销门禁拒绝时门禁已自行拉回服务。
 rollback() {
   phase=rollback
+  stop_bridge
   write_state running "rolling back to ${previous:-none}: $1"
   echo "release $release_id failed: $1; restoring ${previous:-none}" >&2
   # 服务未停、current 未切换（只有 env 增改已写入，例如 env-write 阶段被中断）：运行中的版本没有变化。
@@ -1039,9 +1093,33 @@ run_release() {
     refuse_with_env_restore "revocation gate refused $release"
   fi
 
-  # 发布钩子：只有通过全部门禁与 env 写入之后才停服执行。
+  # 发布钩子：只有通过全部门禁与 env 写入之后才停服执行；只读预检确认无需冻结时跳过停服。
   hook="$release/scripts/deploy/origin-pre-start.sh"
-  if [ -f "$hook" ]; then
+  local frozen_hook=0
+  if [ -f "$hook" ] && ! hook_not_needed; then
+    frozen_hook=1
+  fi
+
+  # 零停机桥接：仅当服务仍在运行（撤销门禁未冻结写入）且钩子无需冻结时启用。
+  local main_health_cs=24000
+  if [ "$bridge_enabled" = 1 ] && [ "$frozen_hook" = 0 ] && service_active; then
+    local bridge_rc=0
+    start_bridge || bridge_rc=$?
+    if [ "$bridge_rc" -eq 1 ]; then
+      # 正式 unit 未被停止或切换（门禁未冻结）：只恢复 env，旧进程继续服务，不做回滚重启。
+      if [ "$env_dirty" = 1 ]; then
+        phase=env-restore
+        restore_env
+        env_dirty=0
+      fi
+      settle failed "bridge health check failed; $service kept serving ${previous:-the running release}; no service change"
+      exit 1
+    elif [ "$bridge_rc" -eq 0 ]; then
+      main_health_cs=$bridge_health_cs
+    fi
+  fi
+
+  if [ "$frozen_hook" = 1 ]; then
     svc_touched=1
     set_phase hook "stopping $service for pre-start hook"
     echo "stopping $service for pre-start hook"
@@ -1064,11 +1142,16 @@ run_release() {
     abort_forward "restart $service failed"
   fi
   set_phase health "probing health after restart"
-  if ! healthy; then
+  if ! healthy "$health_url" "$main_health_cs"; then
     abort_forward "health check failed"
   fi
   set_phase verified "release $release_id is healthy"
   echo "release $release_id healthy"
+  if [ "${bridge_up:-0}" = 1 ]; then
+    # 给 Caddy 被动健康标记过期的时间，流量回到正式端口后再停桥接。
+    sleep "$bridge_settle_sec"
+    stop_bridge
+  fi
   cleanup_old_releases
   settle healthy "release $release_id healthy"
   exit 0
@@ -1077,6 +1160,8 @@ run_release() {
 # recover_flow：--recover 后的工作进程。已验证健康且 current 指向本发布则直接收敛为 healthy，
 # 未改动主机则 failed，其余回滚到登记的 previous。
 recover_flow() {
+  # 被中断的工作进程可能留下桥接 unit；终态时一并停掉。
+  if [ -f "$state_dir/bridge.active" ]; then bridge_up=1; fi
   if ! host_changed; then
     settle failed "recovered: interrupted before any host change; nothing rolled back"
     exit 0

@@ -25,3 +25,7 @@ Status: ready-for-agent
 
 **依赖**：`01`、`04`、`05`。  
 **验证方式**：真实 fork 集成测试（正反例）+ 隐私浏览器（无登录态）与原生 APP 跨端实测。
+
+## 公开入口防滥用联动
+
+浏览器入口复用 P-04。站点配置、action、限流和原生名册发布前置见[公开入口保护手册](../../../docs/runbooks/public-entry-protection.md)。

@@ -7,6 +7,10 @@ settings:
 importers:
 
   .:
+    dependencies:
+      '@surreal-ck/shared':
+        specifier: workspace:*
+        version: link:shared
     devDependencies:
       oxlint:
         specifier: 1.48.0
@@ -20,6 +24,9 @@ importers:
       '@lucide/astro':
         specifier: ^1.28.0
         version: 1.28.0(astro@7.1.6(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3)(@types/node@25.6.0)(jiti@2.7.0)(yaml@2.8.4))
+      '@surreal-ck/shared':
+        specifier: workspace:*
+        version: link:../shared
       astro:
         specifier: ^7.1.6
         version: 7.1.6(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3)(@types/node@25.6.0)(jiti@2.7.0)(yaml@2.8.4)

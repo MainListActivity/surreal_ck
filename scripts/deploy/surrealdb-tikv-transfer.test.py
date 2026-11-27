@@ -29,11 +29,10 @@ class TransferTests(unittest.TestCase):
             },
             "artifacts": [{"sha256": transfer.upgrade.digest(self.dump), "access_key_replacements": 1}],
         }
-        (self.bundle / transfer.MANIFEST).write_text(json.dumps(self.manifest))
-        for module, name in ((transfer, "private_workspace"), (transfer.upgrade, "trusted_file")):
-            guard = patch.object(module, name)
-            guard.start()
-            self.addCleanup(guard.stop)
+        manifest = self.bundle / transfer.MANIFEST
+        manifest.write_text(json.dumps(self.manifest))
+        for path in (self.dump, manifest):
+            path.chmod(0o600)
 
     def test_rotation_requires_operator_acknowledgment_before_any_target_call(self):
         with patch.object(transfer, "root_catalog") as target:

@@ -1,3 +1,6 @@
+import { createTrialRequestRoutes, trialRequestCors } from "./routes/trial-request";
+import { TRIAL_PATH } from "@surreal-ck/shared/public-entry";
+import { publicProtection } from "./public-entry/protection";
 import { InternalAiStore } from "./internal-ai/store";
 import { InternalAiGate } from "./internal-ai/gate";
 import { CompanyStatusClient } from "./internal-ai/company-status";
@@ -472,10 +475,13 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     requireEvidence: env.NODE_ENV === "production" });
   evidenceJobs?.start();
   base.use("*", requestLogger);
+  base.use(TRIAL_PATH, trialRequestCors());
+  base.use("*", publicProtection.traffic);
   base.onError(handleError);
 
   return base
     .route("/", healthRoutes)
+    .route("/", createTrialRequestRoutes())
     .route("/", createAuthRoutes(
       options.oidcTokenExchange ?? createOidcTokenExchangeFromEnv(),
       options.oidcOpsBrowserProxy ?? createOidcOpsBrowserProxyFromEnv(),

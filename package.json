@@ -26,6 +26,9 @@
     "oxlint": "1.48.0",
     "typescript": "^5.9.3"
   },
+  "dependencies": {
+    "@surreal-ck/shared": "workspace:*"
+  },
   "workspaces": [
     "server",
     "web",
