@@ -49,13 +49,17 @@ type AppLike = {
 };
 
 type ServerHandle = {
-  stop(): void;
+  stop(closeActiveConnections?: boolean): void | Promise<void>;
 };
 
 export type StartServerDeps = {
   host?: string;
   port?: number;
   envName?: string;
+  /** off：只对外服务 HTTP，不启动任何后台循环（发布桥接进程用，见 production-release runbook）。 */
+  backgroundWorkers?: boolean;
+  /** 关停时等待在途请求结束的上限；超时后强制断开，再关闭数据库连接。 */
+  shutdownDrainMs?: number;
   probeNativeQuotaHttp?: () => Promise<unknown>;
   initRootConnection?: () => Promise<void>;
   /** /health 专用探测连接；test 环境默认不建立（探针断开即 /health 如实 down）。 */
@@ -102,6 +106,8 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
   const host = deps.host ?? env.HOST;
   const port = deps.port ?? env.PORT;
   const envName = deps.envName ?? env.NODE_ENV;
+  const backgroundWorkers = deps.backgroundWorkers ?? env.SERVER_BACKGROUND_WORKERS === "on";
+  const shutdownDrainMs = deps.shutdownDrainMs ?? env.SERVER_SHUTDOWN_DRAIN_MS;
   const probeNativeQuota = deps.probeNativeQuotaHttp
     ?? (() => probeNativeQuotaHttp({ production: envName === "production" }));
   const initRoot = deps.initRootConnection ?? initRootConnection;
@@ -254,7 +260,7 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
 
   let quotaRuntime: NativeQuotaRuntimeHandle;
   try {
-    quotaRuntime = startQuota();
+    quotaRuntime = backgroundWorkers ? startQuota() : { stop() {} };
   } catch (cause) {
     try {
       await closeRoot();
@@ -276,66 +282,19 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
     fetch: app.fetch,
     websocket: app.websocket,
   });
-  const nativeMeetingGc = envName === "test" ? undefined : startNativeMeetingGc();
+  const nativeMeetingGc = envName === "test" || !backgroundWorkers ? undefined : startNativeMeetingGc();
 
-  console.info("[server] listening", { host, port, env: envName });
+  console.info("[server] listening", { host, port, env: envName, backgroundWorkers });
 
-  // 校对心跳不阻塞 boot：启动失败只告警，server 照常对外服务（下次重启再试）。
-  let reconcileLoop: ReconcileLoopHandle | undefined;
-  try {
-    reconcileLoop = startReconcile();
-  } catch (cause) {
-    console.error("[server] failed to start reconcile heartbeat; continuing without it", {
-      message: cause instanceof Error ? cause.message : String(cause),
-    });
-  }
-
-  // 漏斗聚合心跳不阻塞 boot：失败只告警，下个周期重试。
-  let funnelLoop: FunnelLoopHandle | undefined;
-  try {
-    funnelLoop = startFunnel();
-  } catch (cause) {
-    console.error("[server] failed to start funnel aggregation loop; continuing without it", {
-      message: cause instanceof Error ? cause.message : String(cause),
-    });
-  }
-
-  let claimsRiskDispatcher: ClaimsRiskDispatcherHandle | undefined;
-  try {
-    claimsRiskDispatcher = startClaimsRisk();
-  } catch (cause) {
-    console.error("[server] failed to start claims risk dispatcher; continuing without it", {
-      message: cause instanceof Error ? cause.message : String(cause),
-    });
-  }
-
-  let testSubjectReaper: { stop(): void } | undefined;
-  try {
-    testSubjectReaper = startReaper();
-  } catch (cause) {
-    console.error("[server] failed to start test-subject reaper; continuing without it", {
-      message: cause instanceof Error ? cause.message : String(cause),
-    });
-  }
-
-  let officeReconciler: OfficeReconcilerHandle | undefined;
-  try {
-    officeReconciler = startOffice();
-  } catch (cause) {
-    console.error("[server] failed to start office reconciler; continuing without it", {
-      message: cause instanceof Error ? cause.message : String(cause),
-    });
-  }
-
-  // 虚拟员工 runtime 启动监督（VER06）：回装 secret 缓存 + 分批 reconcile
-  // active 员工的孤儿触发；失败不阻塞对外服务，进度经运维端点可观测。
-  void startEmployeeSupervision();
+  const handles = backgroundWorkers ? startBackgroundWorkers() : {};
+  const { reconcileLoop, funnelLoop, claimsRiskDispatcher, testSubjectReaper, officeReconciler } = handles;
 
   return {
     server,
     async shutdown(signal: string): Promise<void> {
       console.info("[server] shutting down", { signal });
-      server.stop();
+      // 先停监听并排空在途请求，再停后台循环、关数据库连接：关停窗口内的请求不会撞上已关闭的 root。
+      await drainServer(server, shutdownDrainMs);
       reconcileLoop?.stop();
       funnelLoop?.stop();
       await nativeMeetingGc?.stop();
@@ -343,14 +302,93 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
       testSubjectReaper?.stop();
       await claimsRiskDispatcher?.stop();
       await officeReconciler?.stop();
-      await stopEmployeeTriggerRuntime({
-        deadlineMs: env.EMPLOYEE_RUNTIME_SHUTDOWN_DEADLINE_MS,
-      });
-      await stopEmployeeRuntime();
+      if (backgroundWorkers) {
+        await stopEmployeeTriggerRuntime({
+          deadlineMs: env.EMPLOYEE_RUNTIME_SHUTDOWN_DEADLINE_MS,
+        });
+        await stopEmployeeRuntime();
+      }
       await (deps.closeContentPublisherSession ?? closeContentPublisherSession)();
       await (deps.closeContentProjectionSession ?? closeContentProjectionSession)();
       await closeProbe();
       await closeRoot();
     },
   };
+
+  function startBackgroundWorkers(): BackgroundWorkerHandles {
+    // 校对心跳不阻塞 boot：启动失败只告警，server 照常对外服务（下次重启再试）。
+    let reconcileLoop: ReconcileLoopHandle | undefined;
+    try {
+      reconcileLoop = startReconcile();
+    } catch (cause) {
+      console.error("[server] failed to start reconcile heartbeat; continuing without it", {
+        message: cause instanceof Error ? cause.message : String(cause),
+      });
+    }
+
+    // 漏斗聚合心跳不阻塞 boot：失败只告警，下个周期重试。
+    let funnelLoop: FunnelLoopHandle | undefined;
+    try {
+      funnelLoop = startFunnel();
+    } catch (cause) {
+      console.error("[server] failed to start funnel aggregation loop; continuing without it", {
+        message: cause instanceof Error ? cause.message : String(cause),
+      });
+    }
+
+    let claimsRiskDispatcher: ClaimsRiskDispatcherHandle | undefined;
+    try {
+      claimsRiskDispatcher = startClaimsRisk();
+    } catch (cause) {
+      console.error("[server] failed to start claims risk dispatcher; continuing without it", {
+        message: cause instanceof Error ? cause.message : String(cause),
+      });
+    }
+
+    let testSubjectReaper: { stop(): void } | undefined;
+    try {
+      testSubjectReaper = startReaper();
+    } catch (cause) {
+      console.error("[server] failed to start test-subject reaper; continuing without it", {
+        message: cause instanceof Error ? cause.message : String(cause),
+      });
+    }
+
+    let officeReconciler: OfficeReconcilerHandle | undefined;
+    try {
+      officeReconciler = startOffice();
+    } catch (cause) {
+      console.error("[server] failed to start office reconciler; continuing without it", {
+        message: cause instanceof Error ? cause.message : String(cause),
+      });
+    }
+
+    // 虚拟员工 runtime 启动监督（VER06）：回装 secret 缓存 + 分批 reconcile
+    // active 员工的孤儿触发；失败不阻塞对外服务，进度经运维端点可观测。
+    void startEmployeeSupervision();
+
+    return { reconcileLoop, funnelLoop, claimsRiskDispatcher, testSubjectReaper, officeReconciler };
+  }
+}
+
+type BackgroundWorkerHandles = {
+  reconcileLoop?: ReconcileLoopHandle;
+  funnelLoop?: FunnelLoopHandle;
+  claimsRiskDispatcher?: ClaimsRiskDispatcherHandle;
+  testSubjectReaper?: { stop(): void };
+  officeReconciler?: OfficeReconcilerHandle;
+};
+
+async function drainServer(server: ServerHandle, drainMs: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const drained = Promise.resolve(server.stop()).then(() => true);
+  const timedOut = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), drainMs);
+  });
+  const finished = await Promise.race([drained, timedOut]);
+  clearTimeout(timer);
+  if (!finished) {
+    console.warn("[server] in-flight requests still open after drain window; closing them", { drainMs });
+    await server.stop(true);
+  }
 }
