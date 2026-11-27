@@ -65,8 +65,14 @@ bun() {
   printf '%b' "\${T_CHECKER_OUT-grant_revocations=0\\n}"
 }
 sudo() { echo "sudo:$*" >>"$GATE_LOG"; if [ "\${1:-}" = "-n" ]; then shift; fi; "$@"; }
+systemd-run() {
+  echo "systemd-run:$*" >>"$GATE_LOG"
+  if [ -n "\${T_BRIDGE_RUN_FAIL:-}" ]; then return 1; fi
+  return 0
+}
 systemctl() {
   echo "systemctl:$*" >>"$GATE_LOG"
+  case "\${2:-}" in *-bridge) return 0 ;; esac
   local svc_state="\${T_ACTIVE:-active}"
   if [ -f "$GATE_LOG.unit" ]; then svc_state=$(cat "$GATE_LOG.unit"); fi
   case "\${1:-}" in
@@ -87,6 +93,7 @@ curl() {
   target=$(readlink "\${ORIGIN_ROOT}/current" 2>/dev/null || true)
   target=\${target##*/}
   if [ -n "\${T_HEALTH_BAD_ALL:-}" ]; then return 22; fi
+  case "$*" in *:8081/*) echo "curl-bridge:$target" >>"$GATE_LOG"; if [ -n "\${T_HEALTH_BAD_BRIDGE:-}" ]; then return 22; fi ;; esac
   if [ -n "\${T_HEALTH_BAD_RELEASE:-}" ] && [ "$target" = "$T_HEALTH_BAD_RELEASE" ]; then return 22; fi
   printf '%s' '{"status":"ok","surrealdb":"up"}'
 }
@@ -230,6 +237,7 @@ export type StageOpts = {
   envBody?: string;
   archiveBody?: string;
   hookBody?: string;
+  checkBody?: string;
 };
 
 // 生成发布包与 env 增改文件，放入暂存目录（与 CI 上传位置一致）。hookBody 存在时包含 scripts/deploy/origin-pre-start.sh。
@@ -247,6 +255,9 @@ export function stageRelease(h: Harness, id: string, opts: StageOpts = {}) {
     if (opts.hookBody !== undefined) {
       mkdirSync(join(payload, "scripts", "deploy"), { recursive: true });
       writeFileSync(join(payload, "scripts", "deploy", "origin-pre-start.sh"), opts.hookBody);
+      if (opts.checkBody !== undefined) {
+        writeFileSync(join(payload, "scripts", "deploy", "origin-pre-start-check.sh"), opts.checkBody);
+      }
       parts.push("scripts");
     }
     const proc = Bun.spawnSync(["tar", "-czf", archive, "-C", payload, ...parts]);
@@ -269,6 +280,7 @@ export function runEnv(h: Harness, extraEnv: Record<string, string> = {}): Recor
     ORIGIN_SERVICE: h.service,
     ORIGIN_KEEP_RELEASES: "8",
     REVOCATION_GATE_DRAIN_SEC: "0",
+    ORIGIN_BRIDGE: "0",
     T_ACTIVE: "",
     T_HEALTH_BAD_RELEASE: "",
     ...extraEnv,

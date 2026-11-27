@@ -45,6 +45,7 @@ const EXTRACTED = [
   "write_state",
   "release_lock",
   "settle",
+  "stop_bridge",
   "service_active",
   "ensure_service_running",
   "rollback_refuse",

@@ -210,6 +210,83 @@ describe("server startup", () => {
     ]);
   });
 
+  test("关停先停监听并等待在途请求排空，再停后台任务、关闭 root", async () => {
+    const calls: string[] = [];
+    let finishDrain = () => {};
+    const running = await startServer({
+      ...minimalDeps(),
+      serve: () => ({
+        stop: () => {
+          calls.push("server:stop");
+          return new Promise<void>((resolve) => {
+            finishDrain = () => {
+              calls.push("server:drained");
+              resolve();
+            };
+          });
+        },
+      }),
+      startQuotaRuntime: () => ({ stop: () => calls.push("quota:stop") }),
+      closeRootConnection: async () => { calls.push("root:close"); },
+    });
+
+    const shutdown = running.shutdown("SIGTERM");
+    await Bun.sleep(5);
+    expect(calls).toEqual(["server:stop"]);
+    finishDrain();
+    await shutdown;
+
+    expect(calls).toEqual(["server:stop", "server:drained", "quota:stop", "root:close"]);
+  });
+
+  test("排空超时后强制断开在途连接，再关闭 root", async () => {
+    const calls: string[] = [];
+    const running = await startServer({
+      ...minimalDeps(),
+      shutdownDrainMs: 10,
+      serve: () => ({
+        stop: (closeActiveConnections?: boolean) => {
+          calls.push(closeActiveConnections ? "server:stop-force" : "server:stop");
+          return closeActiveConnections ? Promise.resolve() : new Promise<void>(() => {});
+        },
+      }),
+      closeRootConnection: async () => { calls.push("root:close"); },
+    });
+
+    await running.shutdown("SIGTERM");
+
+    expect(calls).toEqual(["server:stop", "server:stop-force", "root:close"]);
+  });
+
+  test("backgroundWorkers=false（发布桥接进程）只服务 HTTP，不启动任何后台循环", async () => {
+    const calls: string[] = [];
+    const running = await startServer({
+      ...minimalDeps(),
+      backgroundWorkers: false,
+      serve: () => {
+        calls.push("listen");
+        return { stop: () => calls.push("server:stop") };
+      },
+      startQuotaRuntime: () => {
+        calls.push("quota:start");
+        return { stop() {} };
+      },
+      startReconcileLoop: () => {
+        calls.push("reconcile:start");
+        return { stop: () => {} };
+      },
+      startClaimsRiskDispatcher: () => {
+        calls.push("claims-risk:start");
+        return { async stop() {} };
+      },
+      closeRootConnection: async () => { calls.push("root:close"); },
+    });
+
+    await running.shutdown("SIGTERM");
+
+    expect(calls).toEqual(["listen", "server:stop", "root:close"]);
+  });
+
   test("原生配额 runtime 启动失败时关闭 root 且不监听", async () => {
     const calls: string[] = [];
     const failure = new Error("quota-runtime-failed");
@@ -522,3 +599,20 @@ describe("server startup", () => {
     ]);
   });
 });
+
+function minimalDeps() {
+  return {
+    host: "127.0.0.1",
+    port: 18080,
+    envName: "test",
+    probeNativeQuotaHttp: async () => {},
+    initRootConnection: async () => {},
+    verifyNativeQuotaRootHandshake: async () => {},
+    ensureSystemSchema: async () => {},
+    seedSystemAdmins: async () => {},
+    seedQuotaPlans: async () => {},
+    migrateAllWorkspaces: async () => ({ total: 0, migrated: [] }),
+    createApp: () => ({ fetch: () => new Response("ok") }),
+    startReconcileLoop: () => ({ stop: () => {} }),
+  };
+}
