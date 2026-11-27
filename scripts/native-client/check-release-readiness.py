@@ -97,6 +97,8 @@ def match_asset(p, item, repository, tag):
     if release['url'] != expected: raise ValueError('Signed primary URL does not identify this exact GitHub release asset')
     if item['platform']=='android' and item.get('signing')!='release-key':
         raise ValueError('Test-key Android APK cannot enter a production release')
+    if item['platform']=='macos' and item.get('signing')!='developer-id-notarized':
+        raise ValueError('macOS installer requires Developer ID signing and stapled notarization')
 
 def check_desktop_package(path, receipt):
     """Release admission is independent of the original build event/environment."""
@@ -115,6 +117,20 @@ def check_desktop_package(path, receipt):
         raise ValueError('Development-only or unapproved media cannot enter a production release')
     if package.get('release_eligible') is not True:
         raise ValueError('Desktop package is not release eligible')
+    if runtime.get('platform') != receipt['platform'] or runtime.get('arch') != receipt['host_arch']:
+        raise ValueError('Desktop media inventory target differs from the build receipt')
+    digest = runtime.get('manifest_sha256')
+    files = runtime.get('files')
+    if (
+        runtime.get('sealed_inventory_validation') != 'passed'
+        or not isinstance(digest, str)
+        or not re.fullmatch(r'[0-9a-f]{64}', digest)
+        or not isinstance(files, dict)
+        or not files
+        or files != runtime.get('packaged_files')
+        or any(not isinstance(value, str) or not re.fullmatch(r'[0-9a-f]{64}', value) for value in files.values())
+    ):
+        raise ValueError('Desktop media requires a sealed SHA256 inventory')
 
 
 def check_release(root, repository, tag, *, fetch=fetch_policy, verify_remote=remote_artifact, now=None):

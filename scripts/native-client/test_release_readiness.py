@@ -25,19 +25,30 @@ class ReadinessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {}, clear=True):
             root = pathlib.Path(tmp)
             receipt_path = root / 'windows-test-build-receipt.json'
-            receipt = dict(platform='windows')
+            receipt = dict(platform='windows', host_arch='x86_64')
             receipt_path.write_text(json.dumps(receipt), encoding='utf-8')
             evidence = root / 'windows-test-package-evidence.json'
             with self.assertRaisesRegex(ValueError, 'Missing desktop'):
                 readiness.check_release(root, 'owner/repo', 'v1')
+            files = {'bin/ffmpeg.exe': 'ab' * 32, 'bin/ffplay.exe': 'cd' * 32}
             base = dict(platform='windows', entrypoint='native-client/src/main.rs', release_eligible=True,
-                        media_runtime=dict(status='bundled', development_only=False, release_approved=True))
+                        media_runtime=dict(status='bundled', development_only=False, release_approved=True,
+                                           platform='windows', arch='x86_64', manifest_sha256='ef' * 32,
+                                           sealed_inventory_validation='passed', files=files, packaged_files=files))
             for fields in ({'development_only': True}, {'release_approved': False}, {'release_approved': None}, {'development_only': None}):
                 evidence.write_text(json.dumps(base | {'media_runtime': base['media_runtime'] | fields}), encoding='utf-8')
                 with self.subTest(fields=fields), self.assertRaisesRegex(ValueError, 'unapproved media'):
                     readiness.check_release(root, 'owner/repo', 'v1')
             evidence.write_text(json.dumps(base | {'release_eligible': False}), encoding='utf-8')
             with self.assertRaisesRegex(ValueError, 'not release eligible'):
+                readiness.check_release(root, 'owner/repo', 'v1')
+            for fields in ({'sealed_inventory_validation': None}, {'manifest_sha256': ''},
+                           {'packaged_files': files | {'bin/ffplay.exe': '12' * 32}}):
+                evidence.write_text(json.dumps(base | {'media_runtime': base['media_runtime'] | fields}), encoding='utf-8')
+                with self.subTest(fields=fields), self.assertRaisesRegex(ValueError, 'sealed SHA256'):
+                    readiness.check_release(root, 'owner/repo', 'v1')
+            evidence.write_text(json.dumps(base | {'media_runtime': base['media_runtime'] | {'arch': 'aarch64'}}), encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'target differs'):
                 readiness.check_release(root, 'owner/repo', 'v1')
             evidence.write_text(json.dumps(base), encoding='utf-8')
             readiness.check_desktop_package(receipt_path, receipt)
@@ -85,6 +96,19 @@ class OnlinePreflightTests(unittest.TestCase):
         for key,value in [('version','2.0.0'),('sha256','cd'*32),('size',11),('arch','aarch64'),('filename','wrong.tar.gz')]:
             bad=item|{key:value}
             with self.assertRaises(ValueError):readiness.match_asset(p,bad,'owner/repo','v1.0.0')
+
+    def test_mac_developer_id_alone_cannot_admit_installer(self):
+        p = self.candidate()
+        release = p['releases'][0]
+        release.update(platform='macos', arch='aarch64',
+                       url='https://github.com/owner/repo/releases/download/v1.0.0/app.dmg')
+        item = {key: release[key] for key in ('platform', 'arch', 'version', 'size', 'sha256')}
+        item['filename'] = 'app.dmg'
+        item['signing'] = 'developer-id-not-notarized'
+        with self.assertRaisesRegex(ValueError, 'stapled notarization'):
+            readiness.match_asset(p, item, 'owner/repo', 'v1.0.0')
+        item['signing'] = 'developer-id-notarized'
+        readiness.match_asset(p, item, 'owner/repo', 'v1.0.0')
 
     def test_remote_allowlist_rejected_before_network(self):
         for url in ('http://github.com/x','https://evil.example/x','https://u:p@github.com/x'):

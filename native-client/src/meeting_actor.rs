@@ -24,7 +24,9 @@ use std::{
 };
 use surreal_ck_native_call::{
     CaptureInput, CaptureStatus, Source as CallSource, VideoConfig,
-    meeting::{DeviceGate, GateOwner, MeetingEvent, MeetingMedia, MemberSlot, RenderSlot},
+    meeting::{
+        DeviceGate, GateOwner, MeetingEvent, MeetingMedia, MeetingVideoSink, MemberSlot, RenderSlot,
+    },
 };
 use surreal_ck_native_identity::{
     IceServer, IceServers, IdentityClient, Session, SurrealConfig,
@@ -78,10 +80,12 @@ fn ui_source(source: CallSource) -> Source {
     }
 }
 
+type VideoStreams = BTreeMap<(String, String, Source), FramePublisher>;
+
 /// 远端视频帧槽：每个成员×源一条 FramePublisher，sink 只写 mailbox，不解码。
 #[derive(Clone, Default)]
 pub struct VideoHub {
-    streams: Arc<Mutex<BTreeMap<(String, String, Source), FramePublisher>>>,
+    streams: Arc<Mutex<VideoStreams>>,
 }
 impl VideoHub {
     fn publisher(&self, member: &str, join: &str, source: Source) -> Option<FramePublisher> {
@@ -94,9 +98,7 @@ impl VideoHub {
         map.insert(key, stream.clone());
         Some(stream)
     }
-    fn sink(
-        &self,
-    ) -> Arc<dyn Fn(&RenderSlot, u16, u16, Bytes) -> Result<(), String> + Send + Sync> {
+    fn sink(&self) -> MeetingVideoSink {
         let hub = self.clone();
         Arc::new(move |slot: &RenderSlot, w: u16, h: u16, data: Bytes| {
             let Some(stream) = hub.publisher(
@@ -208,6 +210,7 @@ impl Bridge {
 }
 
 /// identity 工作循环入口：目录 Ready 后调用；调用方保证 session 是 participant 会话。
+#[allow(clippy::too_many_arguments)]
 pub fn start(
     shared: &Arc<Shared>,
     epoch: u64,
@@ -518,11 +521,16 @@ async fn run(
             command = commands.recv() => {
                 let Ok(command) = command else { break };
                 match command {
-                    MeetingCommand::Create => match meeting.create().await {
+                    command @ (MeetingCommand::Create | MeetingCommand::CreateFor { .. }) => match meeting.create().await {
                         Ok(()) => {
                             tick = tokio::time::interval(TICK);
                             eprintln!("[meeting] create ok");
                             emit_snapshot(&meeting, &edges, &contacts, &out, epoch, generation, &media).await;
+                            if let MeetingCommand::CreateFor { member_id } = command
+                                && let Err(error) = meeting.invite(&[member_id]).await
+                            {
+                                fail!(error);
+                            }
                             ice = ManagedIce::default();
                             retry_after.clear();
                             refresh_ice!();

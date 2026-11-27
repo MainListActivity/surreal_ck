@@ -239,8 +239,7 @@ impl Files {
         self.active.set(Some(id));
         self.inflight_source.set(self.selected.get_untracked());
         self.selected.set(None);
-        self.status
-            .set("等待对方确认接收，尚未发送文件内容。".into());
+        self.status.set("等待对方接收".into());
     }
     pub fn disconnected(self) {
         self.release_inflight();
@@ -270,10 +269,8 @@ impl Files {
             Event::Progress { id, done, total } => {
                 self.pending.set(None);
                 self.active.set(Some(id));
-                self.status.set(format!(
-                    "已传输 {} / {} 字节，仍待完整校验确认",
-                    done, total
-                ));
+                self.status
+                    .set(format!("正在传输 · {} / {} 字节", done, total));
             }
             Event::Completed { id, destination } => {
                 self.has_completed.set(true);
@@ -400,7 +397,7 @@ impl Files {
                         },
                     ))
                     .child(ui::action(
-                        "发送文件",
+                        "确认发送",
                         move || {
                             !connected.get()
                                 || self.selected.get().is_none()
@@ -424,7 +421,21 @@ impl Files {
                                 }
                             }
                         },
-                    )),
+                    ))
+                    .child(when(move || self.selected.get().is_some(), move || {
+                        ui::secondary("取消选择", move || self.requesting.get(), move || {
+                            if !self.permitted() || self.requesting.get_untracked() { return; }
+                            if let Some(path) = self.selected.get_untracked() {
+                                self.selected.set(None);
+                                if let Some(scope) = self.scope() {
+                                    scope.release_selected(path);
+                                } else {
+                                    crate::file_dialogs::release_source(path);
+                                }
+                                self.status.set("已取消选择".into());
+                            }
+                        })
+                    })),
             )
             .child(text(move || {
                 self.selected
@@ -440,8 +451,7 @@ impl Files {
                 move || {
                     let accept = accept.clone();
                     let reject = reject.clone();
-                    view()
-                        .gap_2()
+                    ui::card()
                         .child(text(move || {
                             self.pending
                                 .get()
@@ -461,6 +471,7 @@ impl Files {
                                     move || {
                                         self.choosing.get()
                                             || !connected.get()
+                                            || self.active.get().is_some()
                                             || !crate::file_dialogs::can_receive()
                                             || self.pending.get().is_some_and(|offer| {
                                                 !crate::file_dialogs::receive_size_supported(
@@ -501,6 +512,7 @@ impl Files {
                                                             .is_ok()
                                                         {
                                                             self.active.set(Some(offer.id));
+                                                            self.pending.set(None);
                                                         } else {
                                                             self.status.set(
                                                                 "操作队列已满，请重试。".into(),
@@ -519,14 +531,15 @@ impl Files {
                                 ))
                                 .child(ui::action(
                                     "拒绝",
-                                    move || self.pending.get().is_none(),
+                                    move || self.pending.get().is_none() || self.choosing.get() || !connected.get(),
                                     move || {
                                         if self.permitted() && let Some(offer) = self.pending.get_untracked()
                                             && reject
                                                 .try_send(Command::RejectFile(offer.id))
                                                 .is_ok()
                                         {
-                                            self.pending.set(None)
+                                            self.pending.set(None);
+                                            self.status.set("已拒绝文件".into());
                                         }
                                     },
                                 )),

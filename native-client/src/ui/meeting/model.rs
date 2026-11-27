@@ -161,6 +161,9 @@ impl MeetingError {
 #[derive(Clone, PartialEq, Debug)]
 pub enum MeetingCommand {
     Create,
+    CreateFor {
+        member_id: String,
+    },
     Invite {
         room_id: String,
         member_ids: Vec<String>,
@@ -172,7 +175,7 @@ pub enum MeetingCommand {
         source: Source,
         on: bool,
     },
-    /// 请求原生系统选择器；所选源由集成层交给媒体 actor，不在 UI 伪造。
+    /// 用户已明确选择当前平台提供的桌面采集源。
     StartShare,
     StopShare,
     RetryEdge {
@@ -203,6 +206,7 @@ pub struct MeetingView {
     pub invitations: Vec<Invitation>,
     pub contacts: Vec<Contact>,
     pub room: Option<RoomSnapshot>,
+    pub recently_ended: Vec<String>,
     pub managed_ice_unavailable: bool,
     pub devices: BTreeMap<Source, DeviceState>,
     pub error: Option<MeetingError>,
@@ -221,6 +225,7 @@ impl Default for MeetingView {
             invitations: vec![],
             contacts: vec![],
             room: None,
+            recently_ended: vec![],
             managed_ice_unavailable: false,
             devices: Source::ALL
                 .into_iter()
@@ -272,6 +277,14 @@ impl MeetingView {
                 .as_ref()
                 .is_some_and(|r| r.members.iter().any(|m| m.is_local && m.sharing))
     }
+    pub fn suppress_screen_playback(&self) -> bool {
+        self.device(Source::Screen) != DeviceState::Off || self.local_sharing()
+    }
+    fn remember_ended(&mut self, code: String) {
+        self.recently_ended.retain(|previous| previous != &code);
+        self.recently_ended.insert(0, code);
+        self.recently_ended.truncate(5);
+    }
     fn stop(&mut self) {
         self.stopping = true;
         if let Some(r) = &self.room
@@ -289,6 +302,7 @@ impl MeetingView {
         match update {
             MeetingUpdate::Capability(c) => {
                 if c != Capability::Available {
+                    self.recently_ended.clear();
                     self.stop();
                     self.room = None;
                     self.managed_ice_unavailable = false;
@@ -322,6 +336,9 @@ impl MeetingView {
                 }
                 self.versions.insert(r.room_id.clone(), r.version);
                 if r.state != RoomState::Active || r.local_join_id.is_none() {
+                    if r.state == RoomState::Ended {
+                        self.remember_ended(r.room_code.clone());
+                    }
                     self.stop();
                     self.notice = Some(
                         if r.state == RoomState::Expired {
@@ -365,6 +382,11 @@ impl MeetingView {
                 self.error = Some(e);
             }
             MeetingUpdate::Left | MeetingUpdate::Ended { .. } => {
+                if matches!(update, MeetingUpdate::Ended { by_host: true })
+                    && let Some(room) = &self.room
+                {
+                    self.remember_ended(room.room_code.clone());
+                }
                 self.stop();
                 self.room = None;
                 self.managed_ice_unavailable = false;

@@ -177,7 +177,7 @@ jobs:
         run: python scripts/native-client/install-sparkle-sdk.py
       - name: Detect macOS signing configuration
         id: macos-signing
-        if: matrix.target == 'macos'
+        if: matrix.target == 'macos' && github.event_name == 'release'
         env:
           SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
           SPARKLE_FEED_URL: ${{ vars.SPARKLE_FEED_URL }}
@@ -186,20 +186,51 @@ jobs:
         run: |
           if [[ -n "$SPARKLE_PUBLIC_ED_KEY" && -n "$SPARKLE_FEED_URL" && -n "$MACOS_SIGN_IDENTITY" ]]; then
             echo 'ready=true' >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.event_name }}" == 'release' ]]; then
+          else
             echo '::error::Signed macOS packaging requires the SPARKLE_PUBLIC_ED_KEY secret, SPARKLE_FEED_URL var and MACOS_SIGN_IDENTITY secret'
             exit 1
-          else
-            echo 'ready=false' >> "$GITHUB_OUTPUT"
-            echo '::notice::Signing configuration absent; skipping official macOS packaging (unsigned Apple Silicon coverage lives in native-client-macos-arm64-preview.yml)'
           fi
+      - name: Provision macOS Developer ID and notarization on the release runner
+        if: steps.macos-signing.outputs.ready == 'true'
+        env:
+          MACOS_SIGN_CERT_P12_BASE64: ${{ secrets.MACOS_SIGN_CERT_P12_BASE64 }}
+          MACOS_SIGN_CERT_PASSWORD: ${{ secrets.MACOS_SIGN_CERT_PASSWORD }}
+          APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        shell: bash
+        run: |
+          : "${MACOS_SIGN_CERT_P12_BASE64:?Missing Developer ID PKCS#12}" "${MACOS_SIGN_CERT_PASSWORD:?Missing PKCS#12 password}"
+          : "${APPLE_NOTARY_KEY_P8_BASE64:?Missing App Store Connect team API key}" "${APPLE_NOTARY_KEY_ID:?Missing API key ID}" "${APPLE_NOTARY_ISSUER_ID:?Missing API issuer ID}"
+          umask 077
+          cert="$(mktemp "$RUNNER_TEMP/developer-id.XXXXXX")"
+          key="$(mktemp "$RUNNER_TEMP/notary-key.XXXXXX")"
+          trap 'rm -f "$cert" "$key"' EXIT
+          printf '%s' "$MACOS_SIGN_CERT_P12_BASE64" | base64 -D > "$cert"
+          printf '%s' "$APPLE_NOTARY_KEY_P8_BASE64" | base64 -D > "$key"
+          keychain="$RUNNER_TEMP/native-release.keychain-db"
+          password="$(openssl rand -hex 32)"
+          echo "::add-mask::$password"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 5400 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$cert" -P "$MACOS_SIGN_CERT_PASSWORD" -k "$keychain" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain"
+          keychains=()
+          while IFS= read -r entry; do
+            [[ -z "$entry" ]] || keychains+=("$entry")
+          done < <(security list-keychains -d user | sed -E 's/^[[:space:]]*"//; s/"$//')
+          security list-keychains -d user -s "$keychain" "${keychains[@]}"
+          xcrun notarytool store-credentials native-release --keychain "$keychain" \
+            --key "$key" --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER_ID"
+          printf 'APPLE_NOTARY_PROFILE=native-release\nAPPLE_NOTARY_KEYCHAIN=%s\n' "$keychain" >> "$GITHUB_ENV"
       - name: Verify complete native renderer (macOS or Windows MSVC)
         if: matrix.target == 'macos' || matrix.target == 'windows'
         shell: bash
         run: bash scripts/native-client/check-renderer.sh '${{ matrix.target }}'
       - name: Build desktop entry point
         if: matrix.target != 'android'
-        run: cargo build --manifest-path native-client/Cargo.toml --features desktop --bin surreal-collaboration
+        run: cargo build --locked --manifest-path native-client/Cargo.toml --features desktop --bin surreal-collaboration
       - name: Install pinned NSH distribution
         if: matrix.target == 'linux' || matrix.target == 'android'
         run: python scripts/native-client/install-nsh.py
@@ -209,9 +240,14 @@ jobs:
           SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
           SPARKLE_FEED_URL: ${{ vars.SPARKLE_FEED_URL }}
           MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
-          APPLE_NOTARY_PROFILE: ${{ secrets.APPLE_NOTARY_PROFILE }}
         shell: bash
         run: bash scripts/native-client/package.sh '${{ matrix.target }}'
+      - name: Delete temporary macOS signing keychain
+        if: always() && steps.macos-signing.outputs.ready == 'true'
+        shell: bash
+        run: |
+          keychain="$RUNNER_TEMP/native-release.keychain-db"
+          if [[ -f "$keychain" ]]; then security delete-keychain "$keychain"; fi
       - name: Prepare independently pinned Windows development media (never Release)
         if: matrix.target == 'windows' && github.event_name == 'push' && github.ref == 'refs/heads/feat/native-collaboration-bootstrap'
         shell: bash
@@ -220,6 +256,8 @@ jobs:
         run: python scripts/native-client/fetch-development-media.py "$RUNNER_TEMP/verified-development-media"
       - name: Build Windows installer
         if: matrix.target == 'windows'
+        env:
+          WINDOWS_CERT_THUMBPRINT: ${{ secrets.WINDOWS_CERT_THUMBPRINT }}
         shell: pwsh
         run: ./scripts/native-client/package-windows.ps1
       - name: Build explicitly requested experimental Android media artifact
