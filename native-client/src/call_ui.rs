@@ -758,45 +758,23 @@ impl CallUi {
         }
     }
 
-    /// 壳层顶部的紧凑隐私指示：一行汇总真实采集状态，不占满消息区。
-    pub fn privacy_compact(self) -> impl IntoElement {
-        self.privacy_strip(false)
+    pub fn occupied_sources(self) -> Vec<Source> {
+        [Source::Microphone, Source::Camera, Source::Screen]
+            .into_iter()
+            .filter(|source| self.captures[index(*source)].get().attention())
+            .collect()
     }
 
-    fn privacy_strip(self, on_dark: bool) -> impl IntoElement {
-        view()
-            .flex_row()
-            .flex_wrap()
-            .gap_2()
-            .items_center()
-            .child(
-                text(move || {
-                    format!(
-                        "{} · {} · {}",
-                        self.privacy_text(Source::Microphone),
-                        self.privacy_text(Source::Camera),
-                        self.privacy_text(Source::Screen)
-                    )
-                })
-                .text_size(px(12.0))
-                .text_color(move || {
-                    if self.needs_stop() {
-                        rgb(0xC4473A).to_hsla()
-                    } else if on_dark {
-                        rgb(0xB8B2A8).to_hsla()
-                    } else {
-                        rgb(0x64615C).to_hsla()
-                    }
-                }),
-            )
-            .child(when(
-                move || self.audio_unconfirmed.get() || self.video_unconfirmed.get(),
-                || {
-                    text("远端媒体关闭未获确认，请关闭接收或断开并检查本机播放状态。")
-                        .text_size(px(12.0))
-                        .text_color(move || theme().destructive)
-                },
-            ))
+    pub fn stop_control(self, sender: Sender<Command>, source: Source) -> impl IntoElement {
+        ui::danger(
+            match source {
+                Source::Microphone => "关闭麦克风",
+                Source::Camera => "关闭摄像头",
+                Source::Screen => "停止共享",
+            },
+            move || !self.captures[index(source)].get().attention(),
+            move || self.stop(&sender, source),
+        )
     }
 
     fn privacy_text(self, source: Source) -> String {
@@ -828,16 +806,7 @@ impl CallUi {
 
     fn privacy_line(self, source: Source) -> impl IntoElement {
         let slot = index(source);
-        text(move || {
-            let state = self.captures[slot].get();
-            let target = self.requested_targets[slot].get();
-            if state.attention() && !target.is_empty() {
-                format!("{} · {} · 目标：{}", name(source), state.label(), target)
-            } else {
-                format!("{} · {}", name(source), state.label())
-            }
-        })
-        .text_color(move || {
+        text(move || self.privacy_text(source)).text_color(move || {
             if self.captures[slot].get().attention() {
                 theme().destructive
             } else {

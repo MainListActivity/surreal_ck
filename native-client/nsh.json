@@ -1,8 +1,8 @@
 {
   "name": "Surreal Collaboration",
   "id": "top.maplayer.collaboration",
-  "version": "0.1.2",
-  "build": 1,
+  "version": "0.1.3",
+  "build": 2,
   "rust": ".",
   "root": "App",
   "appearance": "system",

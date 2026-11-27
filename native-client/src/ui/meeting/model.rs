@@ -144,6 +144,7 @@ pub enum MeetingError {
     NotFoundOrNotInvited,
     Full,
     Expired,
+    SelfInvite,
     Retryable { msg: String },
 }
 impl MeetingError {
@@ -153,6 +154,7 @@ impl MeetingError {
             Self::NotFoundOrNotInvited => "无法加入会议，请检查会议号或联系邀请人。".to_owned(),
             Self::Full => "会议已满员，最多支持 4 人。".to_owned(),
             Self::Expired => "会期已失效，请重新创建会议。".to_owned(),
+            Self::SelfInvite => "无法邀请自己参加会议。".to_owned(),
             Self::Retryable { msg } => format!("操作失败：{msg}"),
         }
     }
@@ -161,6 +163,9 @@ impl MeetingError {
 #[derive(Clone, PartialEq, Debug)]
 pub enum MeetingCommand {
     Create,
+    CreateFor {
+        member_id: String,
+    },
     Invite {
         room_id: String,
         member_ids: Vec<String>,
@@ -172,7 +177,7 @@ pub enum MeetingCommand {
         source: Source,
         on: bool,
     },
-    /// 请求原生系统选择器；所选源由集成层交给媒体 actor，不在 UI 伪造。
+    /// 用户已明确选择当前平台提供的桌面采集源。
     StartShare,
     StopShare,
     RetryEdge {
@@ -189,6 +194,7 @@ pub enum MeetingUpdate {
     Capability(Capability),
     Invitations(Vec<Invitation>),
     Contacts(Vec<Contact>),
+    LocalMember(String),
     Snapshot(RoomSnapshot),
     ManagedIceUnavailable(bool),
     Device { source: Source, state: DeviceState },
@@ -202,7 +208,9 @@ pub struct MeetingView {
     pub capability: Capability,
     pub invitations: Vec<Invitation>,
     pub contacts: Vec<Contact>,
+    pub local_member: Option<String>,
     pub room: Option<RoomSnapshot>,
+    pub recently_ended: Vec<String>,
     pub managed_ice_unavailable: bool,
     pub devices: BTreeMap<Source, DeviceState>,
     pub error: Option<MeetingError>,
@@ -220,7 +228,9 @@ impl Default for MeetingView {
             },
             invitations: vec![],
             contacts: vec![],
+            local_member: None,
             room: None,
+            recently_ended: vec![],
             managed_ice_unavailable: false,
             devices: Source::ALL
                 .into_iter()
@@ -272,6 +282,14 @@ impl MeetingView {
                 .as_ref()
                 .is_some_and(|r| r.members.iter().any(|m| m.is_local && m.sharing))
     }
+    pub fn suppress_screen_playback(&self) -> bool {
+        self.device(Source::Screen) != DeviceState::Off || self.local_sharing()
+    }
+    fn remember_ended(&mut self, code: String) {
+        self.recently_ended.retain(|previous| previous != &code);
+        self.recently_ended.insert(0, code);
+        self.recently_ended.truncate(5);
+    }
     fn stop(&mut self) {
         self.stopping = true;
         if let Some(r) = &self.room
@@ -289,6 +307,8 @@ impl MeetingView {
         match update {
             MeetingUpdate::Capability(c) => {
                 if c != Capability::Available {
+                    self.local_member = None;
+                    self.recently_ended.clear();
                     self.stop();
                     self.room = None;
                     self.managed_ice_unavailable = false;
@@ -299,6 +319,7 @@ impl MeetingView {
             }
             MeetingUpdate::Invitations(i) => self.invitations = i,
             MeetingUpdate::Contacts(c) => self.contacts = c,
+            MeetingUpdate::LocalMember(id) => self.local_member = Some(id),
             MeetingUpdate::ManagedIceUnavailable(unavailable) => {
                 self.managed_ice_unavailable = unavailable;
             }
@@ -322,6 +343,9 @@ impl MeetingView {
                 }
                 self.versions.insert(r.room_id.clone(), r.version);
                 if r.state != RoomState::Active || r.local_join_id.is_none() {
+                    if r.state == RoomState::Ended {
+                        self.remember_ended(r.room_code.clone());
+                    }
                     self.stop();
                     self.notice = Some(
                         if r.state == RoomState::Expired {
@@ -365,6 +389,11 @@ impl MeetingView {
                 self.error = Some(e);
             }
             MeetingUpdate::Left | MeetingUpdate::Ended { .. } => {
+                if matches!(update, MeetingUpdate::Ended { .. })
+                    && let Some(room) = &self.room
+                {
+                    self.remember_ended(room.room_code.clone());
+                }
                 self.stop();
                 self.room = None;
                 self.managed_ice_unavailable = false;
@@ -372,7 +401,7 @@ impl MeetingView {
                 self.notice = Some(
                     match update {
                         MeetingUpdate::Ended { by_host: true } => "主持人已结束会议",
-                        MeetingUpdate::Ended { by_host: false } => "会议已过期",
+                        MeetingUpdate::Ended { by_host: false } => "会议已结束",
                         _ => "已离开会议",
                     }
                     .into(),
@@ -405,6 +434,11 @@ impl MeetingState {
     pub fn prepare(self, command: &MeetingCommand) {
         let mut v = self.get();
         match command {
+            MeetingCommand::Create
+            | MeetingCommand::CreateFor { .. }
+            | MeetingCommand::Join { .. } => {
+                v.error = None;
+            }
             MeetingCommand::Leave | MeetingCommand::End => v.stop(),
             MeetingCommand::SetDevice { source, on } => {
                 if v.device(*source) == DeviceState::StopUnconfirmed {

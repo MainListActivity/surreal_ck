@@ -25,6 +25,18 @@ fn snapshot_versions_only_advance() {
     assert_eq!(view.room.unwrap().version, 3);
 }
 
+#[test]
+fn participant_end_adds_the_room_to_recently_ended() {
+    let mut view = MeetingView::default();
+    let room = room();
+    let code = room.room_code.clone();
+    view.apply(MeetingUpdate::Snapshot(room));
+    view.apply(MeetingUpdate::Ended { by_host: false });
+    assert_eq!(view.recently_ended, vec![code]);
+    assert!(view.room.is_none());
+    assert_eq!(view.notice.as_deref(), Some("会议已结束"));
+}
+
 #[component]
 fn StopPreview() -> impl IntoElement {
     let state = MeetingState::new();
@@ -61,7 +73,7 @@ fn local_leave_disables_display_before_dispatch_and_retains_privacy_ui() -> Resu
     app.wait_for("隐私告警：麦克风停止未确认，请检查系统设备指示灯。")?;
     app.press("麦克风 · 停止未确认，请检查系统设备指示灯")?;
     app.wait_for("隐私告警：麦克风停止未确认，请检查系统设备指示灯。")?;
-    assert!(app.press("开始会议").is_err());
+    assert!(app.press("立即开会").is_err());
     Ok(())
 }
 
@@ -202,6 +214,13 @@ fn Preview() -> impl IntoElement {
     view().child(meeting_page(
         state,
         move |cmd| {
+            if matches!(&cmd, MeetingCommand::Join { room_code } if room_code == "RETRY001") {
+                assert!(state.get().error.is_none());
+                state.apply(MeetingUpdate::Error(MeetingError::Retryable {
+                    msg: "请检查网络".into(),
+                }));
+                return;
+            }
             for update in mock.borrow_mut().handle(cmd) {
                 state.apply(update);
             }
@@ -231,7 +250,7 @@ fn unavailable_ui_explains_why() -> Result<(), String> {
     let mut app = Headless::start(EngineConfig::new(Root::of::<UnavailablePreview>()))
         .map_err(|e| e.to_string())?;
     app.wait_for(UnavailableReason::VersionDisabled.message())?;
-    assert!(app.press("开始会议").is_err());
+    assert!(app.press("立即开会").is_err());
     assert!(app.press("加入").is_err());
     Ok(())
 }
@@ -240,7 +259,13 @@ fn unavailable_ui_explains_why() -> Result<(), String> {
 fn create_invite_share_end_and_leave_ui() -> Result<(), String> {
     let mut app = start_preview()?;
     assert!(app.press("加入").is_err());
-    app.press("开始会议")?;
+    app.press("立即开会")?;
+    app.wait_for("会前检查")?;
+    assert!(!app.shows("我 · 主持人 · 本人"));
+    app.press_key("escape")?;
+    assert!(!app.shows("会前检查"));
+    app.press("立即开会")?;
+    app.press("确认入会")?;
     app.wait_for("我 · 主持人 · 本人")?;
     app.press("邀请成员")?;
     app.press("☐ 林晓")?;
@@ -249,9 +274,14 @@ fn create_invite_share_end_and_leave_ui() -> Result<(), String> {
     app.wait_for("参会人数：3 / 4")?;
     app.wait_for("直连")?;
     app.press("屏幕共享 · 已关闭")?;
-    app.wait_for("我 正在共享")?;
-    app.wait_for("共享优先 · 选择共享人")?;
-    app.press("正在共享 · 停止共享")?;
+    assert!(app.press("开始共享").is_err());
+    app.press("整个屏幕")?;
+    app.wait_for("你的通知和打开的内容可能对参会者可见。")?;
+    app.press(super::page::screen_name())?;
+    app.press("开始共享")?;
+    app.wait_for("你正在共享屏幕")?;
+    assert!(!app.shows("我 · 屏幕共享画面占位"));
+    app.press("停止共享")?;
     app.wait_for("会议舞台 · 暂无屏幕共享")?;
     app.press("结束会议（全体）")?;
     app.wait_for("确认结束全体会议？所有成员将离开。")?;
@@ -260,10 +290,11 @@ fn create_invite_share_end_and_leave_ui() -> Result<(), String> {
     app.press("结束会议（全体）")?;
     app.press("确认结束")?;
     app.wait_for("主持人已结束会议")?;
-    app.press("开始会议")?;
+    app.press("立即开会")?;
+    app.press("确认入会")?;
     app.press("离开会议")?;
     app.wait_for("已离开会议")?;
-    app.wait_for("开始会议")?;
+    app.wait_for("立即开会")?;
     Ok(())
 }
 
@@ -271,15 +302,39 @@ fn create_invite_share_end_and_leave_ui() -> Result<(), String> {
 fn join_by_code_and_reject_unknown_ui() -> Result<(), String> {
     let mut app = start_preview()?;
     app.type_text("text:输入会议号", "未知")?;
+    assert!(app.press("加入").is_err());
+    app.clear("text:未知")?;
+    app.type_text("text:输入会议号", "MISSING1")?;
     app.press("加入")?;
+    app.press("确认入会")?;
     app.wait_for(&MeetingError::NotFoundOrNotInvited.message())?;
     app.press("关闭提示")?;
-    app.press("开始会议")?;
+    app.press("立即开会")?;
+    app.press("确认入会")?;
     app.press("离开会议")?;
-    app.clear("text:未知")?;
-    app.type_text("text:输入会议号", "MEET-1")?;
+    app.clear("text:MISSING1")?;
+    app.type_text("text:输入会议号", "MEET0001")?;
     app.press("加入")?;
+    app.press("确认入会")?;
     app.wait_for("参会人数：1 / 4")?;
     app.wait_for("结束会议（全体）")?;
+    Ok(())
+}
+
+#[test]
+fn joining_again_after_retryable_error_requires_confirmation() -> Result<(), String> {
+    let mut app = start_preview()?;
+    app.type_text("text:输入会议号", "RETRY001")?;
+    app.press("加入")?;
+    app.press("确认入会")?;
+    app.wait_for("操作失败：请检查网络")?;
+    app.press("重试")?;
+    app.wait_for("会前检查")?;
+    app.press("取消")?;
+    assert!(!app.shows("会前检查"));
+    app.press("重试")?;
+    app.press("切换入会时的麦克风状态")?;
+    app.press("确认入会")?;
+    app.wait_for("操作失败：请检查网络")?;
     Ok(())
 }

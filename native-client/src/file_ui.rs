@@ -158,6 +158,7 @@ struct Offer {
 pub struct Files {
     selected: Signal<Option<PathBuf>>,
     pending: Signal<Option<Offer>>,
+    accepting: Signal<Option<String>>,
     active: Signal<Option<String>>,
     status: Signal<String>,
     choosing: Signal<bool>,
@@ -173,6 +174,7 @@ impl Files {
         Self {
             selected: signal(None),
             pending: signal(None),
+            accepting: signal(None),
             active: signal(None),
             status: signal("没有文件传输".into()),
             choosing: signal(false),
@@ -234,21 +236,50 @@ impl Files {
     pub fn failed(self) {
         self.requesting.set(false);
     }
+    pub(crate) fn accept_result(self, id: String, result: Result<(), String>) {
+        if self.accepting.get_untracked().as_deref() != Some(id.as_str()) {
+            return;
+        }
+        self.accepting.set(None);
+        match result {
+            Ok(()) => {
+                self.clear_pending(&id);
+                self.active.set(Some(id));
+                self.status.set("已确认接收，等待对方发送。".into());
+            }
+            Err(error) => self.status.set(format!("无法接收文件：{error}")),
+        }
+    }
+    fn clear_pending(self, id: &str) {
+        if self.accepting.get_untracked().as_deref() == Some(id) {
+            self.accepting.set(None);
+        }
+        if self
+            .pending
+            .get_untracked()
+            .is_some_and(|offer| offer.id == id)
+        {
+            self.pending.set(None);
+        }
+    }
     pub fn offered(self, id: String) {
         self.requesting.set(false);
         self.active.set(Some(id));
         self.inflight_source.set(self.selected.get_untracked());
         self.selected.set(None);
-        self.status
-            .set("等待对方确认接收，尚未发送文件内容。".into());
+        self.status.set("等待对方接收".into());
     }
     pub fn disconnected(self) {
         self.release_inflight();
         self.requesting.set(false);
         self.pending.set(None);
+        self.accepting.set(None);
         self.active.set(None);
         self.status
             .set(disconnected_status(self.has_completed.get_untracked()).into());
+    }
+    pub(crate) fn can_export(self) -> bool {
+        cfg!(target_os = "android") && self.scope.is_none() && self.last_received.get().is_some()
     }
     pub fn event(self, event: Event) {
         match event {
@@ -268,12 +299,10 @@ impl Files {
                 );
             }
             Event::Progress { id, done, total } => {
-                self.pending.set(None);
+                self.clear_pending(&id);
                 self.active.set(Some(id));
-                self.status.set(format!(
-                    "已传输 {} / {} 字节，仍待完整校验确认",
-                    done, total
-                ));
+                self.status
+                    .set(format!("正在传输 · {} / {} 字节", done, total));
             }
             Event::Completed { id, destination } => {
                 self.has_completed.set(true);
@@ -284,7 +313,7 @@ impl Files {
                     self.release_inflight();
                     self.active.set(None)
                 }
-                self.pending.set(None);
+                self.clear_pending(&id);
                 self.status.set(
                     if destination.is_some() {
                         if cfg!(target_os = "android") && self.scope.is_some() {
@@ -305,12 +334,15 @@ impl Files {
                     self.release_inflight();
                     self.active.set(None)
                 }
-                self.pending.set(None);
+                self.clear_pending(&id);
                 self.status.set(
                     "本地文件传输已停止；已保存的文件不会撤回，对端最终结果以确认回执为准。".into(),
                 );
             }
             Event::Error { id, message } => {
+                if let Some(id) = id.as_deref() {
+                    self.clear_pending(id);
+                }
                 if id.as_deref() == self.active.get_untracked().as_deref() && id.is_some() {
                     self.release_inflight();
                 }
@@ -400,7 +432,7 @@ impl Files {
                         },
                     ))
                     .child(ui::action(
-                        "发送文件",
+                        "确认发送",
                         move || {
                             !connected.get()
                                 || self.selected.get().is_none()
@@ -424,7 +456,21 @@ impl Files {
                                 }
                             }
                         },
-                    )),
+                    ))
+                    .child(when(move || self.selected.get().is_some(), move || {
+                        ui::secondary("取消选择", move || self.requesting.get(), move || {
+                            if !self.permitted() || self.requesting.get_untracked() { return; }
+                            if let Some(path) = self.selected.get_untracked() {
+                                self.selected.set(None);
+                                if let Some(scope) = self.scope() {
+                                    scope.release_selected(path);
+                                } else {
+                                    crate::file_dialogs::release_source(path);
+                                }
+                                self.status.set("已取消选择".into());
+                            }
+                        })
+                    })),
             )
             .child(text(move || {
                 self.selected
@@ -440,8 +486,7 @@ impl Files {
                 move || {
                     let accept = accept.clone();
                     let reject = reject.clone();
-                    view()
-                        .gap_2()
+                    ui::card()
                         .child(text(move || {
                             self.pending
                                 .get()
@@ -461,6 +506,7 @@ impl Files {
                                     move || {
                                         self.choosing.get()
                                             || !connected.get()
+                                            || self.accepting.get().is_some()
                                             || !crate::file_dialogs::can_receive()
                                             || self.pending.get().is_some_and(|offer| {
                                                 !crate::file_dialogs::receive_size_supported(
@@ -491,6 +537,12 @@ impl Files {
                                             self.dialog(async move {
                                                 let destination = crate::file_dialogs::receive_destination(&offer.id, &offer.name).await;
                                                 if !current(&scope) { return; }
+                                                self.choosing.set(false);
+                                                if !connected.get_untracked()
+                                                    || self.pending.get_untracked().as_ref() != Some(&offer)
+                                                {
+                                                    return;
+                                                }
                                                 match destination {
                                                     Ok(Some(path)) => {
                                                         if accept
@@ -500,7 +552,8 @@ impl Files {
                                                             ))
                                                             .is_ok()
                                                         {
-                                                            self.active.set(Some(offer.id));
+                                                            self.accepting.set(Some(offer.id));
+                                                            self.status.set("正在准备接收文件…".into());
                                                         } else {
                                                             self.status.set(
                                                                 "操作队列已满，请重试。".into(),
@@ -512,21 +565,21 @@ impl Files {
                                                         .status
                                                         .set(format!("无法选择保存位置：{error}")),
                                                 }
-                                                self.choosing.set(false);
                                             });
                                         }
                                     },
                                 ))
                                 .child(ui::action(
                                     "拒绝",
-                                    move || self.pending.get().is_none(),
+                                    move || self.pending.get().is_none() || self.choosing.get() || self.accepting.get().is_some() || !connected.get(),
                                     move || {
                                         if self.permitted() && let Some(offer) = self.pending.get_untracked()
                                             && reject
                                                 .try_send(Command::RejectFile(offer.id))
                                                 .is_ok()
                                         {
-                                            self.pending.set(None)
+                                            self.pending.set(None);
+                                            self.status.set("已拒绝文件".into());
                                         }
                                     },
                                 )),
@@ -538,7 +591,7 @@ impl Files {
                 || text("企业文件已保存到应用私有区，尚未导出。原生导出流程还不能在账号切换后阻止迟到写入，本实验暂不开放导出。"),
             ))
             .child(when(
-                move || cfg!(target_os = "android") && self.scope.is_none() && self.last_received.get().is_some(),
+                move || self.can_export(),
                 move || {
                     ui::action(
                         "导出已接收文件",
@@ -566,14 +619,14 @@ impl Files {
                 },
             ))
             .child(when(
-                move || self.active.get().is_some(),
+                move || self.accepting.get().is_some() || self.active.get().is_some(),
                 move || {
                     let cancel = cancel.clone();
                     ui::action(
                         "取消传输",
-                        move || self.active.get().is_none(),
+                        move || self.accepting.get().is_none() && self.active.get().is_none(),
                         move || {
-                            if self.permitted() && let Some(id) = self.active.get_untracked()
+                            if self.permitted() && let Some(id) = self.accepting.get_untracked().or_else(|| self.active.get_untracked())
                                 && cancel.try_send(Command::CancelFile(id)).is_err()
                             {
                                 if let Some(scope) = self.scope() { scope.invalidate(); self.status.set("取消队列已满，文件会话已请求停止；等待真实关闭回执。".into()); }
@@ -693,6 +746,30 @@ mod tests {
         let (tx, _rx) = async_channel::bounded(1);
         files.panel(tx, signal(true))
     }
+
+    #[component]
+    fn FailedDestination() -> impl IntoElement {
+        let files = Files::new();
+        files.event(Event::Offer {
+            id: "request-1".into(),
+            name: "合同.pdf".into(),
+            size: 4096,
+        });
+        files.accepting.set(Some("request-1".into()));
+        files.accept_result("request-1".into(), Err("保存位置不可写".into()));
+        assert!(files.accepting.get_untracked().is_none());
+        let (tx, _rx) = async_channel::bounded(1);
+        files.panel(tx, signal(true))
+    }
+
+    #[test]
+    fn failed_destination_leaves_the_offer_available() -> Result<(), String> {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<FailedDestination>())).unwrap();
+        app.wait_for("无法接收文件：保存位置不可写")?;
+        app.wait_for("接收请求：合同.pdf · 4096 字节")?;
+        Ok(())
+    }
+
     #[test]
     fn incoming_request_requires_explicit_destination_and_consent() -> Result<(), String> {
         let mut app = Headless::start(EngineConfig::new(Root::of::<IncomingRequest>())).unwrap();

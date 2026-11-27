@@ -12,7 +12,6 @@ fn production_entry_fails_closed() -> Result<(), String> {
 const APP_TITLE: &str = "吉吉 · 团队协同";
 const SEARCH: &str = "搜索成员或消息";
 const OFFLINE: &str = "未连接";
-const PREVIEW_BADGE: &str = "实验预览版";
 const PREVIEW_LABEL: &str = "实验预览版 · 非正式发布，功能仍在验证，请勿用于正式工作";
 
 fn collaboration(width: f32, height: f32) -> Result<Headless, String> {
@@ -81,7 +80,7 @@ fn first_screen_shows_message_chrome_and_honest_empty_state() -> Result<(), Stri
         app.wait_for("未读")?;
         app.wait_for("群聊")?;
         app.wait_for("还没有团队会话")?;
-        app.wait_for("此版本未接入企业登录，团队会话暂不可用。")?;
+        app.wait_for("企业登录暂不可用。")?;
         app.wait_for("选择一个会话开始聊天")?;
         app.wait_for("聊天记录只保留到关闭应用为止。")?;
         // 首屏不再复述工程约束。
@@ -100,12 +99,8 @@ fn first_screen_shows_message_chrome_and_honest_empty_state() -> Result<(), Stri
         assert!(!app.shows("正在共享"));
         assert!(!app.shows("5 人在线"));
         assert!(
-            !app.shows("断开并停止媒体"),
+            !app.shows("停止全部媒体"),
             "未连接且没有媒体时不在首屏常驻停止按钮"
-        );
-        assert_eq!(
-            app.shows(PREVIEW_BADGE),
-            cfg!(feature = "github-manual-updates")
         );
         if cfg!(feature = "github-manual-updates") {
             assert!(
@@ -151,7 +146,6 @@ fn settings_and_diagnostics_hold_security_tools() -> Result<(), String> {
         scroll_to(&mut app, tool)?;
     }
     scroll_to(&mut app, "高级连接设置：P2P 优先，TURN 仅手动备选")?;
-    assert!(app.shows("断开并停止媒体"));
     scroll_top(&mut app);
     app.press("返回设置")?;
     app.wait_for(concat!("当前版本：", env!("CARGO_PKG_VERSION")))?;
@@ -193,10 +187,7 @@ fn window_resize_keeps_navigation_usable() -> Result<(), String> {
 #[test]
 fn preview_label_matches_build_channel() -> Result<(), String> {
     let mut app = collaboration(480.0, 800.0)?;
-    assert_eq!(
-        app.shows(PREVIEW_BADGE),
-        cfg!(feature = "github-manual-updates")
-    );
+    assert!(!app.shows(PREVIEW_LABEL));
     if cfg!(feature = "github-manual-updates") {
         app.press("设置")?;
         app.wait_for(PREVIEW_LABEL)?;
@@ -209,10 +200,9 @@ fn preview_label_matches_build_channel() -> Result<(), String> {
 #[test]
 fn enterprise_login_without_configuration_never_claims_success() -> Result<(), String> {
     let mut app = collaboration(480.0, 800.0)?;
-    app.press("通讯录")?;
-    app.wait_for("企业账号与成员")?;
-    app.press("企业账号与成员")?;
-    app.wait_for("企业原生登录尚未配置或平台回调未接入；不会模拟登录成功。")?;
+    app.press("设置")?;
+    app.press("管理账号与工作区")?;
+    app.wait_for("此版本暂不支持企业登录。")?;
     assert!(!app.shows("已验证登录"));
     Ok(())
 }
@@ -228,9 +218,11 @@ fn opening_media_settings_does_not_enable_capture_or_playback() -> Result<(), St
     app.wait_for("屏幕共享 · 未启用")?;
     app.press("展开/收起媒体设备与接收设置")?;
     scroll_to(&mut app, "允许远端音频")?;
-    scroll_to(&mut app, "允许远端视频")?;
+    if !cfg!(target_os = "macos") || cfg!(feature = "experimental-macos-video") {
+        scroll_to(&mut app, "允许远端视频")?;
+    }
     app.wait_for("麦克风 · 未启用")?;
-    assert!(app.shows("断开并停止媒体"));
+    assert!(!app.shows("停止全部媒体"));
     assert!(!app.shows("已收到真实解码帧"));
     Ok(())
 }
@@ -251,7 +243,12 @@ fn scroll_to(app: &mut Headless, text: &str) -> Result<(), String> {
         if app.shows(text) {
             return Ok(());
         }
-        app.scroll("id:conversation-scroll", nsh_core::prelude::px(180.0))?;
+        if app
+            .scroll("id:conversation-scroll", nsh_core::prelude::px(180.0))
+            .is_err()
+        {
+            break;
+        }
     }
     app.wait_for(text)
 }
@@ -280,12 +277,11 @@ fn update_gate_can_scroll_and_retry_in_a_small_window() -> Result<(), String> {
 #[test]
 fn folding_enterprise_settings_keeps_unconfigured_login_offline() -> Result<(), String> {
     let mut app = collaboration(480.0, 800.0)?;
-    app.press("通讯录")?;
-    app.wait_for("企业账号与成员")?;
+    app.press("设置")?;
     for _ in 0..2 {
-        app.press("企业账号与成员")?;
-        app.wait_for("企业原生登录尚未配置或平台回调未接入；不会模拟登录成功。")?;
-        app.press("企业账号与成员")?;
+        app.press("管理账号与工作区")?;
+        app.wait_for("此版本暂不支持企业登录。")?;
+        app.press_key("escape")?;
     }
     assert!(!app.shows("已验证登录"));
     assert!(!app.shows("采集已启动，向当前对端发送已启用"));
@@ -296,10 +292,11 @@ fn folding_enterprise_settings_keeps_unconfigured_login_offline() -> Result<(), 
 fn meeting_page_is_reachable_and_does_not_claim_a_live_session() -> Result<(), String> {
     let mut app = collaboration(1100.0, 760.0)?;
     app.press("会议")?;
-    app.wait_for("开始新会议")?;
+    app.wait_for("立即开会")?;
     app.wait_for("当前没有进行中的会议")?;
-    app.wait_for("此版本未接入企业登录，暂时不能发起或加入会议。")?;
-    assert!(app.press("开始").is_err(), "会议能力接入前不能开始会议");
+    #[cfg(not(feature = "experimental-enterprise-meeting"))]
+    app.wait_for("企业会议暂不可用。")?;
+    assert!(app.press("立即开会").is_err(), "会议能力接入前不能开始会议");
     assert!(app.press("加入").is_err(), "会议能力接入前不能加入会议");
     for missing in [
         "正在共享",
@@ -325,7 +322,6 @@ fn manual_update_preview_opens_and_offers_sources() -> Result<(), String> {
         Headless::start(EngineConfig::new(Root::of::<nsh_app_native_client::App>())).unwrap();
     app.set_viewport(Size::new(px(480.0), px(800.0)))?;
     app.wait_for(SEARCH)?;
-    app.wait_for(PREVIEW_BADGE)?;
     assert!(!app.shows("软件更新"), "更新入口不在首屏");
     app.press("设置")?;
     app.wait_for("软件更新")?;
