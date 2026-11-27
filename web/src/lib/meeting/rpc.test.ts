@@ -7,10 +7,10 @@ describe("会议 RPC 适配器", () => {
     const rpc = createMeetingRpc({
       async query<T>(sql: string, bindings?: Record<string, unknown>) {
         calls.push({ sql, bindings });
-        return [{ ok: true }] as T[];
+        return { local_join: "a".repeat(64) } as unknown as T[];
       },
     });
-    await rpc.join("ABCDEF", "a".repeat(64));
+    expect(await rpc.join("ABCDEF", "a".repeat(64))).toEqual({ local_join: "a".repeat(64) });
     await rpc.postOffer({
       room: "r",
       joinId: "j",
@@ -25,6 +25,15 @@ describe("会议 RPC 适配器", () => {
     expect(calls[1]!.sql).toContain("fn::meeting_post_offer(");
     expect(calls[1]!.bindings).toMatchObject({ peer_join_id: "p", route: "direct", offer_hash: "h" });
     for (const call of calls) expect(call.sql).toMatch(/^RETURN fn::meeting_\w+\(/);
+  });
+
+  test("单条 RETURN 的标量结果原样返回", async () => {
+    const rpc = createMeetingRpc({
+      async query<T>() {
+        return "meeting_v1" as unknown as T[];
+      },
+    });
+    expect(await rpc.capability()).toBe("meeting_v1");
   });
 
   test("服务端固定错误码映射为中文可读错误", async () => {

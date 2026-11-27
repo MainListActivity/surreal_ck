@@ -146,8 +146,8 @@ type QueryConn = Pick<SurrealConn, "query">;
 export function createMeetingRpc(conn: QueryConn): MeetingRpc {
   async function call<T>(sql: string, bindings: Record<string, unknown> = {}): Promise<T> {
     try {
-      const rows = await conn.query<T>(sql, bindings);
-      return rows[0] as T;
+      // conn.query 已取首个结果集；单条 RETURN 的结果集就是返回值本身，不能再取 [0]。
+      return (await conn.query<T>(sql, bindings)) as unknown as T;
     } catch (error) {
       throw new MeetingRpcError(meetingErrorCode(error));
     }
