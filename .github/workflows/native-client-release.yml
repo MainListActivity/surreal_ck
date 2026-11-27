@@ -349,7 +349,6 @@ jobs:
       - name: Build Windows installer
         if: matrix.target == 'windows'
         env:
-          WINDOWS_PRODUCTION: ${{ inputs.production }}
           WINDOWS_CERT_THUMBPRINT: ${{ inputs.production && secrets.WINDOWS_CERT_THUMBPRINT || '' }}
           WINDOWS_SIGN_CERT_PFX_BASE64: ${{ inputs.production && secrets.WINDOWS_SIGN_CERT_PFX_BASE64 || '' }}
           WINDOWS_SIGN_CERT_PASSWORD: ${{ inputs.production && secrets.WINDOWS_SIGN_CERT_PASSWORD || '' }}
@@ -359,14 +358,11 @@ jobs:
           $pfx = Join-Path $env:RUNNER_TEMP 'native-release-signing.pfx'
           $imported = @()
           try {
-            if ($env:WINDOWS_PRODUCTION -eq 'true' -and -not $thumbprint) {
-              throw 'Production Windows packaging requires an Authenticode identity'
-            }
-            if ($thumbprint) {
-              if ($thumbprint -notmatch '^[0-9a-fA-F]{40}$') { throw 'Invalid Windows signing certificate thumbprint' }
-              if (-not ($env:WINDOWS_SIGN_CERT_PFX_BASE64 -and $env:WINDOWS_SIGN_CERT_PASSWORD)) {
-                throw 'Windows signing on hosted runners requires a password-protected signing PFX'
+            if ($thumbprint -or $env:WINDOWS_SIGN_CERT_PFX_BASE64 -or $env:WINDOWS_SIGN_CERT_PASSWORD) {
+              if (-not ($thumbprint -and $env:WINDOWS_SIGN_CERT_PFX_BASE64 -and $env:WINDOWS_SIGN_CERT_PASSWORD)) {
+                throw 'Windows signing requires a certificate thumbprint and a password-protected signing PFX'
               }
+              if ($thumbprint -notmatch '^[0-9a-fA-F]{40}$') { throw 'Invalid Windows signing certificate thumbprint' }
               [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_SIGN_CERT_PFX_BASE64))
               $password = ConvertTo-SecureString $env:WINDOWS_SIGN_CERT_PASSWORD -AsPlainText -Force
               $imported = @(Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password)

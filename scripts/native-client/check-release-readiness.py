@@ -20,7 +20,7 @@ policy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(policy)
 MIN_REMAINING = 86400
 EXPECTED_TARGETS = {('linux','x86_64'), ('macos','aarch64'), ('macos','x86_64'), ('windows','x86_64'), ('android','aarch64'), ('android','x86_64')}
-REQUIRED_SIGNING = {'android': 'release-key', 'macos': 'developer-id-notarized', 'windows': 'authenticode'}
+REQUIRED_SIGNING = {'android': 'release-key', 'macos': 'developer-id-notarized'}
 # Public repository test fixtures / RFC8032 vectors must never be production roots.
 TEST_PUBLIC_KEYS = {
     '197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d61',
@@ -167,6 +167,10 @@ def load_installers(root, *, commit, require_release_eligibility):
             expected_signing = REQUIRED_SIGNING.get(item['platform'])
             if expected_signing and item.get('signing') != expected_signing:
                 raise ValueError(f'{item["platform"]} installer requires signing status {expected_signing}')
+            if item['platform'] == 'windows':
+                allowed_signing = ('authenticode',) if require_release_eligibility else ('unsigned', 'authenticode')
+                if item.get('signing') not in allowed_signing:
+                    raise ValueError('Windows installer signing status must be ' + ' or '.join(allowed_signing))
             seen.add(target)
         installers.append((config, key, items))
     if seen != EXPECTED_TARGETS: raise ValueError('Complete expected release target set required')
