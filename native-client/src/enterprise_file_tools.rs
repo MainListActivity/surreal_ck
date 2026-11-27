@@ -309,6 +309,10 @@ impl FileTools {
                         let cancelling = matches!(command, Command::CancelFile(_));
                         let permit = if cancelling {cancellations.clone()} else {ordinary.clone()}.try_acquire_owned();
                         let Ok(permit) = permit else {
+                            if let Command::AcceptFile(id, _) = command {
+                                files.accept_result(id, Err("文件操作繁忙，尚未启动接收。".into()));
+                                continue;
+                            }
                             if cancelling {binding.scope.invalidate();}
                             files.failed();
                             files.info(if cancelling {"取消操作繁忙，文件会话已请求停止；等待关闭回执。"} else {"文件操作繁忙，尚未启动新操作。"}.into());
@@ -331,7 +335,15 @@ impl FileTools {
                                         Err(error) => Err(error),
                                     }
                                 },
-                                Command::AcceptFile(id, path) => operation_binding.handle.accept_confirmed(id, path).await.result,
+                                Command::AcceptFile(id, path) => {
+                                    let reply = operation_binding.handle.accept_confirmed(id.clone(), path).await;
+                                    if reply.context.is_current(operation_binding.handle.session())
+                                        && operation_binding.scope.is_current()
+                                    {
+                                        files.accept_result(id, reply.result);
+                                    }
+                                    Ok(())
+                                },
                                 Command::RejectFile(id) => operation_binding.handle.reject(id).await.result,
                                 Command::CancelFile(id) => match operation_binding.handle.cancel(id).await.result {
                                     Ok(CancelOutcome::CommitInProgress) => {if operation_binding.scope.is_current() {files.info("保存发布已先行开始，不能承诺撤回；等待真实保存回执。".into());} Ok(())},

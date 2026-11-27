@@ -96,5 +96,6 @@
     }
   },
   "macos-aarch64": null,
-  "macos-x86_64": null
+  "macos-x86_64": null,
+  "windows-x86_64": null
 }

@@ -24,7 +24,9 @@ use std::{
 };
 use surreal_ck_native_call::{
     CaptureInput, CaptureStatus, Source as CallSource, VideoConfig,
-    meeting::{DeviceGate, GateOwner, MeetingEvent, MeetingMedia, MemberSlot, RenderSlot},
+    meeting::{
+        DeviceGate, GateOwner, MeetingEvent, MeetingMedia, MeetingVideoSink, MemberSlot, RenderSlot,
+    },
 };
 use surreal_ck_native_identity::{
     IceServer, IceServers, IdentityClient, Session, SurrealConfig,
@@ -78,10 +80,12 @@ fn ui_source(source: CallSource) -> Source {
     }
 }
 
+type VideoStreams = BTreeMap<(String, String, Source), FramePublisher>;
+
 /// 远端视频帧槽：每个成员×源一条 FramePublisher，sink 只写 mailbox，不解码。
 #[derive(Clone, Default)]
 pub struct VideoHub {
-    streams: Arc<Mutex<BTreeMap<(String, String, Source), FramePublisher>>>,
+    streams: Arc<Mutex<VideoStreams>>,
 }
 impl VideoHub {
     fn publisher(&self, member: &str, join: &str, source: Source) -> Option<FramePublisher> {
@@ -94,9 +98,7 @@ impl VideoHub {
         map.insert(key, stream.clone());
         Some(stream)
     }
-    fn sink(
-        &self,
-    ) -> Arc<dyn Fn(&RenderSlot, u16, u16, Bytes) -> Result<(), String> + Send + Sync> {
+    fn sink(&self) -> MeetingVideoSink {
         let hub = self.clone();
         Arc::new(move |slot: &RenderSlot, w: u16, h: u16, data: Bytes| {
             let Some(stream) = hub.publisher(
@@ -208,6 +210,7 @@ impl Bridge {
 }
 
 /// identity 工作循环入口：目录 Ready 后调用；调用方保证 session 是 participant 会话。
+#[allow(clippy::too_many_arguments)]
 pub fn start(
     shared: &Arc<Shared>,
     epoch: u64,
@@ -463,6 +466,7 @@ async fn run(
             return;
         }
     };
+    let local_member = rpc.member_id().to_owned();
     let mut meeting = match Meeting::new(rpc) {
         Ok(meeting) => meeting,
         Err(error) => {
@@ -498,6 +502,7 @@ async fn run(
     let mut retry_after: BTreeMap<String, Instant> = BTreeMap::new();
     let mut tick = tokio::time::interval(TICK);
     let mut last_renew = Instant::now();
+    emit!(MeetingUpdate::LocalMember(local_member.clone()));
     emit!(MeetingUpdate::Capability(Capability::Available));
     emit!(MeetingUpdate::Contacts(contacts.clone()));
     match meeting.invitations().await {
@@ -518,16 +523,30 @@ async fn run(
             command = commands.recv() => {
                 let Ok(command) = command else { break };
                 match command {
-                    MeetingCommand::Create => match meeting.create().await {
+                    MeetingCommand::CreateFor { member_id }
+                        if member_id == local_member
+                            || local_member.strip_prefix("user:") == Some(member_id.as_str()) =>
+                    {
+                        emit!(MeetingUpdate::Error(MeetingError::SelfInvite));
+                    }
+                    command @ (MeetingCommand::Create | MeetingCommand::CreateFor { .. }) => match meeting.create().await {
                         Ok(()) => {
                             tick = tokio::time::interval(TICK);
                             eprintln!("[meeting] create ok");
                             emit_snapshot(&meeting, &edges, &contacts, &out, epoch, generation, &media).await;
+                            if let MeetingCommand::CreateFor { member_id } = command
+                                && let Err(error) = meeting.invite(&[member_id]).await
+                            {
+                                fail!(error);
+                            }
                             ice = ManagedIce::default();
                             retry_after.clear();
                             refresh_ice!();
                         }
-                        Err(error) => fail!(error),
+                        Err(error) => {
+                            eprintln!("[meeting] create failed: {error}");
+                            emit!(MeetingUpdate::Error(map_error(error)));
+                        }
                     },
                     MeetingCommand::Invite { member_ids, .. } => {
                         match meeting.invite(&member_ids).await {
@@ -544,7 +563,10 @@ async fn run(
                             retry_after.clear();
                             refresh_ice!();
                         }
-                        Err(error) => fail!(error),
+                        Err(error) => {
+                            eprintln!("[meeting] join failed: {error}");
+                            emit!(MeetingUpdate::Error(map_error(error)));
+                        }
                     },
                     MeetingCommand::SetDevice { source, on } => {
                         set_device(&mut media, &gate, &mut lease, source, on, &out, epoch, generation).await;

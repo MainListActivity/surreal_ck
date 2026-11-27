@@ -1,5 +1,6 @@
 //! 只使用构建时固定的企业端点。令牌留在后台内存，不交给 UI、不写日志或磁盘。
 use crate::ui;
+use nsh_core::element::AnyElement;
 use nsh_core::prelude::*;
 use std::sync::Arc;
 use surreal_ck_native_identity::{
@@ -76,7 +77,9 @@ pub(crate) fn configured() -> Result<(IdentityClient, SurrealConfig), String> {
     }
     let database = SurrealConfig::new(
         required(option_env!("SURREAL_CK_SURREAL_URL"))?,
-        option_env!("SURREAL_CK_SURREAL_NS").unwrap_or("main"),
+        option_env!("SURREAL_CK_SURREAL_NS")
+            .filter(|ns| !ns.is_empty())
+            .unwrap_or("main"),
     )
     .map_err(|e| e.to_string())?;
     Ok((IdentityClient::new(config), database))
@@ -88,13 +91,20 @@ struct WorkspaceChoice {
     name: String,
     role: &'static str,
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DirectoryMember {
+    id: String,
+    name: String,
+    email: String,
+    pending: bool,
+    admin: bool,
+}
 /// UI 只持有权威 API 返回的展示数据，不持有 JWT、Session 或 callback。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DirectoryView {
     workspaces: Vec<WorkspaceChoice>,
     selected_slug: Option<String>,
-    current_title: String,
-    members: Vec<String>,
+    members: Vec<DirectoryMember>,
     #[cfg(feature = "experimental-enterprise-signaling")]
     chat_members: Vec<enterprise_chat::MemberChoice>,
     #[cfg(feature = "experimental-enterprise-signaling")]
@@ -122,7 +132,6 @@ impl DirectoryView {
     /// （普通成员原 token，或管理员经 collaboration-scope 降级所得）。
     fn select(&mut self, workspace: &Workspace, members: Vec<Member>, record_identity: bool) {
         self.selected_slug = Some(workspace.slug.clone());
-        self.current_title = format!("当前工作区：{}", workspace.name);
         #[cfg(not(feature = "experimental-enterprise-signaling"))]
         let _ = record_identity;
         #[cfg(feature = "experimental-enterprise-signaling")]
@@ -142,16 +151,12 @@ impl DirectoryView {
         }
         self.members = members
             .into_iter()
-            .map(|member| {
-                format!(
-                    "{}{}",
-                    member.display_name.unwrap_or(member.email),
-                    if member.pending {
-                        "（待加入）"
-                    } else {
-                        ""
-                    },
-                )
+            .map(|member| DirectoryMember {
+                id: member.id,
+                name: member.display_name.unwrap_or_else(|| member.email.clone()),
+                email: member.email,
+                pending: member.pending,
+                admin: member.is_admin,
             })
             .collect();
     }
@@ -198,7 +203,7 @@ impl IdentityViewState {
             status: if available {
                 "尚未登录"
             } else {
-                "企业原生登录尚未配置或平台回调未接入；不会模拟登录成功。"
+                "此版本暂不支持企业登录。"
             }
             .into(),
             directory: DirectoryView::default(),
@@ -270,11 +275,11 @@ impl IdentityViewState {
             Event::Cleared(message) => self.clear(id, message),
             #[cfg(all(target_os = "android", feature = "android-native-oauth"))]
             Event::BrowserOpened if self.phase == Phase::Login => {
-                self.status = "请在系统浏览器完成登录；等待本次回调。".into();
+                self.status = "请在浏览器中完成登录。".into();
             }
             #[cfg(not(all(target_os = "android", feature = "android-native-oauth")))]
             Event::OpenBrowser(url) if self.phase == Phase::Login => {
-                self.status = "请在系统浏览器完成登录；等待本次回调。".into();
+                self.status = "请在浏览器中完成登录。".into();
                 return Some(url);
             }
             _ => {}
@@ -751,20 +756,31 @@ fn summary_of(state: &IdentityViewState, available: bool) -> crate::first_screen
     }
 }
 
-/// 企业身份与工作区面板。summary 向首屏公开真实身份摘要（无假登录）。
-/// 面板常驻挂载：只折叠账号设置，不能将采集隐私与停止区一起隐藏。
-pub fn enterprise_identity(
+pub(crate) struct IdentityPanels {
+    pub account: AnyElement,
+    pub directory: AnyElement,
+    pub chat: AnyElement,
+    pub diagnostics: AnyElement,
+}
+
+pub(crate) fn enterprise_identity(
     summary: Signal<crate::first_screen::IdentitySummary>,
+    page: Signal<crate::first_screen::Page>,
+    directory_search: Signal<String>,
     #[cfg(feature = "experimental-enterprise-meeting")] meeting: &crate::meeting_actor::Bridge,
+    #[cfg(feature = "experimental-enterprise-meeting")] prejoin: Signal<
+        Option<crate::ui::meeting::MeetingCommand>,
+    >,
     #[cfg(all(
         any(target_os = "linux", target_os = "android"),
         feature = "experimental-native-roster-sfu"
     ))]
     roster: tokio::sync::watch::Sender<Option<crate::roster_actor::HostScope>>,
-) -> impl IntoElement {
-    let expanded = signal(false);
+) -> IdentityPanels {
     let available = identity_available();
     let state = signal(IdentityViewState::new(available));
+    #[cfg(not(all(target_os = "android", feature = "android-native-oauth")))]
+    let browser_url = signal(None::<String>);
     effect(move || {
         let next = summary_of(&state.get(), available);
         if summary.get_untracked() != next {
@@ -792,7 +808,6 @@ pub fn enterprise_identity(
     cleanup(move || {
         cleanup_commands.close();
     });
-    let browser_commands = commands.clone();
     #[cfg(feature = "experimental-enterprise-meeting")]
     let meeting_bridge = meeting.clone();
     spawn(async move {
@@ -895,14 +910,13 @@ pub fn enterprise_identity(
             let browser = next.apply(id, event);
             state.set(next);
             if let Some(url) = browser {
+                #[cfg(not(all(target_os = "android", feature = "android-native-oauth")))]
+                browser_url.set(Some(url.clone()));
                 let opened = open_url(url).await;
                 let mut latest = state.get_untracked();
                 if !opened && latest.epoch == id && latest.phase == Phase::Login {
-                    let id = latest.next_epoch();
-                    let reason = "无法打开系统浏览器，本次登录等待已取消。";
-                    latest.clear(id, reason.into());
+                    latest.status = "无法打开浏览器。请重新打开或取消后重试。".into();
                     state.set(latest);
-                    let _ = browser_commands.try_send(Command::Logout(id, reason));
                 }
             }
         }
@@ -910,6 +924,32 @@ pub fn enterprise_identity(
     let login = commands.clone();
     let logout = commands.clone();
     let choose = commands.clone();
+    let member_dialog = signal(None::<(u64, DirectoryMember)>);
+    let _ = page;
+    #[cfg(feature = "experimental-enterprise-signaling")]
+    let contact_commands = commands.clone();
+    #[cfg(feature = "experimental-enterprise-signaling")]
+    let contact_chat = signal(None::<(u64, String)>);
+    #[cfg(feature = "experimental-enterprise-signaling")]
+    effect(move || {
+        if let Some((epoch, id)) = contact_chat.get() {
+            let current = state.get();
+            if current.epoch != epoch || current.chat.contact_request_failed() {
+                contact_chat.set(None);
+            } else if current.chat.can_choose() {
+                contact_chat.set(None);
+                enterprise_chat::send_action(
+                    state,
+                    &contact_commands,
+                    enterprise_chat::Action::Invite(id),
+                );
+            }
+        }
+    });
+    #[cfg(feature = "experimental-enterprise-signaling")]
+    let contact_start = commands.clone();
+    #[cfg(feature = "experimental-enterprise-meeting")]
+    let meeting_state = meeting.state();
     #[cfg(feature = "experimental-enterprise-signaling")]
     let chat_panel = enterprise_chat::panel(state, commands, move || {
         #[cfg(feature = "experimental-enterprise-files")]
@@ -917,21 +957,31 @@ pub fn enterprise_identity(
         #[cfg(feature = "experimental-enterprise-media")]
         media.invalidate();
     });
-    let panel = view()
-        .style_when(move || !expanded.get(), |style| style.hidden())
+    #[cfg(not(feature = "experimental-enterprise-signaling"))]
+    let chat_panel = view();
+    let account = view()
         .gap_2()
         .p_3()
         .border_1()
         .border_color(move || nsh_base::theme().border)
-        .child(text("企业账号与成员"))
+        .child(
+            text(move || {
+                if state.get().signed_in {
+                    "选择工作区"
+                } else {
+                    "使用企业账号登录"
+                }
+            })
+            .font_weight(FontWeight::BOLD),
+        )
         .child(text(move || state.get().status))
         .child(
             view()
                 .flex_row()
                 .gap_2()
                 .child(ui::action(
-                    "系统浏览器登录",
-                    move || !available || state.get().busy(),
+                    "在浏览器中登录",
+                    move || !available || state.get().busy() || state.get().signed_in,
                     move || {
                         let mut next = state.get_untracked();
                         if !available || next.busy() {
@@ -942,165 +992,314 @@ pub fn enterprise_identity(
                         #[cfg(feature = "experimental-enterprise-media")]
                         media.invalidate();
                         let id = next.begin_login();
+                        #[cfg(not(all(target_os = "android", feature = "android-native-oauth")))]
+                        browser_url.set(None);
                         if login.try_send(Command::Login(id)).is_err() {
                             next.clear(id, "登录后台已关闭，请重新打开企业账号面板。".into());
                         }
                         state.set(next);
                     },
                 ))
-                .child(ui::action(
-                    "取消登录 / 退出",
-                    || false,
+                .child(when(
+                    move || state.get().phase == Phase::Login || state.get().signed_in,
                     move || {
-                        let mut next = state.get_untracked();
-                        let id = next.next_epoch();
-                        #[cfg(feature = "experimental-enterprise-files")]
-                        files.invalidate();
-                        #[cfg(feature = "experimental-enterprise-media")]
-                        media.invalidate();
-                        let reason = "已退出本地会话；未调用远端退出或修改账号。";
-                        next.clear(id, reason.into());
-                        #[cfg(feature = "experimental-enterprise-signaling")]
-                        {
-                            next.status = "正在停止实验聊天并退出本地会话…".into();
-                        }
-                        let _ = logout.try_send(Command::Logout(id, reason));
-                        state.set(next);
+                        let logout = logout.clone();
+                        ui::action(
+                            if state.get_untracked().signed_in {
+                                "退出登录"
+                            } else {
+                                "取消登录"
+                            },
+                            || false,
+                            move || {
+                                let mut next = state.get_untracked();
+                                let id = next.next_epoch();
+                                #[cfg(feature = "experimental-enterprise-files")]
+                                files.invalidate();
+                                #[cfg(feature = "experimental-enterprise-media")]
+                                media.invalidate();
+                                let reason = if next.signed_in {
+                                    "已退出登录。"
+                                } else {
+                                    "登录已取消。"
+                                };
+                                next.clear(id, reason.into());
+                                #[cfg(not(all(
+                                    target_os = "android",
+                                    feature = "android-native-oauth"
+                                )))]
+                                browser_url.set(None);
+                                let _ = logout.try_send(Command::Logout(id, reason));
+                                state.set(next);
+                            },
+                        )
                     },
                 )),
-        )
-        .child(when(
-            move || state.get().signed_in,
-            move || {
-                let choose = choose.clone();
-                view()
-                    .gap_2()
-                    .child(text("可访问工作区（来自企业服务）"))
-                    .child(text(
-                        "点击“进入此工作区”才会请求切换权限与读取成员，不会自动选择其他工作区。",
-                    ))
-                    .child(
-                        virtual_list(
-                            move || state.get().directory.workspaces.len(),
-                            move |at| {
-                                let choose = choose.clone();
-                                view()
-                                    .flex_row()
-                                    .gap_2()
-                                    .child(
-                                        text(move || {
-                                            let current = state.get();
-                                            current
-                                                .directory
-                                                .workspaces
-                                                .get(at.index())
-                                                .map(|workspace| {
-                                                    format!(
-                                                        "{} · {}{}",
-                                                        workspace.name,
-                                                        workspace.role,
-                                                        if current
-                                                            .directory
-                                                            .selected_slug
-                                                            .as_deref()
-                                                            == Some(workspace.slug.as_str())
-                                                        {
-                                                            " · 当前"
-                                                        } else {
-                                                            ""
-                                                        },
-                                                    )
-                                                })
-                                                .unwrap_or_default()
-                                        })
-                                        .flex_1(),
-                                    )
-                                    .child(ui::action(
-                                        "进入此工作区",
-                                        move || state.get().phase != Phase::Ready,
-                                        move || {
-                                            let mut next = state.get_untracked();
-                                            let Some(target) =
-                                                next.directory.workspaces.get(at.index()).cloned()
-                                            else {
-                                                return;
-                                            };
-                                            let Some(id) = next.begin_switch(&target.slug) else {
-                                                return;
-                                            };
-                                            #[cfg(feature = "experimental-enterprise-files")]
-                                            files.invalidate();
-                                            #[cfg(feature = "experimental-enterprise-media")]
-                                            media.invalidate();
-                                            if choose
-                                                .try_send(Command::Switch(id, target.slug))
-                                                .is_err()
-                                            {
-                                                next.clear(
-                                                    id,
-                                                    "登录后台已关闭，请重新打开企业账号面板。"
-                                                        .into(),
-                                                );
-                                            }
-                                            state.set(next);
-                                        },
-                                    ))
-                            },
-                        )
-                        .estimated_item_size(px(54.0))
-                        .h(px(150.0)),
+        );
+    #[cfg(not(all(target_os = "android", feature = "android-native-oauth")))]
+    let account = account.child(when(
+        move || state.get().phase == Phase::Login && browser_url.get().is_some(),
+        move || {
+            ui::secondary(
+                "重新打开浏览器",
+                || false,
+                move || {
+                    if let Some(url) = browser_url.get_untracked() {
+                        spawn(async move {
+                            let _ = open_url(url).await;
+                        });
+                    }
+                },
+            )
+        },
+    ));
+    let account = account.child(when(
+        move || state.get().signed_in,
+        move || {
+            let choose = choose.clone();
+            view()
+                .gap_2()
+                .child(when(
+                    move || state.get().directory.workspaces.is_empty(),
+                    || text("暂无可访问的工作区。请联系团队管理员。"),
+                ))
+                .child(
+                    virtual_list(
+                        move || state.get().directory.workspaces.len(),
+                        move |at| {
+                            let choose = choose.clone();
+                            view()
+                                .flex_row()
+                                .gap_2()
+                                .child(
+                                    text(move || {
+                                        let current = state.get();
+                                        current
+                                            .directory
+                                            .workspaces
+                                            .get(at.index())
+                                            .map(|workspace| {
+                                                format!(
+                                                    "{} · {}{}",
+                                                    workspace.name,
+                                                    workspace.role,
+                                                    if current.directory.selected_slug.as_deref()
+                                                        == Some(workspace.slug.as_str())
+                                                    {
+                                                        " · 当前"
+                                                    } else {
+                                                        ""
+                                                    },
+                                                )
+                                            })
+                                            .unwrap_or_default()
+                                    })
+                                    .flex_1(),
+                                )
+                                .child(ui::action(
+                                    "进入此工作区",
+                                    move || state.get().phase != Phase::Ready,
+                                    move || {
+                                        let mut next = state.get_untracked();
+                                        let Some(target) =
+                                            next.directory.workspaces.get(at.index()).cloned()
+                                        else {
+                                            return;
+                                        };
+                                        let Some(id) = next.begin_switch(&target.slug) else {
+                                            return;
+                                        };
+                                        #[cfg(feature = "experimental-enterprise-files")]
+                                        files.invalidate();
+                                        #[cfg(feature = "experimental-enterprise-media")]
+                                        media.invalidate();
+                                        if choose
+                                            .try_send(Command::Switch(id, target.slug))
+                                            .is_err()
+                                        {
+                                            next.clear(
+                                                id,
+                                                "登录后台已关闭，请重新打开企业账号面板。".into(),
+                                            );
+                                        }
+                                        state.set(next);
+                                    },
+                                ))
+                        },
                     )
-            },
-        ))
-        .child(when(
-            move || state.get().directory.selected_slug.is_some(),
-            move || {
-                view()
-                    .gap_2()
-                    .child(text(move || state.get().directory.current_title))
-                    .child(text("工作区成员（只读）"))
-                    .child(when(
-                        move || state.get().directory.members.is_empty(),
-                        || text("暂无可见成员。"),
-                    ))
-                    .child(
-                        virtual_list(
-                            move || state.get().directory.members.len(),
-                            move |at| {
+                    .estimated_item_size(px(54.0))
+                    .h(px(150.0)),
+                )
+        },
+    ));
+    let directory = view().child(when(
+        move || state.get().directory.selected_slug.is_some(),
+        move || {
+            #[cfg(feature = "experimental-enterprise-signaling")]
+            let contact_start = contact_start.clone();
+            let visible = move || {
+                let query = directory_search.get().trim().to_lowercase();
+                state
+                    .get()
+                    .directory
+                    .members
+                    .into_iter()
+                    .filter(|member| {
+                        member.name.to_lowercase().contains(&query)
+                            || member.email.to_lowercase().contains(&query)
+                    })
+                    .collect::<Vec<_>>()
+            };
+            view()
+                .gap_2()
+                .child(ui::search_field(directory_search, "搜索通讯录"))
+                .child(when(
+                    move || visible().is_empty(),
+                    || text("没有匹配的成员。"),
+                ))
+                .child(each(
+                    visible,
+                    |member| member.id.clone(),
+                    move |member, _| {
+                        nsh_base::button()
+                            .on_press(move || {
+                                member_dialog.set(Some((
+                                    state.get_untracked().epoch,
+                                    member.get_untracked(),
+                                )));
+                            })
+                            .px_3()
+                            .py_2()
+                            .rounded(px(8.0))
+                            .bg(move || nsh_base::theme().card)
+                            .child(text(move || {
+                                let member = member.get();
+                                if member.pending {
+                                    format!("{} · 待加入", member.name)
+                                } else {
+                                    member.name
+                                }
+                            }))
+                    },
+                ))
+                .child(when(
+                    move || {
+                        member_dialog
+                            .get()
+                            .is_some_and(|(epoch, _)| epoch == state.get().epoch)
+                    },
+                    move || {
+                        #[cfg(feature = "experimental-enterprise-signaling")]
+                        let contact_start = contact_start.clone();
+                        let card = ui::card()
+                            .child(
                                 text(move || {
-                                    state
+                                    member_dialog
                                         .get()
-                                        .directory
-                                        .members
-                                        .get(at.index())
-                                        .cloned()
+                                        .map(|(_, member)| member.name)
                                         .unwrap_or_default()
                                 })
-                            },
-                        )
-                        .estimated_item_size(px(28.0))
-                        .h(px(140.0)),
-                    )
-            },
-        ))
-        .child(text(
-            "会话仅保存在应用内存，退出或关闭应用会清除。成员目录未与手工 P2P 对端身份绑定。",
-        ));
-    #[cfg(feature = "experimental-enterprise-signaling")]
-    let panel = panel.child(chat_panel);
-    let root = view()
-        .gap_2()
-        .child(ui::action(
-            "企业账号与成员",
-            || false,
-            move || expanded.set(!expanded.get_untracked()),
-        ))
-        .child(panel);
+                                .font_weight(FontWeight::BOLD),
+                            )
+                            .child(text(move || {
+                                member_dialog
+                                    .get()
+                                    .map(|(_, member)| member.email)
+                                    .unwrap_or_default()
+                            }))
+                            .child(ui::note(move || {
+                                member_dialog
+                                    .get()
+                                    .map(|(_, member)| {
+                                        if member.admin {
+                                            "管理员".into()
+                                        } else {
+                                            "成员".into()
+                                        }
+                                    })
+                                    .unwrap_or_default()
+                            }));
+                        #[cfg(feature = "experimental-enterprise-signaling")]
+                        let card = {
+                            card.child(ui::action(
+                                "发消息",
+                                move || {
+                                    let current = state.get();
+                                    !current.directory.can_chat
+                                        || !current.chat.can_contact()
+                                        || member_dialog.get().is_none_or(|(_, member)| {
+                                            member.pending || current.chat.is_local(&member.id)
+                                        })
+                                },
+                                move || {
+                                    if let Some((epoch, member)) = member_dialog.get_untracked() {
+                                        member_dialog.set(None);
+                                        page.set(crate::first_screen::Page::Messages);
+                                        if state.get_untracked().chat.can_choose() {
+                                            enterprise_chat::send_action(
+                                                state,
+                                                &contact_start,
+                                                enterprise_chat::Action::Invite(member.id),
+                                            );
+                                        } else {
+                                            enterprise_chat::send_action(
+                                                state,
+                                                &contact_start,
+                                                enterprise_chat::Action::Enable,
+                                            );
+                                            contact_chat.set(Some((epoch, member.id)));
+                                        }
+                                    }
+                                },
+                            ))
+                        };
+                        #[cfg(feature = "experimental-enterprise-meeting")]
+                        let card = {
+                            card.child(ui::secondary(
+                                "发起会议",
+                                move || {
+                                    let meeting = meeting_state.get();
+                                    !meeting.can_enter()
+                                        || member_dialog.get().is_none_or(|(_, member)| {
+                                            member.pending
+                                                || meeting.local_member.as_ref() == Some(&member.id)
+                                        })
+                                },
+                                move || {
+                                    if let Some((_, member)) = member_dialog.get_untracked() {
+                                        member_dialog.set(None);
+                                        page.set(crate::first_screen::Page::Meeting);
+                                        prejoin.set(Some(
+                                            crate::ui::meeting::MeetingCommand::CreateFor {
+                                                member_id: member.id,
+                                            },
+                                        ));
+                                    }
+                                },
+                            ))
+                        };
+                        nsh_base::dialog()
+                            .on_cancel(move || member_dialog.set(None))
+                            .child(card.child(ui::secondary(
+                                "关闭资料卡",
+                                || false,
+                                move || member_dialog.set(None),
+                            )))
+                    },
+                ))
+        },
+    ));
+    let diagnostics = view().gap_2();
     #[cfg(feature = "experimental-enterprise-media")]
-    let root = root.child(media.view());
+    let diagnostics = diagnostics.child(media.view());
     #[cfg(feature = "experimental-enterprise-files")]
-    let root = root.child(files.view());
-    root
+    let chat_panel = view().gap_2().child(chat_panel).child(files.view());
+    IdentityPanels {
+        account: account.into_element(),
+        directory: directory.into_element(),
+        chat: chat_panel.into_element(),
+        diagnostics: diagnostics.into_element(),
+    }
 }
 
 #[cfg(test)]
@@ -1121,8 +1320,13 @@ mod tests {
                 },
             ],
             selected_slug: Some(slug.into()),
-            current_title: format!("当前工作区：{slug}"),
-            members: vec![format!("{slug}-已验证成员")],
+            members: vec![DirectoryMember {
+                id: slug.into(),
+                name: format!("{slug}-已验证成员"),
+                email: "member@example.com".into(),
+                pending: false,
+                admin: false,
+            }],
             #[cfg(feature = "experimental-enterprise-signaling")]
             chat_members: Vec::new(),
             #[cfg(feature = "experimental-enterprise-signaling")]
@@ -1141,7 +1345,7 @@ mod tests {
         assert!(!state.signed_in);
         assert!(state.directory.workspaces.is_empty());
         assert!(state.directory.members.is_empty());
-        assert!(state.status.contains("不会模拟登录成功"));
+        assert!(state.status.contains("此版本暂不支持企业登录"));
     }
     #[test]
     fn switch_requires_explicit_known_selection_and_blocks_repeated_clicks() {
@@ -1171,7 +1375,7 @@ mod tests {
         assert_eq!(state.directory.selected_slug.as_deref(), Some("old"));
         state.apply(id, Event::Ready(verified_view("new"), "切换完成".into()));
         assert_eq!(state.directory.selected_slug.as_deref(), Some("new"));
-        assert_eq!(state.directory.members, vec!["new-已验证成员"]);
+        assert_eq!(state.directory.members[0].name, "new-已验证成员");
     }
     #[test]
     fn logout_expiry_and_new_login_prevent_late_results_from_restoring_directory() {
@@ -1223,6 +1427,8 @@ mod tests {
 mod enterprise_chat {
     use super::*;
     use crate::enterprise_peer::{EnterprisePeer, LeaseObserver};
+    use crate::first_screen::{self, Delivery, Message};
+    use std::collections::BTreeMap;
     use surreal_ck_native_identity::SignalConnection;
     use surreal_ck_native_signaling::Signaling;
     use surreal_ck_peer_transport::chat::{Event as PeerEvent, MAX_TEXT_BYTES};
@@ -1279,8 +1485,11 @@ mod enterprise_chat {
         status: String,
         invitations: Vec<Invitation>,
         selected_invitation: Option<Invitation>,
-        messages: Vec<String>,
+        messages: Vec<Message>,
         draft: String,
+        peer: Option<MemberChoice>,
+        drafts: BTreeMap<String, String>,
+        history: BTreeMap<String, Vec<Message>>,
     }
     impl ViewState {
         pub(super) fn invalidate(&mut self) {
@@ -1294,19 +1503,57 @@ mod enterprise_chat {
             if self.phase != ChatPhase::Off {
                 return None;
             }
-            self.invalidate();
+            self.generation = self.generation.wrapping_add(1);
+            self.busy = false;
             self.phase = ChatPhase::Starting;
-            self.status = "正在验证当前真人身份并连接信令…".into();
+            self.status = "正在连接…".into();
             Some(self.generation)
         }
         fn stop(&mut self) -> u64 {
-            self.invalidate();
+            self.generation = self.generation.wrapping_add(1);
+            first_screen::failed(&mut self.messages);
+            self.archive_conversation();
+            self.busy = false;
+            self.invitations.clear();
+            self.selected_invitation = None;
             self.phase = ChatPhase::Stopping;
-            self.status = "正在关闭聊天并等待本地通道确认…".into();
+            self.status = "正在断开聊天…".into();
             self.generation
         }
-        fn can_choose(&self) -> bool {
+        pub(super) fn can_choose(&self) -> bool {
             self.phase == ChatPhase::Listening && !self.busy
+        }
+        pub(super) fn can_contact(&self) -> bool {
+            self.phase == ChatPhase::Off || self.can_choose()
+        }
+        pub(super) fn is_local(&self, member_id: &str) -> bool {
+            self.member_id == member_id
+        }
+        pub(super) fn contact_request_failed(&self) -> bool {
+            matches!(
+                self.phase,
+                ChatPhase::Off | ChatPhase::Stopping | ChatPhase::CloseFailed
+            )
+        }
+        fn archive_conversation(&mut self) {
+            let draft = std::mem::take(&mut self.draft);
+            let messages = std::mem::take(&mut self.messages);
+            if let Some(peer) = self.peer.take() {
+                if !draft.is_empty() {
+                    self.drafts.insert(peer.id.clone(), draft);
+                }
+                if !messages.is_empty() {
+                    self.history.insert(peer.id, messages);
+                }
+            }
+        }
+        fn select_peer(&mut self, peer: MemberChoice) {
+            if self.peer.as_ref().is_none_or(|active| active.id != peer.id) {
+                self.archive_conversation();
+                self.draft = self.drafts.remove(&peer.id).unwrap_or_default();
+                self.messages = self.history.remove(&peer.id).unwrap_or_default();
+            }
+            self.peer = Some(peer);
         }
         pub(super) fn apply(&mut self, generation: u64, update: Update) {
             if generation != self.generation {
@@ -1321,12 +1568,15 @@ mod enterprise_chat {
                     self.busy = false;
                     self.messages.clear();
                     self.draft.clear();
+                    self.drafts.clear();
+                    self.history.clear();
+                    self.peer = None;
                     self.status = "成员有效性已失效，正在等待聊天关闭确认…".into();
                 }
                 Update::Listening(id) if self.phase == ChatPhase::Starting => {
                     self.member_id = id;
                     self.phase = ChatPhase::Listening;
-                    self.status = "身份已验证，正在等待邀请；尚未连接对端。".into();
+                    self.status = "选择一位成员，或接受收到的邀请。".into();
                 }
                 Update::Inbox(invitations) if self.phase == ChatPhase::Listening => {
                     if self.selected_invitation.as_ref().is_some_and(|selected| {
@@ -1349,27 +1599,25 @@ mod enterprise_chat {
                 }
                 Update::Open(_) if self.phase == ChatPhase::Negotiating => {
                     self.phase = ChatPhase::Connected;
-                    self.status = "企业聊天通道已连通 · 仅文字聊天".into();
+                    self.status.clear();
                 }
                 Update::Text(message, _) if self.phase == ChatPhase::Connected => {
-                    self.push(format!("对方：{message}"))
+                    first_screen::received(&mut self.messages, message);
                 }
                 Update::Queued(operation, message, _)
                     if self.phase == ChatPhase::Connected && self.operation == operation =>
                 {
                     self.busy = false;
-                    if self.draft == message {
-                        self.draft.clear();
-                    }
-                    self.push(format!("我（已交给通道）：{message}"));
+                    first_screen::queued(&mut self.messages, &message);
                 }
                 Update::Rejected if self.phase == ChatPhase::Listening => {
                     self.busy = false;
                     self.invitations.clear();
                     self.selected_invitation = None;
-                    self.status = "已拒绝该邀请，等待下一次真实列表更新。".into();
+                    self.status = "已拒绝邀请。".into();
                 }
                 Update::Stopped(message, confirmed) => {
+                    first_screen::failed(&mut self.messages);
                     self.busy = false;
                     self.phase = if confirmed {
                         ChatPhase::Off
@@ -1383,12 +1631,6 @@ mod enterprise_chat {
                 }
                 _ => {}
             }
-        }
-        fn push(&mut self, message: String) {
-            if self.messages.len() >= 200 {
-                self.messages.remove(0);
-            }
-            self.messages.push(message);
         }
     }
 
@@ -1797,7 +2039,7 @@ mod enterprise_chat {
         closed
     }
 
-    fn send_action(
+    pub(super) fn send_action(
         state: Signal<IdentityViewState>,
         sender: &async_channel::Sender<Command>,
         action: Action,
@@ -1823,8 +2065,35 @@ mod enterprise_chat {
                 if !next.chat.can_choose() {
                     return;
                 }
+                let peer = match &action {
+                    Action::Invite(id) => next
+                        .directory
+                        .chat_members
+                        .iter()
+                        .find(|member| {
+                            &member.id == id && !member.pending && member.id != next.chat.member_id
+                        })
+                        .cloned(),
+                    Action::Accept(id) => next
+                        .chat
+                        .invitations
+                        .iter()
+                        .find(|invitation| &invitation.id == id)
+                        .map(|invitation| MemberChoice {
+                            id: invitation.sender.clone(),
+                            name: invitation.name.clone(),
+                            pending: false,
+                        }),
+                    _ => None,
+                };
+                if matches!(action, Action::Invite(_) | Action::Accept(_)) {
+                    let Some(peer) = peer else {
+                        return;
+                    };
+                    next.chat.select_peer(peer);
+                }
                 next.chat.busy = true;
-                next.chat.status = "正在处理这次明确选择，请等待；不会重复提交。".into();
+                next.chat.status = "正在处理邀请…".into();
                 next.chat.generation
             }
         };
@@ -1839,6 +2108,50 @@ mod enterprise_chat {
         }
         state.set(next);
     }
+
+    fn submit_message(
+        state: Signal<IdentityViewState>,
+        sender: &async_channel::Sender<Command>,
+        retry: Option<usize>,
+    ) {
+        let mut next = state.get_untracked();
+        if !next.signed_in
+            || next.phase != Phase::Ready
+            || !next.directory.can_chat
+            || next.chat.phase != ChatPhase::Connected
+            || next.chat.busy
+        {
+            return;
+        }
+        let text = match retry {
+            Some(index) => {
+                let Some(message) = next
+                    .chat
+                    .messages
+                    .get_mut(index)
+                    .filter(|message| message.mine && message.delivery == Delivery::Failed)
+                else {
+                    return;
+                };
+                message.delivery = Delivery::Sending;
+                message.text.clone()
+            }
+            None => {
+                let text = next.chat.draft.clone();
+                if text.trim().is_empty() || text.len() > MAX_TEXT_BYTES {
+                    return;
+                }
+                first_screen::pending(&mut next.chat.messages, text.clone());
+                next.chat.draft.clear();
+                text
+            }
+        };
+        next.chat.operation = next.chat.operation.wrapping_add(1);
+        let operation = next.chat.operation;
+        state.set(next);
+        send_action(state, sender, Action::Send(operation, text));
+    }
+
     pub(super) fn panel(
         state: Signal<IdentityViewState>,
         commands: async_channel::Sender<Command>,
@@ -1849,54 +2162,398 @@ mod enterprise_chat {
         let invite = commands.clone();
         let accept = commands.clone();
         let reject = commands.clone();
-        view().gap_2().p_3().border_1().border_color(move || nsh_base::theme().border)
-            .child(text("实验 · 企业成员文字聊天"))
-            .child(text("默认关闭，需要已配置的原生登录和已部署的 061/062。仅直连本地候选，无内置 STUN/TURN；不包含音视频、文件或离线消息。"))
-            .child(text("点击启用才连接信令。邀请会向所选成员分享本次网络候选；只有双方明确操作后协商。成员撤销按周期检查，非即时撤销。"))
-            .child(text(move || if !state.get().directory.can_chat {
-                "需要已验证的当前 participant 工作区；Owner/system 身份不能冒充成员。".to_owned()
-            } else { state.get().chat.status }))
-            .child(view().flex_row().gap_2()
-                .child(ui::action("启用实验文字聊天", move || { let s=state.get(); s.phase != Phase::Ready || !s.directory.can_chat || s.chat.phase != ChatPhase::Off }, move || send_action(state, &enable, Action::Enable)))
-                .child(ui::action("停止实验聊天", move || matches!(state.get().chat.phase, ChatPhase::Off | ChatPhase::Stopping | ChatPhase::CloseFailed), move || { stop_tools(); send_action(state, &stop, Action::Stop); })))
-            .child(when(move || state.get().chat.phase == ChatPhase::Listening, move || {
-                let invite = invite.clone(); let accept = accept.clone(); let reject = reject.clone();
-                view().gap_2().child(text("选择真实成员发送邀请"))
-                    .child(virtual_list(move || state.get().directory.chat_members.len(), move |at| {
-                        let invite = invite.clone();
-                        view().flex_row().gap_2()
-                            .child(text(move || state.get().directory.chat_members.get(at.index()).map(|m| if m.pending {format!("{}（待加入）",m.name)} else {m.name.clone()}).unwrap_or_default()).flex_1())
-                            .child(ui::action("邀请此成员", move || { let s=state.get(); !s.chat.can_choose() || s.directory.chat_members.get(at.index()).is_none_or(|m| m.pending || m.id==s.chat.member_id) }, move || {
-                                let s=state.get_untracked(); if let Some(member)=s.directory.chat_members.get(at.index()).filter(|m| !m.pending && m.id!=s.chat.member_id) { send_action(state,&invite,Action::Invite(member.id.clone())); }
-                            }))
-                    }).estimated_item_size(px(54.0)).h(px(130.0)))
-                    .child(text("收到的邀请（来自真实服务，未自动接受）"))
-                    .child(when(move || state.get().chat.invitations.is_empty(), || text("当前没有可见邀请。")))
-                    .child(virtual_list(move || state.get().chat.invitations.len(), move |at| {
-                        view().gap_2().child(text(move || state.get().chat.invitations.get(at.index()).map(|i|format!("{} · {}",i.name,i.sender)).unwrap_or_default()))
-                            .child(ui::action("查看邀请详情",move || !state.get().chat.can_choose(),move || {
-                                state.update(|s| { if s.chat.can_choose() { s.chat.selected_invitation=s.chat.invitations.get(at.index()).cloned(); } });
-                            }))
-                    }).estimated_item_size(px(85.0)).h(px(180.0)))
-                    .child(when(move || state.get().chat.selected_invitation.is_some(), move || {
-                        let accept=accept.clone(); let reject=reject.clone();
-                        view().gap_2().child(text(move || state.get().chat.selected_invitation.as_ref().map(|i|format!("确认这次邀请：{} · {} · {}",i.name,i.sender,i.id)).unwrap_or_default()))
-                            .child(view().flex_row().gap_2()
-                                .child(ui::action("接受已选邀请",move || !state.get().chat.can_choose(),move || { if let Some(i)=state.get_untracked().chat.selected_invitation {send_action(state,&accept,Action::Accept(i.id));} }))
-                                .child(ui::action("拒绝已选邀请",move || !state.get().chat.can_choose(),move || { if let Some(i)=state.get_untracked().chat.selected_invitation {send_action(state,&reject,Action::Reject(i.id));} })))
-                    }))
+        view()
+            .gap_2()
+            .p_3()
+            .border_1()
+            .border_color(move || nsh_base::theme().border)
+            .child(text("团队会话").font_weight(FontWeight::BOLD))
+            .child(text(move || {
+                if !state.get().directory.can_chat {
+                    "当前工作区暂不可用。".to_owned()
+                } else {
+                    state.get().chat.status
+                }
             }))
-            .child(when(move || matches!(state.get().chat.phase, ChatPhase::Connected | ChatPhase::Negotiating), move || {
-                let commands=commands.clone();
-                view().gap_2()
-                    .child(virtual_list(move || state.get().chat.messages.len(), move |at| text(move || state.get().chat.messages.get(at.index()).cloned().unwrap_or_default())).estimated_item_size(px(32.0)).h(px(160.0)))
-                    .child(nsh_base::input().value(move || state.get().chat.draft).on_change(move |value:&str| state.update(|s|s.chat.draft=value.to_owned())).placeholder("文字消息，最多 16 KiB").px_3().py_3().border_1())
-                    .child(ui::action("发送企业消息",move || {let s=state.get(); s.chat.phase!=ChatPhase::Connected || s.chat.busy || s.chat.draft.trim().is_empty() || s.chat.draft.len()>MAX_TEXT_BYTES},move || {
-                        let mut s=state.get_untracked(); if s.chat.phase!=ChatPhase::Connected || s.chat.busy || s.chat.draft.trim().is_empty() || s.chat.draft.len()>MAX_TEXT_BYTES {return;}
-                        s.chat.operation=s.chat.operation.wrapping_add(1); let operation=s.chat.operation; let text=s.chat.draft.clone();state.set(s);
-                        send_action(state,&commands,Action::Send(operation,text));
-                    }))
-            }))
+            .child(
+                view()
+                    .flex_row()
+                    .gap_2()
+                    .child(ui::action(
+                        "连接团队会话",
+                        move || {
+                            let s = state.get();
+                            s.phase != Phase::Ready
+                                || !s.directory.can_chat
+                                || s.chat.phase != ChatPhase::Off
+                        },
+                        move || send_action(state, &enable, Action::Enable),
+                    ))
+                    .child(ui::action(
+                        "断开会话",
+                        move || {
+                            matches!(
+                                state.get().chat.phase,
+                                ChatPhase::Off | ChatPhase::Stopping | ChatPhase::CloseFailed
+                            )
+                        },
+                        move || {
+                            stop_tools();
+                            send_action(state, &stop, Action::Stop);
+                        },
+                    )),
+            )
+            .child(when(
+                move || state.get().chat.phase == ChatPhase::Listening,
+                move || {
+                    let invite = invite.clone();
+                    let accept = accept.clone();
+                    let reject = reject.clone();
+                    view()
+                        .gap_2()
+                        .child(text("发起会话"))
+                        .child(
+                            virtual_list(
+                                move || state.get().directory.chat_members.len(),
+                                move |at| {
+                                    let invite = invite.clone();
+                                    view()
+                                        .flex_row()
+                                        .gap_2()
+                                        .child(
+                                            text(move || {
+                                                state
+                                                    .get()
+                                                    .directory
+                                                    .chat_members
+                                                    .get(at.index())
+                                                    .map(|m| {
+                                                        if m.pending {
+                                                            format!("{}（待加入）", m.name)
+                                                        } else {
+                                                            m.name.clone()
+                                                        }
+                                                    })
+                                                    .unwrap_or_default()
+                                            })
+                                            .flex_1(),
+                                        )
+                                        .child(ui::action(
+                                            "邀请此成员",
+                                            move || {
+                                                let s = state.get();
+                                                !s.chat.can_choose()
+                                                    || s.directory
+                                                        .chat_members
+                                                        .get(at.index())
+                                                        .is_none_or(|m| {
+                                                            m.pending || m.id == s.chat.member_id
+                                                        })
+                                            },
+                                            move || {
+                                                let s = state.get_untracked();
+                                                if let Some(member) =
+                                                    s.directory.chat_members.get(at.index()).filter(
+                                                        |m| !m.pending && m.id != s.chat.member_id,
+                                                    )
+                                                {
+                                                    send_action(
+                                                        state,
+                                                        &invite,
+                                                        Action::Invite(member.id.clone()),
+                                                    );
+                                                }
+                                            },
+                                        ))
+                                },
+                            )
+                            .estimated_item_size(px(54.0))
+                            .h(px(130.0)),
+                        )
+                        .child(text("收到的邀请"))
+                        .child(when(
+                            move || state.get().chat.invitations.is_empty(),
+                            || text("暂无会话邀请。"),
+                        ))
+                        .child(
+                            virtual_list(
+                                move || state.get().chat.invitations.len(),
+                                move |at| {
+                                    view()
+                                        .gap_2()
+                                        .child(text(move || {
+                                            state
+                                                .get()
+                                                .chat
+                                                .invitations
+                                                .get(at.index())
+                                                .map(|i| format!("{} · {}", i.name, i.sender))
+                                                .unwrap_or_default()
+                                        }))
+                                        .child(ui::action(
+                                            "查看邀请详情",
+                                            move || !state.get().chat.can_choose(),
+                                            move || {
+                                                state.update(|s| {
+                                                    if s.chat.can_choose() {
+                                                        s.chat.selected_invitation = s
+                                                            .chat
+                                                            .invitations
+                                                            .get(at.index())
+                                                            .cloned();
+                                                    }
+                                                });
+                                            },
+                                        ))
+                                },
+                            )
+                            .estimated_item_size(px(85.0))
+                            .h(px(180.0)),
+                        )
+                        .child(when(
+                            move || state.get().chat.selected_invitation.is_some(),
+                            move || {
+                                let accept = accept.clone();
+                                let reject = reject.clone();
+                                view()
+                                    .gap_2()
+                                    .child(text(move || {
+                                        state
+                                            .get()
+                                            .chat
+                                            .selected_invitation
+                                            .as_ref()
+                                            .map(|i| {
+                                                format!(
+                                                    "确认这次邀请：{} · {} · {}",
+                                                    i.name, i.sender, i.id
+                                                )
+                                            })
+                                            .unwrap_or_default()
+                                    }))
+                                    .child(
+                                        view()
+                                            .flex_row()
+                                            .gap_2()
+                                            .child(ui::action(
+                                                "接受已选邀请",
+                                                move || !state.get().chat.can_choose(),
+                                                move || {
+                                                    if let Some(i) = state
+                                                        .get_untracked()
+                                                        .chat
+                                                        .selected_invitation
+                                                    {
+                                                        send_action(
+                                                            state,
+                                                            &accept,
+                                                            Action::Accept(i.id),
+                                                        );
+                                                    }
+                                                },
+                                            ))
+                                            .child(ui::action(
+                                                "拒绝已选邀请",
+                                                move || !state.get().chat.can_choose(),
+                                                move || {
+                                                    if let Some(i) = state
+                                                        .get_untracked()
+                                                        .chat
+                                                        .selected_invitation
+                                                    {
+                                                        send_action(
+                                                            state,
+                                                            &reject,
+                                                            Action::Reject(i.id),
+                                                        );
+                                                    }
+                                                },
+                                            )),
+                                    )
+                            },
+                        ))
+                },
+            ))
+            .child(when(
+                move || state.get().chat.peer.is_some(),
+                move || {
+                    let submit = commands.clone();
+                    let enter = commands.clone();
+                    let retry = commands.clone();
+                    view()
+                        .gap_2()
+                        .child(
+                            text(move || {
+                                state
+                                    .get()
+                                    .chat
+                                    .peer
+                                    .map(|peer| peer.name)
+                                    .unwrap_or_default()
+                            })
+                            .font_weight(FontWeight::BOLD),
+                        )
+                        .child(
+                            virtual_list(
+                                move || state.get().chat.messages.len(),
+                                move |at| {
+                                    let index = at.index();
+                                    let retry = retry.clone();
+                                    let mine = move || {
+                                        state.get().chat.messages.get(index).is_some_and(|m| m.mine)
+                                    };
+                                    let failed = move || {
+                                        state
+                                            .get()
+                                            .chat
+                                            .messages
+                                            .get(index)
+                                            .is_some_and(|m| m.delivery == Delivery::Failed)
+                                    };
+                                    let starts = move || {
+                                        let c = state.get().chat;
+                                        index == 0
+                                            || c.messages
+                                                .get(index)
+                                                .zip(c.messages.get(index - 1))
+                                                .is_some_and(|(message, previous)| {
+                                                    !message.continues(previous)
+                                                })
+                                    };
+                                    let sender = move || {
+                                        if mine() {
+                                            "我".into()
+                                        } else {
+                                            state
+                                                .get()
+                                                .chat
+                                                .peer
+                                                .map(|peer| peer.name)
+                                                .unwrap_or_default()
+                                        }
+                                    };
+                                    view()
+                                        .gap_1()
+                                        .style_when(mine, |style| style.items_end())
+                                        .child(when(starts, move || {
+                                            view()
+                                                .flex_row()
+                                                .gap_2()
+                                                .items_center()
+                                                .child(ui::avatar(
+                                                    move || {
+                                                        sender()
+                                                            .chars()
+                                                            .next()
+                                                            .map(String::from)
+                                                            .unwrap_or_default()
+                                                    },
+                                                    24.0,
+                                                ))
+                                                .child(ui::note(move || {
+                                                    let time = state
+                                                        .get()
+                                                        .chat
+                                                        .messages
+                                                        .get(index)
+                                                        .map(Message::time_label)
+                                                        .unwrap_or_default();
+                                                    format!("{}  {time}", sender())
+                                                }))
+                                        }))
+                                        .child(
+                                            view()
+                                                .p_2()
+                                                .rounded(px(8.0))
+                                                .border_1()
+                                                .border_color(move || {
+                                                    if failed() {
+                                                        nsh_base::theme().destructive
+                                                    } else {
+                                                        nsh_base::theme().border
+                                                    }
+                                                })
+                                                .style_when(failed, |style| style.border_dashed())
+                                                .bg(move || {
+                                                    if mine() {
+                                                        nsh_base::theme().accent
+                                                    } else {
+                                                        nsh_base::theme().card
+                                                    }
+                                                })
+                                                .child(text(move || {
+                                                    state
+                                                        .get()
+                                                        .chat
+                                                        .messages
+                                                        .get(index)
+                                                        .map(|m| m.text.clone())
+                                                        .unwrap_or_default()
+                                                })),
+                                        )
+                                        .child(ui::note(move || {
+                                            let c = state.get().chat;
+                                            c.messages
+                                                .get(index)
+                                                .filter(|message| {
+                                                    message.delivery != Delivery::Sent
+                                                        || c.messages.get(index + 1).is_none_or(
+                                                            |next| !next.continues(message),
+                                                        )
+                                                })
+                                                .and_then(Message::status)
+                                                .unwrap_or_default()
+                                                .into()
+                                        }))
+                                        .child(when(failed, move || {
+                                            let retry = retry.clone();
+                                            ui::secondary(
+                                                "重试",
+                                                move || {
+                                                    let c = state.get().chat;
+                                                    c.phase != ChatPhase::Connected || c.busy
+                                                },
+                                                move || submit_message(state, &retry, Some(index)),
+                                            )
+                                        }))
+                                },
+                            )
+                            .estimated_item_size(px(67.0))
+                            .h(px(245.0)),
+                        )
+                        .child(
+                            view()
+                                .flex_row()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    nsh_base::input()
+                                        .value(move || state.get().chat.draft)
+                                        .on_change(move |value: &str| {
+                                            state.update(|s| s.chat.draft = value.to_owned())
+                                        })
+                                        .on_submit(move |_: &str| {
+                                            submit_message(state, &enter, None)
+                                        })
+                                        .placeholder(first_screen::COMPOSER_PLACEHOLDER)
+                                        .flex_1()
+                                        .p_2()
+                                        .border_1(),
+                                )
+                                .child(ui::action(
+                                    "发送消息",
+                                    move || {
+                                        let s = state.get();
+                                        s.chat.phase != ChatPhase::Connected
+                                            || s.chat.busy
+                                            || s.chat.draft.trim().is_empty()
+                                            || s.chat.draft.len() > MAX_TEXT_BYTES
+                                    },
+                                    move || submit_message(state, &submit, None),
+                                )),
+                        )
+                },
+            ))
     }
 
     #[cfg(test)]
@@ -1933,8 +2590,8 @@ mod enterprise_chat {
             let mut app =
                 nsh_testing::Headless::start(EngineConfig::new(Root::of::<StopToolsFixture>()))
                     .unwrap();
-            app.wait_for("停止实验聊天")?;
-            app.press("停止实验聊天")?;
+            app.wait_for("断开会话")?;
+            app.press("断开会话")?;
             app.wait_for("text:local-stop-first:true generation:8")?;
             Ok(())
         }
@@ -1967,7 +2624,7 @@ mod enterprise_chat {
             let mut state = listening();
             let old = state.generation;
             state.draft = "未发送".into();
-            state.messages.push("旧会话".into());
+            first_screen::received(&mut state.messages, "旧会话".into());
             let next = state.stop();
             assert!(state.draft.is_empty());
             assert!(state.messages.is_empty());
@@ -2047,7 +2704,9 @@ mod enterprise_chat {
             );
             assert!(!state.busy);
             assert_eq!(state.draft, "新草稿");
-            assert_eq!(state.messages, vec!["我（已交给通道）：已发送"]);
+            assert_eq!(state.messages.len(), 1);
+            assert_eq!(state.messages[0].text, "已发送");
+            assert_eq!(state.messages[0].delivery, Delivery::Sent);
         }
         #[test]
         fn enterprise_chat_identity_epoch_and_expiry_reject_late_open() {
@@ -2081,7 +2740,7 @@ mod enterprise_chat {
                     state.generation,
                     Update::Open(LeaseObserver::test_only(true)),
                 );
-                state.messages.push("旧消息".into());
+                first_screen::received(&mut state.messages, "旧消息".into());
                 state.draft = "旧草稿".into();
                 state.operation = 1;
                 state.apply(state.generation, event);

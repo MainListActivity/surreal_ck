@@ -41,6 +41,7 @@ pub enum Update {
     Error(String),
     Closed,
     FileOffered(String),
+    FileAcceptResult(String, Result<(), String>),
     File(FileEvent),
     Media(Notice),
     Verification(VerificationNotice),
@@ -78,7 +79,11 @@ impl FileCommands {
                         }
                         Err(error) => Err(error),
                     },
-                    FileCommand::Accept(id, path) => files.accept(&id, path).await,
+                    FileCommand::Accept(id, path) => {
+                        let result = files.accept(&id, path).await;
+                        let _ = output.send(Update::FileAcceptResult(id, result)).await;
+                        Ok(())
+                    }
                     FileCommand::Reject(id) => files.reject(&id).await,
                     FileCommand::Cancel(id) => files.cancel(&id).await,
                 };
@@ -474,11 +479,13 @@ pub fn start() -> (Sender<Command>, Receiver<Update>, Gate) {
                             .ok_or("尚未连接")?
                             .file_commands
                             .enqueue(FileCommand::Offer(path))?,
-                        Command::AcceptFile(id, path) => current
-                            .as_ref()
-                            .ok_or("尚未连接")?
-                            .file_commands
-                            .enqueue(FileCommand::Accept(id, path))?,
+                        Command::AcceptFile(id, path) => {
+                            let result = current.as_ref().ok_or_else(|| "尚未连接".to_owned())
+                                .and_then(|state| state.file_commands.enqueue(FileCommand::Accept(id.clone(), path)));
+                            if let Err(error) = result {
+                                let _ = output.send(Update::FileAcceptResult(id, Err(error))).await;
+                            }
+                        }
                         Command::RejectFile(id) => current
                             .as_ref()
                             .ok_or("尚未连接")?

@@ -66,11 +66,11 @@ impl MockMeeting {
     }
     pub fn handle(&mut self, command: MeetingCommand) -> Vec<MeetingUpdate> {
         match command {
-            MeetingCommand::Create => {
+            MeetingCommand::Create | MeetingCommand::CreateFor { .. } => {
                 let local = self.member(self.local.clone(), true, true);
                 self.room = Some(RoomSnapshot {
                     room_id: format!("mock-{}", self.next_id),
-                    room_code: format!("MEET-{}", self.next_id),
+                    room_code: format!("MEET{:04}", self.next_id),
                     version: 1,
                     state: RoomState::Active,
                     host: local.member_id.clone(),

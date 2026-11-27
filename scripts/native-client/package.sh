@@ -106,9 +106,14 @@ case "$target" in
     if [[ -n ${MACOS_SIGN_IDENTITY:-} ]]; then
       codesign --timestamp --sign "$MACOS_SIGN_IDENTITY" "$dmg"
       if [[ -n ${APPLE_NOTARY_PROFILE:-} ]]; then
-        xcrun notarytool submit "$dmg" --keychain-profile "$APPLE_NOTARY_PROFILE" --wait
+        notary_args=(--keychain-profile "$APPLE_NOTARY_PROFILE")
+        if [[ -n ${APPLE_NOTARY_KEYCHAIN:-} ]]; then
+          notary_args+=(--keychain "$APPLE_NOTARY_KEYCHAIN")
+        fi
+        xcrun notarytool submit "$dmg" "${notary_args[@]}" --wait
         xcrun stapler staple "$dmg"
         xcrun stapler validate "$dmg"
+        codesign --verify --strict "$dmg"
         status=developer-id-notarized
       fi
     fi

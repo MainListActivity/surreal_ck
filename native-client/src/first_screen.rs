@@ -4,8 +4,6 @@
 
 /// 产品用途说明，放在设置页的「关于」。
 pub const PURPOSE: &str = "吉吉协同：团队消息、会议和屏幕共享";
-/// 预览构建的紧凑徽标，避免大块横幅占满首屏。
-pub const PREVIEW_BADGE: &str = "实验预览版";
 /// 预览构建的完整说明，放在设置页。
 pub const PREVIEW_LABEL: &str = "实验预览版 · 非正式发布，功能仍在验证，请勿用于正式工作";
 pub const NO_CONVERSATION: &str = "选择一个会话开始聊天";
@@ -17,9 +15,10 @@ pub const SEND_LABEL: &str = "发送消息";
 pub const SEARCH_PLACEHOLDER: &str = "搜索成员或消息";
 pub const DIAGNOSTICS_TITLE: &str = "开发者诊断";
 pub const DIAGNOSTICS_NOTICE: &str = "仅供开发与排障：手动 P2P 连接码、STUN/TURN、连接指纹、媒体与文件调试。这不是默认产品路径；连接码含网络地址，仅交给可信对方。";
-pub const MEETING_START: &str = "开始新会议";
+pub const MEETING_START: &str = "立即开会";
 pub const MEETING_JOIN: &str = "加入会议";
 pub const NO_LIVE_MEETINGS: &str = "当前没有进行中的会议";
+#[cfg(not(feature = "experimental-enterprise-meeting"))]
 pub const NO_LIVE_MEETINGS_HINT: &str = "会话里有人发起会议时，会显示在这里。";
 
 /// 当前构建是否为手动更新的实验预览（GitHub 预览渠道）。
@@ -81,7 +80,7 @@ impl IdentitySummary {
     /// 通讯录页标题下的一行：当前账号与工作区。
     pub fn workspace_line(&self) -> String {
         if !self.configured {
-            return "此版本未接入企业登录".into();
+            return "企业登录暂不可用".into();
         }
         if self.loading {
             return "正在登录或切换工作区…".into();
@@ -174,12 +173,12 @@ pub fn conversation_empty(
         }
         return match filter {
             ConversationFilter::All => ("暂无会话", "新的会话会显示在这里。"),
-            ConversationFilter::Unread => ("全部已读", "新消息会显示在这里。"),
+            ConversationFilter::Unread => ("暂无未读消息", ""),
             ConversationFilter::Group => ("没有群聊", "加入的群聊会显示在这里。"),
         };
     }
     if !identity.configured {
-        ("还没有团队会话", "此版本未接入企业登录，团队会话暂不可用。")
+        ("还没有团队会话", "企业登录暂不可用。")
     } else if identity.loading {
         ("正在加载会话…", "")
     } else if !identity.signed_in {
@@ -205,25 +204,23 @@ pub fn members_empty(identity: &IdentitySummary) -> (&'static str, String) {
     } else if identity.workspace.is_none() {
         ("选择一个工作区", "进入工作区后，可以看到它的成员。".into())
     } else if identity.members > 0 {
-        (
-            "工作区成员",
-            format!("共 {} 位成员。在线状态暂不显示。", identity.members),
-        )
+        ("工作区成员", format!("共 {} 位成员。", identity.members))
     } else {
         ("暂无成员", "这个工作区还没有可见成员。".into())
     }
 }
 
 /// 会议入口不可用的原因；会议能力接入前，入口保持禁用并说明下一步。
+#[cfg(any(not(feature = "experimental-enterprise-meeting"), test))]
 pub fn meeting_unavailable(identity: &IdentitySummary) -> &'static str {
     if !identity.configured {
-        "此版本未接入企业登录，暂时不能发起或加入会议。"
+        "企业会议暂不可用。"
     } else if !identity.signed_in {
         "登录企业账号后，可以从会话里发起会议。"
     } else if identity.workspace.is_none() {
         "进入一个工作区后，可以从会话里发起会议。"
     } else {
-        "会议功能正在接入中，暂不可用。"
+        "当前工作区暂无法发起会议。"
     }
 }
 
@@ -241,6 +238,7 @@ pub struct Message {
     pub mine: bool,
     pub text: String,
     pub delivery: Delivery,
+    pub at: std::time::SystemTime,
 }
 
 pub const MESSAGE_LIMIT: usize = 1000;
@@ -253,8 +251,26 @@ impl Message {
         Some(match self.delivery {
             Delivery::Sending => "发送中…",
             Delivery::Sent => "已送出",
-            Delivery::Failed => "发送失败，可再次发送",
+            Delivery::Failed => "发送失败",
         })
+    }
+
+    pub fn continues(&self, previous: &Self) -> bool {
+        self.mine == previous.mine
+            && self
+                .at
+                .duration_since(previous.at)
+                .is_ok_and(|elapsed| elapsed.as_secs() < 60)
+    }
+
+    pub fn time_label(&self) -> String {
+        let minute = self
+            .at
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            / 60;
+        format!("{:02}:{:02} UTC", (minute / 60) % 24, minute % 60)
     }
 
     pub fn label(&self) -> String {
@@ -279,6 +295,7 @@ pub fn pending(messages: &mut Vec<Message>, text: String) {
             mine: true,
             text,
             delivery: Delivery::Sending,
+            at: std::time::SystemTime::now(),
         },
     );
 }
@@ -290,6 +307,7 @@ pub fn received(messages: &mut Vec<Message>, text: String) {
             mine: false,
             text,
             delivery: Delivery::Sent,
+            at: std::time::SystemTime::now(),
         },
     );
 }
@@ -308,6 +326,7 @@ pub fn queued(messages: &mut Vec<Message>, text: &str) {
                 mine: true,
                 text: text.into(),
                 delivery: Delivery::Sent,
+                at: std::time::SystemTime::now(),
             },
         ),
     }
@@ -340,7 +359,7 @@ mod tests {
     #[test]
     fn workspace_line_follows_each_identity_state() {
         let mut s = IdentitySummary::default();
-        assert_eq!(s.workspace_line(), "此版本未接入企业登录");
+        assert_eq!(s.workspace_line(), "企业登录暂不可用");
         assert!(!s.can_sign_in());
         s.configured = true;
         assert_eq!(s.workspace_line(), "未登录");
@@ -364,7 +383,6 @@ mod tests {
         let (title, body) = members_empty(&signed_in(Some("研发部"), 2));
         assert_eq!(title, "工作区成员");
         assert!(body.contains("共 2 位成员"), "{body}");
-        assert!(body.contains("在线状态暂不显示"));
         let (title, _) = members_empty(&signed_in(None, 0));
         assert_eq!(title, "选择一个工作区");
     }
@@ -374,7 +392,7 @@ mod tests {
         let all = ConversationFilter::All;
         let mut s = IdentitySummary::default();
         let (_, body) = conversation_empty(&s, false, all, "");
-        assert!(body.contains("未接入企业登录"));
+        assert!(body.contains("企业登录暂不可用"));
         s.configured = true;
         let (_, body) = conversation_empty(&s, false, all, "");
         assert!(body.contains("登录企业账号"));
@@ -386,17 +404,40 @@ mod tests {
         let (title, _) = conversation_empty(&s, true, all, "找不到");
         assert_eq!(title, "没有匹配的会话");
         let unread = ConversationFilter::Unread;
-        assert_eq!(conversation_empty(&s, true, unread, "").0, "全部已读");
+        assert_eq!(conversation_empty(&s, true, unread, "").0, "暂无未读消息");
     }
 
     #[test]
     fn meeting_entry_explains_why_it_is_unavailable() {
         let mut s = IdentitySummary::default();
-        assert!(meeting_unavailable(&s).contains("未接入企业登录"));
+        assert!(meeting_unavailable(&s).contains("企业会议暂不可用"));
         s.configured = true;
         assert!(meeting_unavailable(&s).contains("登录企业账号"));
         assert!(meeting_unavailable(&signed_in(None, 0)).contains("工作区"));
-        assert!(meeting_unavailable(&signed_in(Some("w"), 1)).contains("暂不可用"));
+        assert!(meeting_unavailable(&signed_in(Some("w"), 1)).contains("暂无法发起会议"));
+    }
+
+    #[test]
+    fn messages_group_only_adjacent_same_sender_under_one_minute() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let previous = Message {
+            mine: true,
+            text: "第一条".into(),
+            delivery: Delivery::Sent,
+            at: UNIX_EPOCH + Duration::from_secs(60),
+        };
+        let mut next = previous.clone();
+        next.at += Duration::from_secs(59);
+        assert!(next.continues(&previous));
+        next.at += Duration::from_secs(1);
+        assert!(!next.continues(&previous));
+        next.at = previous.at;
+        next.mine = false;
+        assert!(!next.continues(&previous));
+        assert!(!previous.continues(&Message {
+            at: previous.at + Duration::from_secs(1),
+            ..previous.clone()
+        }));
     }
 
     #[test]

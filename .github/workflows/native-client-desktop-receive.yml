@@ -11,6 +11,7 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - 'native-client/**'
       - 'native-transport/**'
       - 'scripts/native-client/check-desktop-receive.sh'
       - 'scripts/native-client/check-native-host.sh'

@@ -82,10 +82,16 @@ fn update_panel() -> impl IntoElement {
 }
 #[component]
 pub fn Collaboration() -> impl IntoElement {
+    use call_bridge::Source;
     use first_screen::{ConversationFilter, Delivery, Page, Session};
-    use ui::icons::{INK, Icon};
+    use nsh_base::button;
+    use ui::icons::Icon;
     apply_theme();
     let page = signal(Page::Messages);
+    let account_open = signal(false);
+    let directory_search = signal(String::new());
+    let guest_mode = signal(false);
+    let media_open = signal(false);
     let draft = signal(String::new());
     let remote = signal(String::new());
     let local = signal(String::new());
@@ -95,8 +101,31 @@ pub fn Collaboration() -> impl IntoElement {
     let status = signal("离线".to_owned());
     let session = signal(Session::Offline);
     let identity = signal(first_screen::IdentitySummary::default());
+    let login_required = identity_ui::identity_available();
+    let onboarding =
+        move || login_required && identity.get().workspace.is_none() && !guest_mode.get();
+    let team_messages = move || {
+        cfg!(feature = "experimental-enterprise-signaling")
+            && identity.get().workspace.is_some()
+            && !connected.get()
+    };
+    let quick_jump = signal(false);
+    on_key("mod+k", move |_| {
+        if !onboarding() {
+            quick_jump.set(!quick_jump.get_untracked());
+        }
+    });
+    on_key("escape", move |_| {
+        account_open.set(false);
+        media_open.set(false);
+        quick_jump.set(false);
+    });
     #[cfg(feature = "experimental-enterprise-meeting")]
     let meeting_bridge = meeting_actor::Bridge::new();
+    #[cfg(feature = "experimental-enterprise-meeting")]
+    let minimized = signal(false);
+    #[cfg(feature = "experimental-enterprise-meeting")]
+    let prejoin = signal(None::<ui::meeting::MeetingCommand>);
     let messages = signal(Vec::<first_screen::Message>::new());
     let query = signal(String::new());
     let filter = signal(ConversationFilter::All);
@@ -121,6 +150,7 @@ pub fn Collaboration() -> impl IntoElement {
                 Update::Verification(notice) => verification.event(notice),
                 Update::Media(event) => call.event(event),
                 Update::FileOffered(id) => files.offered(id),
+                Update::FileAcceptResult(id, result) => files.accept_result(id, result),
                 Update::File(event) => files.event(event),
                 Update::Code(code) => {
                     local.set(code);
@@ -182,7 +212,7 @@ pub fn Collaboration() -> impl IntoElement {
     let accept = commands.clone();
     let send = commands.clone();
     let emergency_close = commands.clone();
-    let close = commands;
+    let close = commands.clone();
     let send_message = std::rc::Rc::new(move || {
         let text = draft.get_untracked();
         if !connected.get_untracked() || sending.get_untracked() || text.trim().is_empty() {
@@ -199,12 +229,24 @@ pub fn Collaboration() -> impl IntoElement {
     let submit_message = send_message.clone();
     let wide = || window().width >= px(960.0);
     // 有连接、正在关闭或媒体尚未确认关闭时，才在顶部显示状态条和停止按钮。
-    let media_active = move || connected.get() || busy.get() || call.needs_stop();
     let session_alert = move || session.get().failed();
+    #[cfg(feature = "experimental-enterprise-meeting")]
+    let meeting_attention = {
+        let state = meeting_bridge.state();
+        move || {
+            state
+                .get()
+                .devices
+                .values()
+                .any(|device| *device != ui::meeting::DeviceState::Off)
+        }
+    };
+    #[cfg(not(feature = "experimental-enterprise-meeting"))]
+    let meeting_attention = || false;
     let stop_media = move || {
         ui::danger(
-            "断开并停止媒体",
-            move || !connected.get() && !busy.get() && !call.needs_stop(),
+            "停止全部媒体",
+            move || !call.needs_stop(),
             move || {
                 verification.cancel();
                 if emergency_close.try_send(Command::Close).is_ok() {
@@ -244,10 +286,7 @@ pub fn Collaboration() -> impl IntoElement {
                             .font_weight(FontWeight::BOLD)
                             .test_id("conversation-heading"),
                     )
-                    .child(view().flex_1())
-                    .child(when(first_screen::is_preview, || {
-                        ui::badge(first_screen::PREVIEW_BADGE)
-                    })),
+                    .child(view().flex_1()),
             )
             .child(ui::search_field(query, first_screen::SEARCH_PLACEHOLDER))
             .child(
@@ -279,7 +318,7 @@ pub fn Collaboration() -> impl IntoElement {
                     .child(when(
                         move || identity.get().can_sign_in(),
                         move || {
-                            ui::action("登录企业账号", || false, move || page.set(Page::Members))
+                            ui::action("登录企业账号", || false, move || account_open.set(true))
                         },
                     ))
                 },
@@ -317,7 +356,10 @@ pub fn Collaboration() -> impl IntoElement {
     // 消息页：会话头、气泡记录、底部输入。没有会话时显示空状态，不编造联系人。
     let messages_page = view()
         .flex_1()
-        .style_when(move || page.get() != Page::Messages, |style| style.hidden())
+        .style_when(
+            move || page.get() != Page::Messages || team_messages(),
+            |style| style.hidden(),
+        )
         .child(when(
             move || !wide(),
             move || view().px_4().pt(px(12.0)).child(conversation_list()),
@@ -347,21 +389,6 @@ pub fn Collaboration() -> impl IntoElement {
                     )
             },
         ))
-        .child(when(session_alert, move || {
-            view()
-                .flex_row()
-                .items_center()
-                .gap_2()
-                .px_5()
-                .py_2()
-                .bg(move || theme().accent)
-                .child(Icon::Warning.view(INK, 16.0))
-                .child(
-                    text(move || session.get().line())
-                        .text_size(px(13.0))
-                        .text_color(move || theme().destructive),
-                )
-        }))
         .child(when(
             move || !connected.get() && messages.get().is_empty(),
             move || {
@@ -390,6 +417,15 @@ pub fn Collaboration() -> impl IntoElement {
             },
         ))
         .child(
+            scroll()
+                .max_h(px(220.0))
+                .style_when(
+                    move || !connected.get() && !files.can_export(),
+                    |style| style.hidden(),
+                )
+                .child(files.panel(file_commands, connected)),
+        )
+        .child(
             virtual_list(
                 move || messages.get().len(),
                 move |at| {
@@ -407,6 +443,13 @@ pub fn Collaboration() -> impl IntoElement {
                             .get(index)
                             .is_some_and(|message| message.delivery == Delivery::Failed)
                     };
+                    let grouped = move || {
+                        let list = messages.get();
+                        index > 0
+                            && list
+                                .get(index)
+                                .is_some_and(|message| message.continues(&list[index - 1]))
+                    };
                     view()
                         .flex_row()
                         .px_5()
@@ -418,10 +461,21 @@ pub fn Collaboration() -> impl IntoElement {
                                 .gap_1()
                                 .style_when(mine, |style| style.items_end())
                                 .child(
-                                    text("对方")
-                                        .text_size(px(12.0))
-                                        .text_color(move || theme().muted_foreground)
-                                        .style_when(mine, |style| style.hidden()),
+                                    text(move || {
+                                        messages.get().get(index).map_or_else(
+                                            String::new,
+                                            |message| {
+                                                format!(
+                                                    "{} · {}",
+                                                    if message.mine { "我" } else { "对方" },
+                                                    message.time_label()
+                                                )
+                                            },
+                                        )
+                                    })
+                                    .text_size(px(12.0))
+                                    .text_color(move || theme().muted_foreground)
+                                    .style_when(grouped, |style| style.hidden()),
                                 )
                                 .child(
                                     view()
@@ -436,7 +490,14 @@ pub fn Collaboration() -> impl IntoElement {
                                         .py_2()
                                         .rounded(px(12.0))
                                         .border_1()
-                                        .border_color(move || bubble_border(mine()))
+                                        .border_color(move || {
+                                            if failed() {
+                                                theme().destructive
+                                            } else {
+                                                bubble_border(mine())
+                                            }
+                                        })
+                                        .style_when(failed, |style| style.border_dashed())
                                         .bg(move || bubble_fill(mine()))
                                         .child(
                                             text(move || {
@@ -498,11 +559,23 @@ pub fn Collaboration() -> impl IntoElement {
     let meeting_page = view()
         .gap_4()
         .style_when(move || page.get() != Page::Meeting, |style| style.hidden())
-        .child(ui::meeting::meeting_page(
+        .child(ui::meeting::meeting_page_in_shell(
             meeting_bridge.state(),
             meeting_bridge.sender(),
             meeting_bridge.video(),
+            minimized,
+            prejoin,
+            move || page.set(Page::Messages),
         ));
+    #[cfg(feature = "experimental-enterprise-meeting")]
+    let meeting_mini_bar = ui::meeting::mini_bar(
+        meeting_bridge.state(),
+        meeting_bridge.sender(),
+        minimized,
+        move || page.set(Page::Meeting),
+    );
+    #[cfg(not(feature = "experimental-enterprise-meeting"))]
+    let meeting_mini_bar = view();
     #[cfg(not(feature = "experimental-enterprise-meeting"))]
     let meeting_page = view()
         .gap_4()
@@ -544,7 +617,13 @@ pub fn Collaboration() -> impl IntoElement {
         .child(ui::page_header("设置", || {
             first_screen::PURPOSE.to_owned()
         }))
-        .child(ui::section_label("关于"))
+        .child(ui::section_label("账号与工作区"))
+        .child(ui::card().child(ui::secondary(
+            "管理账号与工作区",
+            || false,
+            move || account_open.set(true),
+        )))
+        .child(ui::section_label("关于与更新"))
         .child(
             ui::card()
                 .child(
@@ -600,18 +679,25 @@ pub fn Collaboration() -> impl IntoElement {
         feature = "experimental-native-roster-sfu"
     ))]
     let meeting_page = meeting_page.child(roster_ui::panel(host_scope));
-    let identity_panel = identity_ui::enterprise_identity(
+    let identity_ui::IdentityPanels {
+        account,
+        directory,
+        chat,
+        diagnostics,
+    } = identity_ui::enterprise_identity(
         identity,
+        page,
+        directory_search,
         #[cfg(feature = "experimental-enterprise-meeting")]
         &meeting_bridge,
+        #[cfg(feature = "experimental-enterprise-meeting")]
+        prejoin,
         #[cfg(all(
             any(target_os = "linux", target_os = "android"),
             feature = "experimental-native-roster-sfu"
         ))]
         roster_host,
-    )
-    .into_element();
-    // 通讯录：账号与工作区、成员目录。登录是使用其他模块的前提，放在这里集中处理。
+    );
     let members_page = view()
         .gap_4()
         .style_when(move || page.get() != Page::Members, |style| style.hidden())
@@ -623,7 +709,7 @@ pub fn Collaboration() -> impl IntoElement {
             move || first_screen::members_empty(&identity.get()).0.to_owned(),
             move || first_screen::members_empty(&identity.get()).1,
         )))
-        .child(ui::card().child(identity_panel));
+        .child(directory);
     #[cfg(feature = "experimental-enterprise-meeting")]
     let meeting_diagnostics =
         {
@@ -757,7 +843,7 @@ pub fn Collaboration() -> impl IntoElement {
         )
         .child(network.panel(network_commands, remote, local, connected, busy, status))
         .child(call.view(call_commands, connected))
-        .child(files.panel(file_commands, connected));
+        .child(diagnostics);
     let nav = move || {
         view()
             .gap_1()
@@ -772,7 +858,11 @@ pub fn Collaboration() -> impl IntoElement {
                 "会议",
                 Icon::Video,
                 move || page.get() == Page::Meeting,
-                move || page.set(Page::Meeting),
+                move || {
+                    #[cfg(feature = "experimental-enterprise-meeting")]
+                    minimized.set(false);
+                    page.set(Page::Meeting);
+                },
             ))
             .child(ui::nav_item(
                 "通讯录",
@@ -789,8 +879,14 @@ pub fn Collaboration() -> impl IntoElement {
             move || page.set(Page::Settings),
         )
     };
-    // 顶部状态条：有连接或媒体时出现，诊断页常驻；汇总会话、采集状态和停止按钮。
-    // 放在滚动区外，滚动诊断内容时停止按钮仍然可见。
+    let mic_commands = commands.clone();
+    let camera_commands = commands.clone();
+    let screen_commands = commands;
+    #[cfg(feature = "experimental-enterprise-meeting")]
+    let meeting_status =
+        ui::meeting::privacy_controls(meeting_bridge.state(), meeting_bridge.sender());
+    #[cfg(not(feature = "experimental-enterprise-meeting"))]
+    let meeting_status = view();
     let status_strip = view()
         .flex_row()
         .flex_wrap()
@@ -798,26 +894,195 @@ pub fn Collaboration() -> impl IntoElement {
         .gap_3()
         .px_4()
         .py_2()
-        .border_b_1()
-        .border_color(move || theme().border)
-        .bg(move || theme().accent)
         .style_when(
-            move || !media_active() && page.get() != Page::Diagnostics,
+            move || {
+                !session_alert()
+                    && session.get() != Session::Connecting
+                    && !call.needs_stop()
+                    && !meeting_attention()
+                    && !identity.get().signed_in
+            },
             |style| style.hidden(),
         )
-        .child(ui::status_dot(move || session.get().line(), session_alert))
-        .child(call.privacy_compact())
+        .child(when(
+            move || identity.get().signed_in,
+            move || {
+                button()
+                    .on_press(move || account_open.set(!account_open.get_untracked()))
+                    .px_3()
+                    .py_2()
+                    .rounded(px(8.0))
+                    .bg(move || theme().card)
+                    .child(text(move || {
+                        identity
+                            .get()
+                            .workspace
+                            .unwrap_or_else(|| "选择工作区".into())
+                    }))
+            },
+        ))
         .child(view().flex_1())
-        .child(stop_media());
+        .child(when(
+            move || session_alert() || session.get() == Session::Connecting,
+            move || {
+                ui::status_dot(
+                    move || {
+                        if session_alert() {
+                            "已离线".into()
+                        } else {
+                            "正在连接".into()
+                        }
+                    },
+                    session_alert,
+                )
+            },
+        ))
+        .child(when(
+            move || call.needs_stop(),
+            move || {
+                button()
+                    .on_press(move || media_open.set(!media_open.get_untracked()))
+                    .px_3()
+                    .py_2()
+                    .rounded(px(12.0))
+                    .bg(move || theme().destructive)
+                    .child(
+                        text(move || {
+                            let sources = call
+                                .occupied_sources()
+                                .into_iter()
+                                .map(|source| match source {
+                                    Source::Microphone => "麦克风",
+                                    Source::Camera => "摄像头",
+                                    Source::Screen => "共享屏幕",
+                                })
+                                .collect::<Vec<_>>();
+                            if sources.is_empty() {
+                                "媒体状态".into()
+                            } else {
+                                sources.join(" · ")
+                            }
+                        })
+                        .text_color(rgb(0xFFFFFF).to_hsla()),
+                    )
+            },
+        ))
+        .child(meeting_status);
+    let media_actions = view()
+        .flex_row()
+        .flex_wrap()
+        .gap_2()
+        .px_4()
+        .py_2()
+        .style_when(
+            move || !media_open.get() || !call.needs_stop(),
+            |style| style.hidden(),
+        )
+        .child(call.stop_control(mic_commands, Source::Microphone))
+        .child(call.stop_control(camera_commands, Source::Camera))
+        .child(call.stop_control(screen_commands, Source::Screen))
+        .child(stop_media())
+        .child(call.privacy_view());
+    let account_panel = scroll()
+        .style_when(
+            move || !onboarding() && !account_open.get(),
+            |style| style.hidden(),
+        )
+        .style_when(
+            move || !onboarding(),
+            |style| {
+                style
+                    .absolute()
+                    .top(px(54.0))
+                    .right(px(12.0))
+                    .w(px(360.0))
+                    .max_w(relative(0.94))
+                    .bg(theme().background)
+                    .rounded(px(12.0))
+                    .border_1()
+                    .border_color(theme().border)
+            },
+        )
+        .style_when(onboarding, |style| style.flex_1())
+        .max_h(px(520.0))
+        .child(
+            view()
+                .w_full()
+                .max_w(px(510.0))
+                .self_center()
+                .gap_4()
+                .p_4()
+                .child(when(
+                    move || !onboarding(),
+                    move || {
+                        ui::secondary("关闭账号面板", || false, move || account_open.set(false))
+                    },
+                ))
+                .child(when(onboarding, || {
+                    view()
+                        .items_center()
+                        .gap_3()
+                        .child(ui::brand_mark(56.0))
+                        .child(
+                            text("吉吉 · 团队协同")
+                                .text_size(px(25.0))
+                                .font_weight(FontWeight::BOLD),
+                        )
+                        .child(ui::note(|| "登录与选择工作区".into()))
+                }))
+                .child(account),
+        );
+    #[cfg(all(
+        any(target_os = "linux", target_os = "android"),
+        feature = "experimental-native-roster-sfu"
+    ))]
+    let account_panel = account_panel.child(when(onboarding, move || {
+        ui::secondary(
+            "以访客身份加入",
+            || false,
+            move || {
+                guest_mode.set(true);
+                page.set(Page::Meeting);
+            },
+        )
+    }));
     view()
         .flex_1()
         .p_safe_area()
         .bg(move || theme().background)
         .text_color(move || theme().foreground)
+        .child(when(
+            move || quick_jump.get() && !onboarding(),
+            move || {
+                nsh_base::dialog()
+                    .on_cancel(move || quick_jump.set(false))
+                    .child(
+                        ui::card()
+                            .child(ui::page_title("快速跳转"))
+                            .child(ui::search_field(directory_search, "按姓名或邮箱查找成员"))
+                            .child(ui::action(
+                                "查看通讯录结果",
+                                || false,
+                                move || {
+                                    quick_jump.set(false);
+                                    page.set(Page::Members);
+                                },
+                            ))
+                            .child(nav().flex_row())
+                            .child(settings_nav())
+                            .child(ui::secondary(
+                                "关闭快速跳转",
+                                || false,
+                                move || quick_jump.set(false),
+                            )),
+                    )
+            },
+        ))
         .child(
             view()
                 .flex_1()
                 .flex_row()
+                .style_when(onboarding, |style| style.hidden())
                 .child(when(wide, move || {
                     view()
                         .w(px(ui::RAIL_WIDTH))
@@ -833,9 +1098,20 @@ pub fn Collaboration() -> impl IntoElement {
                         .child(nav())
                         .child(view().flex_1())
                         .child(settings_nav())
+                        .child(when(
+                            move || identity.get().signed_in,
+                            move || {
+                                button()
+                                    .accessibility_label("账号")
+                                    .on_press(move || {
+                                        account_open.set(!account_open.get_untracked())
+                                    })
+                                    .child(ui::avatar(|| "我".to_owned(), 30.0))
+                            },
+                        ))
                 }))
                 .child(when(
-                    move || wide() && page.get().shows_conversation_column(),
+                    move || wide() && page.get().shows_conversation_column() && !team_messages(),
                     move || {
                         view()
                             .w(px(ui::SESSION_COLUMN))
@@ -852,6 +1128,7 @@ pub fn Collaboration() -> impl IntoElement {
                     view()
                         .flex_1()
                         .child(status_strip)
+                        .child(media_actions)
                         .child(
                             scroll()
                                 .test_id("conversation-scroll")
@@ -890,12 +1167,22 @@ pub fn Collaboration() -> impl IntoElement {
                                     move || page.get().uses_content_scroll(),
                                     |style| style.hidden(),
                                 )
+                                .child(
+                                    scroll()
+                                        .style_when(
+                                            move || !team_messages(),
+                                            |style| style.hidden(),
+                                        )
+                                        .child(chat),
+                                )
                                 .child(messages_page),
                         ),
                 ),
         )
+        .child(meeting_mini_bar)
+        .child(account_panel)
         .child(when(
-            move || !wide(),
+            move || !wide() && !onboarding(),
             move || {
                 view()
                     .flex_row()

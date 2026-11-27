@@ -3,7 +3,7 @@ pub mod icons;
 pub mod meeting;
 
 /// 左侧图标导航的总宽度。
-pub const RAIL_WIDTH: f32 = 76.0;
+pub const RAIL_WIDTH: f32 = 72.0;
 /// 导航项尺寸：图标在上、短标签在下。
 pub const RAIL_NAV: f32 = 58.0;
 pub const RAIL_BRAND: f32 = 40.0;
@@ -320,21 +320,6 @@ pub fn send_control(
         .active(|s| s.opacity(0.65))
         .disabled_style(|s| s.opacity(0.35))
         .child(Icon::Send.view(INK, 18.0))
-}
-
-/// 紧凑预览徽标，不做成通栏横幅。
-pub fn badge(label: &'static str) -> impl IntoElement {
-    view()
-        .px_2()
-        .py_1()
-        .rounded(px(6.0))
-        .bg(move || theme().accent)
-        .child(
-            text(label)
-                .text_size(px(11.0))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(move || theme().accent_foreground),
-        )
 }
 
 pub fn page_title(label: &'static str) -> impl IntoElement {

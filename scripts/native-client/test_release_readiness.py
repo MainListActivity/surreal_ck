@@ -25,19 +25,31 @@ class ReadinessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {}, clear=True):
             root = pathlib.Path(tmp)
             receipt_path = root / 'windows-test-build-receipt.json'
-            receipt = dict(platform='windows')
+            receipt = dict(platform='windows', host_arch='x86_64')
             receipt_path.write_text(json.dumps(receipt), encoding='utf-8')
             evidence = root / 'windows-test-package-evidence.json'
             with self.assertRaisesRegex(ValueError, 'Missing desktop'):
                 readiness.check_release(root, 'owner/repo', 'v1')
+            files = {'bin/ffmpeg.exe': 'ab' * 32, 'bin/ffplay.exe': 'cd' * 32}
             base = dict(platform='windows', entrypoint='native-client/src/main.rs', release_eligible=True,
-                        media_runtime=dict(status='bundled', development_only=False, release_approved=True))
+                        media_runtime=dict(status='bundled', development_only=False, release_approved=True,
+                                           platform='windows', arch='x86_64', manifest_sha256='ef' * 32,
+                                           sealed_inventory_validation='passed', files=files, packaged_files=files))
             for fields in ({'development_only': True}, {'release_approved': False}, {'release_approved': None}, {'development_only': None}):
                 evidence.write_text(json.dumps(base | {'media_runtime': base['media_runtime'] | fields}), encoding='utf-8')
                 with self.subTest(fields=fields), self.assertRaisesRegex(ValueError, 'unapproved media'):
                     readiness.check_release(root, 'owner/repo', 'v1')
             evidence.write_text(json.dumps(base | {'release_eligible': False}), encoding='utf-8')
             with self.assertRaisesRegex(ValueError, 'not release eligible'):
+                readiness.check_release(root, 'owner/repo', 'v1')
+            readiness.check_desktop_package(receipt_path, receipt, require_release_eligibility=False)
+            for fields in ({'sealed_inventory_validation': None}, {'manifest_sha256': ''},
+                           {'packaged_files': files | {'bin/ffplay.exe': '12' * 32}}):
+                evidence.write_text(json.dumps(base | {'media_runtime': base['media_runtime'] | fields}), encoding='utf-8')
+                with self.subTest(fields=fields), self.assertRaisesRegex(ValueError, 'sealed SHA256'):
+                    readiness.check_release(root, 'owner/repo', 'v1')
+            evidence.write_text(json.dumps(base | {'media_runtime': base['media_runtime'] | {'arch': 'aarch64'}}), encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'target differs'):
                 readiness.check_release(root, 'owner/repo', 'v1')
             evidence.write_text(json.dumps(base), encoding='utf-8')
             readiness.check_desktop_package(receipt_path, receipt)
@@ -86,6 +98,19 @@ class OnlinePreflightTests(unittest.TestCase):
             bad=item|{key:value}
             with self.assertRaises(ValueError):readiness.match_asset(p,bad,'owner/repo','v1.0.0')
 
+    def test_mac_developer_id_alone_cannot_admit_installer(self):
+        p = self.candidate()
+        release = p['releases'][0]
+        release.update(platform='macos', arch='aarch64',
+                       url='https://github.com/owner/repo/releases/download/v1.0.0/app.dmg')
+        item = {key: release[key] for key in ('platform', 'arch', 'version', 'size', 'sha256')}
+        item['filename'] = 'app.dmg'
+        item['signing'] = 'developer-id-not-notarized'
+        with self.assertRaisesRegex(ValueError, 'stapled notarization'):
+            readiness.match_asset(p, item, 'owner/repo', 'v1.0.0')
+        item['signing'] = 'developer-id-notarized'
+        readiness.match_asset(p, item, 'owner/repo', 'v1.0.0')
+
     def test_remote_allowlist_rejected_before_network(self):
         for url in ('http://github.com/x','https://evil.example/x','https://u:p@github.com/x'):
             with self.assertRaises(ValueError):readiness.remote_artifact(url,1,'ab'*32,['github.com'])
@@ -101,7 +126,7 @@ class OnlinePreflightTests(unittest.TestCase):
 
     def test_unavailable_endpoint_and_real_signature_mismatch(self):
         from test_update_policy import SIGNED
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(readiness, 'EXPECTED_TARGETS', {('linux', 'x86_64')}):
             root=pathlib.Path(tmp); (root/'app.tar.gz').write_bytes(b'hello')
             config=copy.deepcopy(GOOD);config['trust']['public_key']=list(range(2,34))
             receipt=dict(update_config='embedded-unverified',update_config_public=config,filename='app.tar.gz',size=5,sha256=hashlib.sha256(b'hello').hexdigest(),version='1.0.0',platform='linux')
@@ -109,6 +134,32 @@ class OnlinePreflightTests(unittest.TestCase):
             (root/'linux-test-assets.json').write_text(json.dumps([receipt|{'arch':'x86_64'}]))
             with self.assertRaises(OSError):readiness.check_release(root,'owner/repo','v1.0.0',fetch=mock.Mock(side_effect=OSError('offline')))
             with self.assertRaises(readiness.policy.subprocess.CalledProcessError):readiness.check_release(root,'owner/repo','v1.0.0',fetch=lambda url:SIGNED)
+
+    def test_production_build_rejects_unsigned_windows_and_wrong_commit(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(readiness, 'EXPECTED_TARGETS', {('windows', 'x86_64')}), \
+             mock.patch.object(readiness, 'check_desktop_package') as desktop:
+            root = pathlib.Path(tmp)
+            config = copy.deepcopy(GOOD)
+            config['trust']['public_key'] = list(range(2, 34))
+            installer = root / 'app.exe'
+            installer.write_bytes(b'installer')
+            identity = dict(platform='windows', filename=installer.name, version='0.1.3',
+                            size=installer.stat().st_size, sha256=readiness.file_hash(installer))
+            receipt = root / 'windows-build-receipt.json'
+            receipt.write_text(json.dumps(identity | dict(commit='a'*40, dirty=False,
+                               update_config='embedded-unverified', update_config_public=config)))
+            index = root / 'windows-assets.json'
+            asset = identity | dict(arch='x86_64', signing='unsigned')
+            index.write_text(json.dumps([asset]))
+            with self.assertRaisesRegex(ValueError, 'exact clean release commit'):
+                readiness.load_installers(root, commit='b'*40, require_release_eligibility=False)
+            with self.assertRaisesRegex(ValueError, 'authenticode'):
+                readiness.load_installers(root, commit='a'*40, require_release_eligibility=False)
+            index.write_text(json.dumps([asset | dict(signing='authenticode')]))
+            _, version = readiness.load_installers(root, commit='a'*40, require_release_eligibility=False)
+            self.assertEqual(version, '0.1.3')
+            desktop.assert_called_with(receipt, mock.ANY, require_release_eligibility=False)
 
     def test_evidence_upload_never_includes_installers_or_overwrites(self):
         helper=SCRIPT.with_name('attach-release-evidence.py')
