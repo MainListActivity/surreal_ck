@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { Surreal } from "surrealdb";
+import { RecordIdRange, Surreal } from "surrealdb";
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -89,7 +89,7 @@ function record(role: Role, database: string, kind: Call["kind"], extra: Partial
 }
 
 /** 替身查询应答：schema 引导、marker、来源/目标表读取、v7 facet 回填共用同一套规则。 */
-function answerQuery(role: Role, sql: string): unknown {
+function answerQuery(role: Role, sql: string, params?: Record<string, unknown>): unknown {
   const q = sql.trim();
   if (/DEFINE DATABASE IF NOT EXISTS/i.test(q)) {
     schemaBootstrapCalls += 1;
@@ -99,8 +99,17 @@ function answerQuery(role: Role, sql: string): unknown {
   if (/FROM content_migration_state:legacy/i.test(q)) return [markerRows];
   if (/FROM content_publication_projection/i.test(q)) return [publishedRows];
   if (/FROM content_search_facet/i.test(q)) return [[]];
-  const table = /^SELECT \* FROM ([a-z_]+)/i.exec(q)?.[1];
-  if (table) return [role === "_system" ? (sourceDataset[table] ?? []) : rowsFor(table)];
+  const limit = /^SELECT \* FROM \$range LIMIT ([1-9][0-9]*);$/i.exec(q)?.[1];
+  if (limit) {
+    const range = params?.range;
+    if (!(range instanceof RecordIdRange) || range.begin || range.end) {
+      throw new Error("expected an initial typed range for the single-page fixture");
+    }
+    const table = range.table.name;
+    const records = role === "_system" ? (sourceDataset[table] ?? []) : rowsFor(table);
+    if (records.length >= Number(limit)) throw new Error("fixture exceeds a single page");
+    return [records];
+  }
   return [[]];
 }
 
@@ -129,11 +138,11 @@ function installSurrealSpiesOnce(): void {
   spyOn(Surreal.prototype, "use").mockImplementation(async function () {
     return undefined as never;
   });
-  spyOn(Surreal.prototype, "query").mockImplementation(async function (this: object, sql: string) {
+  spyOn(Surreal.prototype, "query").mockImplementation(async function (this: object, sql: string, params?: Record<string, unknown>) {
     const scope = scopes.get(this) ?? { role: "other" as Role, database: "" };
     if (/content_migration_state:legacy/i.test(sql)) phase = "migration";
     record(scope.role, scope.database, "query", { sql });
-    return answerQuery(scope.role, sql) as never;
+    return answerQuery(scope.role, sql, params) as never;
   });
   spyOn(Surreal.prototype, "select").mockImplementation(async function (this: object, id: unknown) {
     const scope = scopes.get(this) ?? { role: "other" as Role, database: "" };
@@ -207,10 +216,10 @@ class FakeDb {
   get role(): Role {
     return roleFor(this.database);
   }
-  async query(sql: string) {
+  async query(sql: string, params?: Record<string, unknown>) {
     if (/content_migration_state:legacy/i.test(sql)) phase = "migration";
     record(this.role, this.database, "query", { sql });
-    return answerQuery(this.role, sql);
+    return answerQuery(this.role, sql, params);
   }
   async select(id: unknown) {
     record(this.role, this.database, "select");

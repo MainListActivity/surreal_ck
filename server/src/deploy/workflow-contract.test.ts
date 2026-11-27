@@ -728,6 +728,55 @@ describe("frontend-barrier-artifact-probe.yml（无生产环境的只读探针�
   });
 });
 
+describe("native-quota-release-acceptance.yml", () => {
+  const doc = load("native-quota-release-acceptance.yml");
+  const jq = Bun.which("jq");
+
+  test.skipIf(!jq && !process.env.CI).each(["tikv", "rocksdb"])("用 jq 为 %s 生成签名前的验收回执", (backend) => {
+    expect(jq, "运行验收回执测试需要 jq：https://jqlang.org/download/").not.toBeNull();
+    const step = stepsOf(doc).find(([, , step]) => step.name === "Create and keyless-sign downstream acceptance statement")?.[2];
+    expect(typeof step?.run).toBe("string");
+
+    const dir = mkdtempSync(join(tmpdir(), "acceptance-statement-"));
+    try {
+      mkdirSync(join(dir, "candidate"));
+      writeFileSync(join(dir, "candidate/verified-identity.json"), JSON.stringify({ backend }));
+      const result = runCapture(dir, `cosign() { test "$1" = sign-blob; }\n${step?.run}`, {
+        GITHUB_REPOSITORY: "MainListActivity/surreal_ck",
+        GITHUB_RUN_ID: "1",
+        GITHUB_SHA: "a".repeat(40),
+        SIGNATURE_POLICY: "verify_keyless",
+      });
+      expect(result.code).toBe(0);
+      const { decision, evidence } = JSON.parse(readFileSync(join(dir, "surreal-ck-native-quota-acceptance.json"), "utf8"));
+      expect(decision).toBe("accepted");
+      expect(evidence.backend).toBe(backend);
+      expect(evidence.scenarios).toContain("legacy_cleanup");
+      expect(evidence.scenarios.includes("test_kit_provisioning")).toBe(backend === "tikv");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("vanilla 映射、健康探测和负对照 URL 使用同一隔离端口", () => {
+    const steps = stepsOf(doc).map(([, , step]) => step);
+    const start = steps.find((step) => step.name === "Start vanilla negative control");
+    const gates = steps.find((step) => step.name === "Run complete application gates");
+    const port = String(start?.run ?? "").match(/-p (\d+):8000\b/)?.[1];
+    expect(port).toBeDefined();
+    expect(start?.run).toContain(`http://127.0.0.1:${port}/health`);
+    expect(gates?.env?.NATIVE_QUOTA_E2E_VANILLA_URL).toBe(`ws://127.0.0.1:${port}/rpc`);
+
+    const root = join(import.meta.dir, "../../..");
+    const files = new Bun.Glob("{server,shared,web,ops,marketing,scripts}/**/*.{test,spec}.{ts,js,mjs,py}");
+    const conflicts = [...files.scanSync({ cwd: root, onlyFiles: true })].filter((file) =>
+      !file.split("/").includes("node_modules") &&
+      new RegExp(`\\b${port}\\b`).test(readFileSync(join(root, file), "utf8")),
+    );
+    expect(conflicts).toEqual([]);
+  });
+});
+
 describe("工作流文件集合", () => {
   test("所有契约文件都可被解析且为对象", () => {
     for (const file of FILES) {

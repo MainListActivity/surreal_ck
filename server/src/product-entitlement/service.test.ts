@@ -28,7 +28,12 @@ class MemoryStore implements ProductEntitlementStore {
   async membership(subject: string, workspaceId: string) { return this.members.has(`${subject}:${workspaceId}`) ? "admin" as const : null; }
   async activeItem(workspaceId: string) { return this.items.get(workspaceId) ?? null; }
   async bindProductRevision(itemId: string, productPlanRevisionId: string) {
-    for (const [workspaceId, item] of this.items) if (item.itemId === itemId) this.items.set(workspaceId, { ...item, productPlanRevisionId });
+    for (const [workspaceId, item] of this.items) {
+      if (item.itemId !== itemId || item.status !== "active") continue;
+      this.items.set(workspaceId, { ...item, productPlanRevisionId });
+      return true;
+    }
+    return false;
   }
   async productRevision(id: string) { return this.revisions.get(id) ?? null; }
   async resourceTemplateExists(id: string) { return this.resources.has(id); }
@@ -113,12 +118,6 @@ class MemoryStore implements ProductEntitlementStore {
   async snapshotById(id: string) { return this.snapshots.find((item) => item.id === id) ?? null; }
   async snapshotByDigest(workspaceId: string, digest: string) {
     return this.snapshots.find((item) => item.workspaceId === workspaceId && item.digest === digest) ?? null;
-  }
-  async newestSnapshotRevision(workspaceId: string, productPlanRevisionId: string) {
-    const revisions = this.snapshots
-      .filter((item) => item.workspaceId === workspaceId && item.productPlanRevisionId === productPlanRevisionId)
-      .map((item) => item.revision);
-    return revisions.length === 0 ? null : Math.max(...revisions);
   }
   async maxSnapshotRevision(workspaceId: string) {
     const revisions = this.snapshots.filter((item) => item.workspaceId === workspaceId).map((item) => item.revision);
@@ -575,6 +574,37 @@ describe("product entitlement", () => {
     failBind = false;
     await service.assign(operator, newer);
     expect(store.items.get("workspace:team")?.productPlanRevisionId).toBe(newerId);
+  });
+
+  test("同账户订阅项被替换后，旧幂等键不改写新订阅项", async () => {
+    const store = new MemoryStore();
+    workspace(store);
+    const service = new ProductEntitlementService(store, () => new Date("2026-09-24T00:00:00.000Z"));
+    const revisionId = "product_plan_revision:fixture:1";
+    store.revisions.set(revisionId, {
+      id: revisionId, planKey: "fixture_plus", planName: "夹具律师 Plus", revision: 1,
+      collections: [], actions: [], aiActions: [], features: [],
+    });
+    const bind = store.bindProductRevision.bind(store);
+    const previous = store.items.get("workspace:team")!;
+    const newerRevisionId = "product_plan_revision:fixture:2";
+    store.bindProductRevision = async (id, revision) => {
+      store.items.set("workspace:team", {
+        ...previous, itemId: "quota_subscription_item:replacement", productPlanRevisionId: newerRevisionId,
+      });
+      return bind(id, revision);
+    };
+    const input = assignment(revisionId);
+    await expect(service.assign(operator, input)).rejects.toMatchObject({ code: "conflict" });
+    expect(store.items.get("workspace:team")?.productPlanRevisionId).toBe(newerRevisionId);
+    expect(await store.currentSnapshot("workspace:team")).toBeNull();
+    store.bindProductRevision = bind;
+    const restarted = new ProductEntitlementService(store, () => new Date("2026-09-24T00:00:00.000Z"));
+    await expect(restarted.assign(operator, input)).rejects.toMatchObject({ code: "conflict" });
+    expect(store.items.get("workspace:team")?.productPlanRevisionId).toBe(newerRevisionId);
+    expect(await store.currentSnapshot("workspace:team")).toBeNull();
+    await restarted.assign(operator, { ...input, idempotencyKey: "assign-confirmed-replacement" });
+    expect(store.items.get("workspace:team")?.productPlanRevisionId).toBe(revisionId);
   });
 
   test("绑定失败后读取出的空快照仍允许同一幂等键补绑", async () => {

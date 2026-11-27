@@ -4,6 +4,7 @@ use url::Url;
 use zeroize::Zeroizing;
 
 pub(crate) const MAX_RESPONSE: u64 = 2 * 1024 * 1024;
+type RosterResponse = (Zeroizing<Vec<u8>>, Option<Zeroizing<String>>);
 
 /// 固定 HTTPS、无自动重定向、无持久 cookie。远端错误正文可能含令牌，不透传。
 #[derive(Clone)]
@@ -28,6 +29,51 @@ impl Default for HttpsTransport {
     }
 }
 impl HttpsTransport {
+    pub(crate) fn roster(
+        &self,
+        method: &str,
+        url: &Url,
+        headers: &[(&str, &str)],
+        body: Option<&str>,
+    ) -> Result<RosterResponse> {
+        use ureq::http::Request;
+
+        let mut request = Request::builder()
+            .method(method)
+            .uri(self.request_url(url).as_str())
+            .header("Accept", "application/json");
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        if body.is_some() {
+            request = request.header("Content-Type", "application/json");
+        }
+        let request = request
+            .body(body.unwrap_or_default())
+            .map_err(|_| IdentityError::MeetingInput)?;
+        let mut response = self
+            .agent
+            .run(request)
+            .map_err(|_| IdentityError::Network)?;
+        if !matches!(response.status().as_u16(), 200 | 201 | 204) {
+            return Err(IdentityError::Http(response.status().as_u16()));
+        }
+        let cookie = response
+            .headers()
+            .get_all("Set-Cookie")
+            .iter()
+            .filter_map(|value| value.to_str().ok()?.split(';').next())
+            .find(|value| value.starts_with("__Secure-meeting-roster="))
+            .map(|value| Zeroizing::new(value.to_owned()));
+        let body = response
+            .body_mut()
+            .with_config()
+            .limit(MAX_RESPONSE)
+            .read_to_vec()
+            .map_err(|_| IdentityError::Response)?;
+        Ok((Zeroizing::new(body), cookie))
+    }
+
     // 只编译进单元测试：HTTPS 信任校验不变，仅将通过校验的请求送到本机协议夹具。
     #[cfg(test)]
     pub(crate) fn local_fixture(origin: Url) -> Self {
@@ -172,6 +218,29 @@ mod tests {
         assert!(request.starts_with("POST /api/auth/token "));
         assert!(request.contains("code_verifier=fixture-verifier"));
         assert!(!request.contains("client_secret"));
+        assert!(!request.to_ascii_lowercase().contains("authorization:"));
+    }
+    #[test]
+    fn roster_verification_handles_its_cookie_without_storing_other_cookies() {
+        let (origin, server) = fixture(
+            "HTTP/1.1 200 OK\r\nSet-Cookie: unrelated=fixture\r\nSet-Cookie: __Secure-meeting-roster=fixture; Secure; HttpOnly\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+        );
+        let url = Url::parse("https://app.example/api/meeting/roster/verify").unwrap();
+        let (body, cookie) = HttpsTransport::local_fixture(origin)
+            .roster(
+                "POST",
+                &url,
+                &[("Origin", "https://app.example")],
+                Some("{}"),
+            )
+            .unwrap();
+        assert_eq!(body.as_slice(), b"{}");
+        assert_eq!(&**cookie.unwrap(), "__Secure-meeting-roster=fixture");
+        let request = server.join().unwrap();
+        assert!(request.starts_with("POST /api/meeting/roster/verify "));
+        assert!(request
+            .to_ascii_lowercase()
+            .contains("origin: https://app.example"));
         assert!(!request.to_ascii_lowercase().contains("authorization:"));
     }
     #[test]

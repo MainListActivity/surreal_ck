@@ -1,9 +1,12 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { createServer } from "node:net";
-import { Surreal } from "surrealdb";
+import { NotFoundError, StringRecordId, Surreal } from "surrealdb";
 import type { GrantContentCollection, SessionUser } from "@surreal-ck/shared";
+import { isAtomicConflict } from "../db/atomic-conflict-retry";
 import { ensureSystemSchema } from "../db/system-schema";
+import { closeRootConnection, getRootConnection, getRootDatabaseSession, initRootConnection } from "../db/root-connection";
 import { createContentReaderExchangeHandler } from "../content/reader-handler";
+import { env, overrideEnv } from "../env";
 import { ProductEntitlementService } from "./service";
 import { SurrealProductEntitlementStore } from "./store";
 
@@ -11,6 +14,8 @@ const enabled = process.env.RUN_LOCAL_SURREALDB_PRODUCT_ENTITLEMENT_TESTS === "1
 const localTest = test.skipIf(!enabled);
 let endpoint = "";
 let processHandle: ReturnType<typeof Bun.spawn> | null = null;
+let contentionBarrier: Bun.Server<undefined> | undefined;
+let competingWrite: (() => Promise<unknown>) | undefined;
 const sessions: Surreal[] = [];
 
 async function freePort(): Promise<number> {
@@ -36,9 +41,21 @@ async function session(): Promise<Surreal> {
 
 beforeAll(async () => {
   if (!enabled) return;
+  contentionBarrier = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch() {
+      if (!competingWrite) return new Response(null, { status: 404 });
+      await competingWrite();
+      return Response.json(true);
+    },
+  });
   const port = await freePort();
   endpoint = `ws://127.0.0.1:${port}`;
-  processHandle = Bun.spawn(["surreal", "start", "--no-banner", "--log", "none", "--bind", `127.0.0.1:${port}`, "--user", "root", "--pass", "root", "memory"], { stdout: "ignore", stderr: "ignore" });
+  processHandle = Bun.spawn([
+    "surreal", "start", "--no-banner", "--log", "none", "--bind", `127.0.0.1:${port}`,
+    "--allow-net", `127.0.0.1:${contentionBarrier.port}`, "--user", "root", "--pass", "root", "memory",
+  ], { stdout: "ignore", stderr: "ignore" });
   for (let attempt = 0; attempt < 50; attempt += 1) {
     const ready = Bun.spawn(["surreal", "is-ready", "--endpoint", endpoint], { stdout: "ignore", stderr: "ignore" });
     if (await ready.exited === 0) break;
@@ -63,12 +80,99 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await contentionBarrier?.stop(true);
   await Promise.all(sessions.map((db) => db.close()));
   processHandle?.kill();
   if (processHandle) await processHandle.exited;
 });
 
 describe("product entitlement surreal store", () => {
+  localTest("权益指针在事务冲突和会话失效后完整重试", async () => {
+    const workspaceId = "workspace:session_fixture";
+    const snapshotId = "workspace_product_entitlement:session_fixture";
+    const fixture = await session();
+    const workspace = new StringRecordId(workspaceId);
+    await fixture.create(workspace).content({
+      db_name: "ws_session_fixture", owner_subject: "lawyer", slug: "session-fixture",
+      name: "会话夹具", status: "active",
+    });
+    await fixture.create(new StringRecordId(snapshotId)).content({
+      workspace, revision: 1,
+      digest: "session-fixture", summary: "会话夹具", resolver_version: "fixture", base_source_kind: "none",
+      content_collections: [], content_actions: [], content_sources: [], ai_actions: [], features: [],
+      correlation_id: "fixture-session-retry",
+    });
+    const fixtureStore = new SurrealProductEntitlementStore(async () => fixture);
+    expect(await fixtureStore.currentSnapshot(workspaceId)).toBeNull();
+    const previousEnv = env;
+    overrideEnv({
+      SURREAL_URL: `${endpoint}/rpc`,
+      SURREAL_NS: "main",
+      SURREAL_ROOT_USER: "root",
+      SURREAL_ROOT_PASS: "root",
+    });
+    try {
+      await initRootConnection();
+      const root = getRootConnection();
+      const fork = root.forkSession.bind(root);
+      let missingSession = false;
+      const forkClosedOnQuery = async () => {
+        const db = await fork();
+        const query = db.query.bind(db);
+        const close = db.closeSession.bind(db);
+        return Object.assign(db, {
+          async query(sql: string, params?: Record<string, unknown>) {
+            expect(await fixtureStore.currentSnapshot(workspaceId)).toBeNull();
+            await close();
+            try {
+              return await query(sql, params);
+            } catch (error) {
+              missingSession = error instanceof NotFoundError && error.details?.kind === "Session";
+              throw error;
+            }
+          },
+        });
+      };
+      const patchedFork = spyOn(root, "forkSession").mockImplementationOnce(async () => {
+        const db = await fork();
+        const query = db.query.bind(db);
+        return Object.assign(db, {
+          async query(sql: string, params?: Record<string, unknown>) {
+            for (let i = 0; i < 21; i++) {
+              await getRootDatabaseSession(`entitlement_pool_${i}`, "main");
+            }
+            patchedFork.mockImplementationOnce(forkClosedOnQuery);
+            const barrierUrl = contentionBarrier?.url.href;
+            if (!barrierUrl) throw new Error("缺少并发写入夹具");
+            competingWrite = async () => await fixture.update(workspace).merge({ name: "并发更新" });
+            try {
+              // 等并发写入实际完成后再提交，不靠固定时延制造冲突。
+              const batch = sql.replace("COMMIT TRANSACTION;", "LET $fixture = http::get($barrier); COMMIT TRANSACTION;");
+              expect(batch).not.toBe(sql);
+              return await query(batch, { ...params, barrier: barrierUrl });
+            } catch (error) {
+              expect(isAtomicConflict(error)).toBe(true);
+              throw error;
+            } finally {
+              competingWrite = undefined;
+            }
+          },
+        });
+      });
+      try {
+        const store = new SurrealProductEntitlementStore();
+        await store.pointWorkspace(workspaceId, snapshotId);
+        expect(missingSession).toBe(true);
+        expect((await fixtureStore.currentSnapshot(workspaceId))?.id).toBe(snapshotId);
+      } finally {
+        patchedFork.mockRestore();
+      }
+    } finally {
+      await closeRootConnection();
+      overrideEnv(previousEnv);
+    }
+  }, 30_000);
+
   localTest("夹具版本可分配，旧资源套餐名不会变成内容授权", async () => {
     const store = new SurrealProductEntitlementStore(async () => await session(), "main");
     const service = new ProductEntitlementService(store, () => new Date("2026-09-24T00:00:00.000Z"));
@@ -94,6 +198,10 @@ describe("product entitlement surreal store", () => {
     expect(assigned.ai.consumableAllowance).toBeNull();
     expect(assigned.baseSource.planKey).toBe("fixture_plus");
     expect(assigned.features).toEqual([{ key: "audit_export", enabled: true, limit: null }]);
+    expect(await store.auditByKey(operator.subject, "assign-fixture-001")).toMatchObject({
+      assignmentItemId: "quota_subscription_item:team",
+      entitlementId: expect.any(String),
+    });
     const repeated = await service.assign(operator, {
       workspaceSlug: "team", billingAccountKey: "acct-a", productPlanRevisionId: published.productPlanRevisionId,
       reason: "为夹具工作区开通", idempotencyKey: "assign-fixture-001",
@@ -128,6 +236,23 @@ describe("product entitlement surreal store", () => {
     await store.pointWorkspace("workspace:team", olderId);
     const pointer = await db.query(`SELECT VALUE current_product_entitlement.revision FROM ONLY workspace:team;`).collect();
     expect(pointer[0]).toBe(expired.revision);
+
+    let attempts = 0;
+    const racingStore = new SurrealProductEntitlementStore(async () => ({
+      async query(sql, params) {
+        if (++attempts === 1) {
+          await db.query(`UPDATE quota_subscription_item:team SET status = "ended";`).collect();
+          throw { kind: "Quota", details: { code: "quota_conflict", retryable: true, details: {} } };
+        }
+        return await db.query(sql, params);
+      },
+    }), "main");
+    const currentBinding = `SELECT status, revision, product_plan_revision FROM ONLY quota_subscription_item:team;`;
+    const [beforeEnd] = await db.query(currentBinding).collect();
+    expect(await racingStore.bindProductRevision("quota_subscription_item:team", published.productPlanRevisionId)).toBe(false);
+    expect(attempts).toBe(2);
+    const [afterEnd] = await db.query(currentBinding).collect();
+    expect(afterEnd).toEqual({ ...(beforeEnd as object), status: "ended" });
   }, 30000);
 
   localTest("指派到低配产品再恢复同 digest 产品时指针回指旧快照", async () => {

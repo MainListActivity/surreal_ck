@@ -192,18 +192,24 @@ function buildServer(
   opsAutonomyService?: OpsAutonomyService,
   opsRunService?: OpsRunService,
   testKitService?: TestKitService,
+  testKitOnly = false,
 ): McpServer {
   const server = new McpServer(
     { name: "surreal-ck-platform-content", version: "1.0.0" },
     {
       capabilities: { tools: { listChanged: false } },
       instructions:
-        "平台内容维护工具。先 get_data_contract，提交后先 inspect_batch，再由人工审阅结果决定 publish_batch。"
+        (testKitOnly ? "" : "平台内容维护工具。先 get_data_contract，提交后先 inspect_batch，再由人工审阅结果决定 publish_batch。")
         + "测试物料（需 test.provision）：先 test_kit_rules 看规则，test_kit_provision 开新测试账号并拿一次性激活链接（浏览器打开设密码），"
         + "processing 时用同一 email 调 test_kit_status；test_kit_add_member 把测试账号加进测试 workspace；"
         + "test_kit_list 查自己开的账号，用完 test_kit_purge 清理（30 天也会自动清理）。",
     },
   );
+
+  if (testKitOnly) {
+    if (testKitService) registerTestKitTools(testKitService);
+    return server;
+  }
 
   server.registerTool(
     "get_data_contract",
@@ -514,7 +520,10 @@ function buildServer(
     },
   );
 
-  if (testKitService) {
+  if (testKitService) registerTestKitTools(testKitService);
+  return server;
+
+  function registerTestKitTools(testKitService: TestKitService) {
     const testKitTool = (
       name: string,
       title: string,
@@ -539,7 +548,7 @@ function buildServer(
       "入参 email。开通完成后登记测试主体，并一次性收取激活链接（已收取过则为 null）；失败或中断的开通返回 failed，该邮箱作废。",
       (args) => testKitService.status(operator, args));
     testKitTool("test_kit_list", "列出我开的测试账号",
-      "只列本 agent 经 test_kit_provision 开通的测试账号：subject、email、到期时间、所在 workspace。已清理的条目标 purged=true 并保留在列表里（该邮箱作废不可复用），是预期行为。",
+      "只列本 agent 经 test_kit_provision 开通的测试账号：subject、email、到期时间、所在 workspace。已清理的账号不再出现在列表里；要确认某个邮箱是否已清理，用 test_kit_status，返回 code=purged 表示已清理且该邮箱作废不可复用。",
       async () => testKitService.list(operator));
     testKitTool("test_kit_add_member", "把测试账号加入测试 workspace",
       "入参 workspaceSlug、email、可选 isAdmin（默认 false）、displayName。被加入的 email 必须是本 agent 开的未到期测试账号；workspace 必须由本 agent 开的账号或运营登记的测试账号拥有（后者只能加普通成员）。被加入者首次登录后按邮箱绑定。",
@@ -548,8 +557,6 @@ function buildServer(
       "不可逆：删除本 agent 开的测试账号的登记与成员索引，并整库删除它自己拥有的 workspace（它加入的别人的 workspace 保留）。入参 subject 与 confirm=\"purge <subject>\"。成功返回 {subject, workspacesPurged, workspacesSkipped}；对已清理过的账号重复调用返回 {subject, alreadyPurged:true, ...}，是幂等结果不是报错。",
       (args) => testKitService.purge(operator, args));
   }
-
-  return server;
 }
 
 export function createContentMcpRoutes(input: Readonly<{
@@ -622,12 +629,22 @@ export function createContentMcpRoutes(input: Readonly<{
       tokenScopes === null
         ? operator.kind === "agent" ? [] : operator.capabilities
         : operator.capabilities.filter((capability) => tokenScopes.has(capability));
+    // 维护围栏注入此头部。它只能收窄权限，不能替代 OAuth 或增加权限。
+    const testKitOnly = c.req.header("x-surreal-ck-maintenance") !== undefined;
+    if (testKitOnly && (
+      !input.testKitService
+      || operator.kind !== "agent"
+      || !effectiveCapabilities.includes("test.provision")
+      || !env.PLATFORM_OPERATOR_TEST_AGENTS?.split(",").some((subject) => subject.trim() === operator.subject)
+    )) {
+      throw new HttpError(403, "maintenance-test-kit-only", "维护期间仅允许已配置的测试物料 agent");
+    }
     const server = buildServer(input.service, {
       subject: operator.subject,
       kind: operator.kind,
       capabilities: effectiveCapabilities,
       agentId: operator.kind === "agent" ? operator.subject : c.var.user?.raw?.act && typeof c.var.user.raw.act === "object" && "sub" in c.var.user.raw.act && typeof c.var.user.raw.act.sub === "string" ? c.var.user.raw.act.sub : null,
-    }, input.activationSummaryService, input.opsFollowUpService, input.opsProposalService, input.opsAutonomyService, input.opsRunService, input.testKitService);
+    }, input.activationSummaryService, input.opsFollowUpService, input.opsProposalService, input.opsAutonomyService, input.opsRunService, input.testKitService, testKitOnly);
     const transport = new WebStandardStreamableHTTPServerTransport({
       enableJsonResponse: true,
     });

@@ -1,9 +1,40 @@
 import { z } from "zod";
 
+function iceUrls(pattern: RegExp, message: string) {
+  return z.string().default("")
+    .transform((value) => value.split(",").map((url) => url.trim()).filter(Boolean))
+    .pipe(z.array(z.string().regex(pattern, message)));
+}
+
 const EnvSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   HOST: z.string().min(1).default("0.0.0.0"),
   PORT: z.coerce.number().int().positive().max(65535).default(8080),
+
+  TURN_SHARED_SECRET: z.preprocess(
+    (value) => typeof value === "string" && value.trim() === "" ? undefined : value,
+    z.string().min(1).optional(),
+  ),
+  TURN_URLS: iceUrls(/^turns?:(?:[a-zA-Z0-9.-]+|\[[0-9a-fA-F:.]+\])(?::\d+)?(?:\?transport=(?:udp|tcp))?$/u, "Expected a TURN URL"),
+  STUN_URLS: iceUrls(/^stun:(?:[a-zA-Z0-9.-]+|\[[0-9a-fA-F:.]+\])(?::\d+)?$/u, "Expected a STUN URL"),
+  TURN_CREDENTIAL_TTL_SECONDS: z.coerce.number().int().min(1).max(900).default(600),
+  MEETING_GUEST_ORIGIN: z.preprocess(value => value === "" ? undefined : value, z.string().url().optional()),
+  MEETING_GUEST_TRUST_PROXY: z.enum(["0", "1"]).default("0"),
+  MEETING_SFU_PRIVATE_URL: z.preprocess((v) => v === "" ? undefined : v, z.url().optional()),
+  MEETING_SFU_SIGNAL_URL: z.preprocess((v) => v === "" ? undefined : v, z.url().optional()),
+  MEETING_SFU_APP_ORIGIN: z.preprocess((v) => v === "" ? undefined : v, z.url().optional()),
+  MEETING_SFU_KEY: z.preprocess((v) => v === "" ? undefined : v, z.string().min(8).optional()),
+  MEETING_SFU_SECRET: z.preprocess((v) => v === "" ? undefined : v, z.string().min(32).optional()),
+  MEETING_SFU_MAX_SEATS: z.coerce.number().int().min(1).max(30).default(30),
+  MEETING_ROSTER_PEPPER: z.preprocess(
+    (value) => value === "" ? undefined : value,
+    z.string().min(32).optional(),
+  ),
+  MEETING_ROSTER_ORIGIN: z.preprocess((value) => value === "" ? undefined : value, z.url().optional()),
+  MEETING_EVIDENCE_DIR: z.preprocess((value) => value === "" ? undefined : value, z.string().startsWith("/").optional()),
+  MEETING_EVIDENCE_MASTER_KEY: z.preprocess((value) => value === "" ? undefined : value, z.string().regex(/^[0-9a-f]{64}$/iu).optional()),
+  MEETING_EVIDENCE_RETENTION_DAYS: z.preprocess((value) => value === "" ? undefined : value, z.coerce.number().int().min(31).max(3650).default(365)),
+  MEETING_EGRESS_SPOOL: z.preprocess((value) => value === "" ? undefined : value, z.string().startsWith("/").optional()),
 
   SURREAL_URL: z.string().min(1),
   SURREAL_NS: z.string().min(1).default("main"),

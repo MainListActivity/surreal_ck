@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type TrialCompat, writeAllowanceTree, writeTrialTree } from "./origin-release-fixtures";
+import { HEALTH_CLOCK_STUB, type TrialCompat, writeAllowanceTree, writeTrialTree } from "./origin-release-fixtures";
 
 /**
  * LCA13 撤销兼容门禁回归测试（Finding A 修复验证）。
@@ -554,7 +554,7 @@ systemctl() {
   esac
 }
 curl() { printf '%s' "\${T_HEALTH_BODY:-}"; }
-sleep() { :; }
+${HEALTH_CLOCK_STUB}
 journalctl() { :; }
 mv() { if [ "\${1:-}" = "-T" ]; then shift; [ -L "\$2" ] && command rm -f "\$2"; fi; command mv -f "$@"; }
 cp() {
@@ -564,6 +564,7 @@ cp() {
   command cp "$@"
 }
 cat() {
+  if [ "\${1:-}" = /proc/uptime ]; then fake_uptime; return; fi
   case "\${T_COPY_FAIL_BACKUP:-}" in
     1) case "\${1##*/}" in server.env.*-ci*) echo "cat: injected failure" >&2; return 1 ;; esac ;;
   esac

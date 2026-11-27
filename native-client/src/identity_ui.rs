@@ -17,7 +17,10 @@ enum Command {
     #[cfg(feature = "experimental-enterprise-signaling")]
     Chat(u64, u64, enterprise_chat::Action),
 }
-enum Event {
+pub(crate) enum Event {
+    /// 会议 actor 的代际化更新；u64 为会议代际，epoch 由外层元组携带。
+    #[cfg(feature = "experimental-enterprise-meeting")]
+    Meeting(u64, crate::ui::meeting::MeetingUpdate),
     #[cfg(feature = "experimental-enterprise-files")]
     FileTools(
         u64,
@@ -44,7 +47,7 @@ enum Event {
     Chat(u64, enterprise_chat::Update),
 }
 
-fn configured() -> Result<(IdentityClient, SurrealConfig), String> {
+pub(crate) fn configured() -> Result<(IdentityClient, SurrealConfig), String> {
     let required = |v: Option<&'static str>| {
         v.ok_or_else(|| "企业原生登录尚未配置：需要已注册回调和匹配的客户端。".to_owned())
     };
@@ -87,7 +90,7 @@ struct WorkspaceChoice {
 }
 /// UI 只持有权威 API 返回的展示数据，不持有 JWT、Session 或 callback。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct DirectoryView {
+pub(crate) struct DirectoryView {
     workspaces: Vec<WorkspaceChoice>,
     selected_slug: Option<String>,
     current_title: String,
@@ -159,6 +162,11 @@ struct Directory {
     /// 成员目录与信令使用的 participant RECORD 会话；没有时不得启用聊天。
     #[cfg_attr(not(feature = "experimental-enterprise-signaling"), allow(dead_code))]
     collaboration: Option<Arc<Session>>,
+    #[cfg(all(
+        any(target_os = "linux", target_os = "android"),
+        feature = "experimental-native-roster-sfu"
+    ))]
+    roster: Option<crate::roster_actor::HostScope>,
     view: DirectoryView,
     message: String,
 }
@@ -374,6 +382,17 @@ async fn login_directory(
         .ensure_current()
         .map_err(|error| error.to_string())?;
     Ok(Directory {
+        #[cfg(all(
+            any(target_os = "linux", target_os = "android"),
+            feature = "experimental-native-roster-sfu"
+        ))]
+        roster: workspaces
+            .workspaces
+            .iter()
+            .find(|workspace| Some(workspace.db_name.as_str()) == session.database())
+            .and_then(|workspace| {
+                crate::roster_actor::HostScope::new(&client, &session, workspace)
+            }),
         session,
         collaboration,
         view,
@@ -428,6 +447,11 @@ async fn switch_directory(previous: Arc<Session>, slug: String) -> Result<Direct
     let mut view = DirectoryView::from_workspaces(&workspaces.workspaces);
     view.select(target, members, collaboration.is_some());
     Ok(Directory {
+        #[cfg(all(
+            any(target_os = "linux", target_os = "android"),
+            feature = "experimental-native-roster-sfu"
+        ))]
+        roster: crate::roster_actor::HostScope::new(&client, &session, target),
         session,
         collaboration,
         view,
@@ -439,7 +463,16 @@ fn abort(pending: &mut Option<tokio::task::JoinHandle<()>>) {
         job.abort();
     }
 }
-fn start() -> (
+fn start(
+    #[cfg(feature = "experimental-enterprise-meeting")] meeting: Option<
+        Arc<crate::meeting_actor::Shared>,
+    >,
+    #[cfg(all(
+        any(target_os = "linux", target_os = "android"),
+        feature = "experimental-native-roster-sfu"
+    ))]
+    roster: tokio::sync::watch::Sender<Option<crate::roster_actor::HostScope>>,
+) -> (
     async_channel::Sender<Command>,
     async_channel::Receiver<(u64, Event)>,
 ) {
@@ -456,6 +489,16 @@ fn start() -> (
             let mut pending: Option<tokio::task::JoinHandle<()>> = None;
             let mut directory: Option<Directory> = None;
             let mut gate = CompletionGate::default();
+            #[cfg(feature = "experimental-enterprise-meeting")]
+            let mut meeting_generation: u64 = 0;
+            #[cfg(feature = "experimental-enterprise-meeting")]
+            let stop_meeting = |out: &async_channel::Sender<(u64, Event)>,
+                                epoch: u64,
+                                reason: crate::ui::meeting::UnavailableReason| {
+                if let Some(shared) = &meeting {
+                    crate::meeting_actor::stop(shared, out, epoch, reason);
+                }
+            };
             #[cfg(feature = "experimental-enterprise-signaling")]
             let mut chat_worker = enterprise_chat::Slot::default();
             let mut expiry = tokio::time::interval(std::time::Duration::from_secs(1));
@@ -463,6 +506,8 @@ fn start() -> (
                 tokio::select! {
                     _ = expiry.tick() => {
                         if directory.as_ref().is_some_and(|entry| entry.session.ensure_current().is_err()) {
+                            #[cfg(all(any(target_os = "linux", target_os = "android"), feature = "experimental-native-roster-sfu"))]
+                            roster.send_replace(None);
                             #[cfg(feature = "experimental-enterprise-signaling")]
                             {
                                 gate.invalidate(gate.epoch);
@@ -470,6 +515,12 @@ fn start() -> (
                             }
                             #[cfg(feature = "experimental-enterprise-signaling")]
                             let close = enterprise_chat::shutdown(&mut chat_worker).await;
+                            #[cfg(feature = "experimental-enterprise-meeting")]
+                            stop_meeting(
+                                &out,
+                                gate.epoch,
+                                crate::ui::meeting::UnavailableReason::SignedOut,
+                            );
                             directory.take();
                             abort(&mut pending);
                             gate.invalidate(gate.epoch);
@@ -493,6 +544,8 @@ fn start() -> (
                             }
                             other => other,
                         };
+                        #[cfg(all(any(target_os = "linux", target_os = "android"), feature = "experimental-native-roster-sfu"))]
+                        roster.send_replace(None);
                         abort(&mut pending);
                         #[cfg(feature = "experimental-enterprise-signaling")]
                         let close = enterprise_chat::shutdown(&mut chat_worker).await;
@@ -502,6 +555,12 @@ fn start() -> (
                             #[cfg(feature = "experimental-enterprise-signaling")]
                             Command::Chat(_, _, _) => unreachable!(),
                             Command::Logout(id, reason) => {
+                                #[cfg(feature = "experimental-enterprise-meeting")]
+                                stop_meeting(
+                                    &out,
+                                    id,
+                                    crate::ui::meeting::UnavailableReason::SignedOut,
+                                );
                                 directory.take();
                                 gate.invalidate(id);
                                 let message = reason.to_owned();
@@ -510,6 +569,12 @@ fn start() -> (
                                 let _ = out.send((id, Event::Cleared(message))).await;
                             }
                             Command::Login(id) => {
+                                #[cfg(feature = "experimental-enterprise-meeting")]
+                                stop_meeting(
+                                    &out,
+                                    id,
+                                    crate::ui::meeting::UnavailableReason::SignedOut,
+                                );
                                 directory.take();
                                 #[cfg(feature = "experimental-enterprise-signaling")]
                                 if let Err(error) = close {
@@ -542,6 +607,12 @@ fn start() -> (
                                     continue;
                                 };
                                 gate.start(id);
+                                #[cfg(feature = "experimental-enterprise-meeting")]
+                                stop_meeting(
+                                    &out,
+                                    id,
+                                    crate::ui::meeting::UnavailableReason::NoWorkspace,
+                                );
                                 let previous = previous.session.clone();
                                 let done = done.clone();
                                 pending = Some(tokio::spawn(async move {
@@ -559,19 +630,74 @@ fn start() -> (
                         pending.take();
                         match result {
                             Ok(next) if next.session.ensure_current().is_ok() => {
+                                #[cfg(all(any(target_os = "linux", target_os = "android"), feature = "experimental-native-roster-sfu"))]
+                                roster.send_replace(next.roster.clone());
                                 let event = Event::Ready(next.view.clone(), next.message.clone());
+                                #[cfg(feature = "experimental-enterprise-meeting")]
+                                if let Some(shared) = &meeting {
+                                    match next.collaboration.clone() {
+                                        Some(session)
+                                            if next.view.selected_slug.is_some() =>
+                                        {
+                                            meeting_generation += 1;
+                                            if let Ok((client, database)) = configured() {
+                                                let contacts = next
+                                                    .view
+                                                    .chat_members
+                                                    .iter()
+                                                    .filter(|member| !member.pending)
+                                                    .map(|member| crate::ui::meeting::Contact {
+                                                        member_id: member.id.clone(),
+                                                        name: member.name.clone(),
+                                                    })
+                                                    .collect();
+                                                crate::meeting_actor::start(
+                                                    shared,
+                                                    id,
+                                                    meeting_generation,
+                                                    client,
+                                                    session,
+                                                    database,
+                                                    next.view.selected_slug.clone().unwrap_or_default(),
+                                                    contacts,
+                                                    out.clone(),
+                                                );
+                                            }
+                                        }
+                                        _ => crate::meeting_actor::stop(
+                                            shared,
+                                            &out,
+                                            id,
+                                            crate::ui::meeting::UnavailableReason::SignedOut,
+                                        ),
+                                    }
+                                }
                                 directory = Some(next);
                                 let _ = out.send((id, event)).await;
                             }
                             Ok(_) => {
+                                #[cfg(feature = "experimental-enterprise-meeting")]
+                                stop_meeting(
+                                    &out,
+                                    id,
+                                    crate::ui::meeting::UnavailableReason::SignedOut,
+                                );
                                 directory.take();
                                 let _ = out.send((id, Event::Cleared("登录已过期，请重新登录。".into()))).await;
                             }
                             Err(error) => {
                                 if directory.as_ref().is_some_and(|entry| entry.session.ensure_current().is_err()) {
+                                    #[cfg(feature = "experimental-enterprise-meeting")]
+                                    stop_meeting(
+                                        &out,
+                                        id,
+                                        crate::ui::meeting::UnavailableReason::SignedOut,
+                                    );
                                     directory.take();
                                     let _ = out.send((id, Event::Cleared("登录已过期，请重新登录。".into()))).await;
                                 } else {
+                                    #[cfg(all(any(target_os = "linux", target_os = "android"), feature = "experimental-native-roster-sfu"))]
+                                    roster.send_replace(directory.as_ref().and_then(|entry| entry.roster.clone()));
                                     let message = if directory.is_some() {
                                         format!("切换未完成：{error}。已保留原会话与成员；服务端最近选择可能已更新。")
                                     } else { format!("登录未完成：{error}") };
@@ -585,6 +711,12 @@ fn start() -> (
             abort(&mut pending);
             #[cfg(feature = "experimental-enterprise-signaling")]
             let _ = enterprise_chat::shutdown(&mut chat_worker).await;
+            #[cfg(feature = "experimental-enterprise-meeting")]
+            stop_meeting(
+                &out,
+                0,
+                crate::ui::meeting::UnavailableReason::SignedOut,
+            );
             drop(directory);
         });
     });
@@ -623,6 +755,12 @@ fn summary_of(state: &IdentityViewState, available: bool) -> crate::first_screen
 /// 面板常驻挂载：只折叠账号设置，不能将采集隐私与停止区一起隐藏。
 pub fn enterprise_identity(
     summary: Signal<crate::first_screen::IdentitySummary>,
+    #[cfg(feature = "experimental-enterprise-meeting")] meeting: &crate::meeting_actor::Bridge,
+    #[cfg(all(
+        any(target_os = "linux", target_os = "android"),
+        feature = "experimental-native-roster-sfu"
+    ))]
+    roster: tokio::sync::watch::Sender<Option<crate::roster_actor::HostScope>>,
 ) -> impl IntoElement {
     let expanded = signal(false);
     let available = identity_available();
@@ -641,14 +779,31 @@ pub fn enterprise_identity(
     let media = crate::enterprise_tools::MediaTools::new();
     #[cfg(feature = "experimental-enterprise-media")]
     cleanup(move || media.invalidate());
-    let (commands, events) = start();
+    let (commands, events) = start(
+        #[cfg(feature = "experimental-enterprise-meeting")]
+        Some(meeting.shared()),
+        #[cfg(all(
+            any(target_os = "linux", target_os = "android"),
+            feature = "experimental-native-roster-sfu"
+        ))]
+        roster,
+    );
     let cleanup_commands = commands.clone();
     cleanup(move || {
         cleanup_commands.close();
     });
     let browser_commands = commands.clone();
+    #[cfg(feature = "experimental-enterprise-meeting")]
+    let meeting_bridge = meeting.clone();
     spawn(async move {
         while let Ok((id, event)) = events.recv().await {
+            #[cfg(feature = "experimental-enterprise-meeting")]
+            if let Event::Meeting(generation, update) = event {
+                if state.get_untracked().epoch == id {
+                    meeting_bridge.apply(generation, update);
+                }
+                continue;
+            }
             #[cfg(feature = "experimental-enterprise-files")]
             let event = match event {
                 Event::FileTools(generation, handle, notices) => {
@@ -1080,7 +1235,7 @@ mod enterprise_chat {
         pub pending: bool,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub(super) struct Invitation {
+    pub(crate) struct Invitation {
         id: String,
         sender: String,
         name: String,
@@ -1093,7 +1248,7 @@ mod enterprise_chat {
         Send(u64, String),
         Stop,
     }
-    pub(super) enum Update {
+    pub(crate) enum Update {
         Listening(String),
         Inbox(Vec<Invitation>),
         Negotiating(String),

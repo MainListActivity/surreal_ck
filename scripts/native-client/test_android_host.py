@@ -75,6 +75,21 @@ class HostTests(unittest.TestCase):
         root.find('application').remove(root.find('application/receiver'))
         with self.assertRaises(ValueError): host.verify_updater_host(root, False)
 
+    def test_roster_requires_private_provider_jni_and_webrtc_dex(self):
+        repo = Path(__file__).resolve().parents[2]
+        root = ET.fromstring('<manifest package="top.maplayer.collaboration"><application /></manifest>')
+        roster = repo / 'native-client/android-host/roster-sfu-manifest.xml'
+        for fragment in (repo / 'native-updater-platform/android/manifest-fragment.xml',
+                         repo / 'native-media-platform/android/documents-manifest.xml', roster):
+            host.merge_fragment(root, fragment)
+        with self.assertRaises(ValueError): host.verify_updater_host(root, False)
+        host.verify_updater_host(root, False, roster=True)
+        self.assertIn('Java_top_maplayer_collaboration_roster_RosterSfuProvider_initialize',
+                      host.required_jni_symbols([roster]))
+        classes = {'L' + node.get(host.A + 'name').replace('.', '/') + ';' for node in root.find('application')}
+        with self.assertRaises(ValueError): host.verify_manifest_dex(root, classes, False, True)
+        host.verify_manifest_dex(root, classes | host.WEBRTC_CLASSES, False, True)
+
     @unittest.skipIf(sys.platform == 'win32', 'Android package.sh is executed on POSIX build hosts only')
     def test_standard_package_routes_through_updater_with_same_signing_identity(self):
         script = Path(__file__).with_name('package.sh').resolve()

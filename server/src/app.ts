@@ -27,6 +27,14 @@ import { createMemberRoutes } from "./routes/members";
 import { createClaimsPortalRoutes } from "./routes/claims-portal";
 import { ClaimsPortalService } from "./claims-portal/service";
 import { createSessionRoutes } from "./routes/session";
+import { createMeetingIceRoutes } from "./routes/meeting-ice";
+import { createMeetingSfuRoutes, createPrivateMeetingSfu } from "./routes/meeting-sfu";
+import { dailyRecording, finalizeDaily } from "./meeting/evidence-daily";
+import { createMeetingRosterRoutes } from "./routes/meeting-roster";
+import { configuredMeetingEvidence } from "./meeting/evidence-archive";
+import { configuredTrackRecording } from "./meeting/evidence-recording";
+import { RosterMeetingService } from "./meeting/roster";
+import { createMeetingV2Routes } from "./routes/meeting-v2";
 import { createWorkspaceRoutes } from "./routes/workspaces";
 import {
   createAuthRoutes,
@@ -53,7 +61,7 @@ import { createWorkspaceScopeModule, type WorkspaceScopeModule } from "./workspa
 import type { AppBindings } from "./hono-types";
 import type { MiddlewareHandler } from "hono";
 import { createQuotaRoutes, type QuotaReadPort } from "./routes/quota";
-import { getRootConnection, getRootDatabaseSession } from "./db/root-connection";
+import { getRootConnection, getRootDatabaseSession, removeRootWorkspaceDatabase } from "./db/root-connection";
 import { SurrealNativeQuotaClient } from "./db/native-quota/client";
 import { QuotaInfoCache } from "./quota/quota-info-cache";
 import { SurrealQuotaAuthorityReader } from "./quota/quota-authority-reader";
@@ -159,6 +167,7 @@ import { InviteService } from "./invitations/invite-service";
 import { SurrealInviteAuditStore } from "./invitations/invite-store";
 import {
   createIdpAdminClientSource,
+  createIdpProvisionCancellation,
   createProvisionTokenSource,
   type ProvisionTokenSource,
 } from "./invitations/idp-admin-client";
@@ -452,6 +461,16 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     );
 
   const base = new Hono<AppBindings>();
+  const meetingEvidence = configuredMeetingEvidence();
+  const recording = configuredTrackRecording();
+  let roster: RosterMeetingService;
+  const evidenceJobs = meetingEvidence && recording && meetingEvidence.finalization((job) =>
+    job.kind === "daily" ? finalizeDaily(meetingEvidence, recording, job) : roster.finalizeEvidence(job));
+  const meetingSfu = createPrivateMeetingSfu(env, recording?.start.bind(recording),
+    meetingEvidence && recording && evidenceJobs ? dailyRecording(meetingEvidence, recording, evidenceJobs) : undefined);
+  roster = new RosterMeetingService({ media: meetingSfu, evidence: meetingEvidence, recording, evidenceJobs,
+    requireEvidence: env.NODE_ENV === "production" });
+  evidenceJobs?.start();
   base.use("*", requestLogger);
   base.onError(handleError);
 
@@ -463,6 +482,13 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     ))
     .route("/", createInternalIdpRoutes(workspaceScope))
     .route("/", createSessionRoutes(workspaceScope, idpTokenScopeAdapter, options.requireUser))
+    .route("/", createMeetingIceRoutes({ workspaceScope, requireUser: options.requireUser }))
+    .route("/", createMeetingSfuRoutes({ workspaceScope, requireUser: options.requireUser, service: meetingSfu }))
+    .route("/", createMeetingRosterRoutes({
+      requireUser: options.requireUser, evidence: meetingEvidence,
+      service: roster,
+    }))
+    .route("/", createMeetingV2Routes({ workspaceScope, requireUser: options.requireUser }))
     .route("/", createInternalAiIdentityRoutes({ db: async () => getRootDatabaseSession("_system"), requireUser: options.requireUser?.() }))
     .route("/", createContentReaderRoutes({
       exchange: options.contentReaderExchange ?? createContentReaderExchangeHandler({ rolloutGates }),
@@ -564,8 +590,13 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
           return user ? { id: user.id } : null;
         },
         reaperDeps: async () => ({
-          systemDb: await getRootDatabaseSession("_system"),
-          dropDatabase: async (dbName) => { await getRootConnection().query(`REMOVE DATABASE IF EXISTS ${dbName};`); },
+          systemDb: {
+            async query(sql, params) {
+              return (await getRootDatabaseSession("_system")).query(sql, params);
+            },
+          },
+          dropDatabase: removeRootWorkspaceDatabase,
+          cancelIdpProvision: createIdpProvisionCancellation(idpAdminSource),
           now: () => new Date(),
         }),
         emailPattern: env.TEST_KIT_EMAIL_PATTERN,

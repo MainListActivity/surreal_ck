@@ -18,6 +18,8 @@ ANDROID = "http://schemas.android.com/apk/res/android"
 A = "{" + ANDROID + "}"
 ET.register_namespace("android", ANDROID)
 JNI_SYMBOL = "Java_top_maplayer_collaboration_update_UpdaterInitProvider_initialize"
+ROSTER_PROVIDER = "top.maplayer.collaboration.roster.RosterSfuProvider"
+WEBRTC_CLASSES = {"Llivekit/org/webrtc/ContextUtils;", "Llivekit/org/webrtc/audio/WebRtcAudioRecord;"}
 
 
 def run(args, **kwargs):
@@ -141,12 +143,14 @@ def verify_auth_manifest(root, enabled):
             verify_auth_component(component)
 
 
-def verify_manifest_dex(root, classes, oauth_enabled):
+def verify_manifest_dex(root, classes, oauth_enabled, roster=False):
     required = {"L" + node.get(A + "name").replace(".", "/") + ";"
                 for node in root.find("application")
                 if node.get(A + "name", "").startswith("top.maplayer.collaboration.")}
     if oauth_enabled:
         required.update("Ltop/maplayer/collaboration/auth/" + name + ";" for name in ("AuthBridge", "AuthUri"))
+    if roster:
+        required.update(WEBRTC_CLASSES)
     if required - classes:
         raise ValueError("Actual DEX lacks manifest/bridge classes: " + ", ".join(sorted(required - classes)))
 
@@ -194,7 +198,7 @@ def signer_certificates(output):
     return {value.lower() for value in certificates}
 
 
-def verify_updater_host(root, oauth_enabled, collaboration=False):
+def verify_updater_host(root, oauth_enabled, collaboration=False, roster=False):
     """严格验证所选宿主的完整组件，不将缺桥的 APK 当作完整客户端。"""
     if oauth_enabled != collaboration:
         raise ValueError("OAuth ingress must match the selected host mode")
@@ -209,6 +213,8 @@ def verify_updater_host(root, oauth_enabled, collaboration=False):
             "top.maplayer.collaboration.media.MediaInitProvider",
             "top.maplayer.collaboration.media.NativeCallActivity",
             "top.maplayer.collaboration.media.NativeCaptureService"})
+    if roster:
+        allowed.add(ROSTER_PROVIDER)
     required = allowed
     seen = set()
     for component in root.findall("application/*"):
@@ -218,6 +224,11 @@ def verify_updater_host(root, oauth_enabled, collaboration=False):
                 raise ValueError("Unexpected standard updater host component: " + name)
             if name.startswith(AUTH_PREFIX):
                 verify_auth_component(component)
+            if name == ROSTER_PROVIDER and (component.tag != "provider" or component.attrib != {
+                A + "name": ROSTER_PROVIDER, A + "exported": "false",
+                A + "authorities": root.get("package") + ".roster-sfu-init",
+            } or list(component)):
+                raise ValueError("Roster SFU requires its private context initialization provider")
             seen.add(name)
     if not required <= seen:
         raise ValueError("Standard updater host is missing required components")
@@ -241,6 +252,11 @@ def required_jni_symbols(fragments):
             if name == AUTH_PROVIDER:
                 required.update({"Java_top_maplayer_collaboration_auth_AuthInitProvider_initialize",
                                  "Java_top_maplayer_collaboration_auth_AuthBridge_callback"})
+            if name == ROSTER_PROVIDER:
+                required.add("Java_top_maplayer_collaboration_roster_RosterSfuProvider_initialize")
+                required.update({"Java_livekit_org_webrtc_audio_WebRtcAudioRecord_nativeDataIsRecorded",
+                                 "Java_livekit_org_webrtc_audio_WebRtcAudioTrack_nativeGetPlayoutData",
+                                 "Java_livekit_org_webrtc_SoftwareVideoEncoderFactory_nativeCreateFactory"})
             if name == "top.maplayer.collaboration.documents.DocumentInitProvider":
                 required.add("Java_top_maplayer_collaboration_documents_DocumentInitProvider_initialize")
             if name == "top.maplayer.collaboration.media.MediaInitProvider":
@@ -270,11 +286,20 @@ def main():
     p.add_argument("--sdk", type=Path, required=True)
     p.add_argument("--native-lib", action="append", required=True, help="ABI=/absolute/libnsh.so")
     p.add_argument("--java-source-dir", type=Path, action="append", required=True)
+    p.add_argument("--roster-webrtc-jar", type=Path, help="libwebrtc.jar from the locked Android roster-SFU build")
     p.add_argument("--manifest-fragment", type=Path, action="append", required=True)
     p.add_argument("--keystore-existing", type=Path, required=True)
     p.add_argument("--key-alias", required=True)
     p.add_argument("--test-signing", action="store_true", help="Only existing standard Android debug key; no key generation")
     args = p.parse_args()
+    roster = args.roster_webrtc_jar is not None
+    has_roster_provider = any(
+        node.get(A + "name") == ROSTER_PROVIDER
+        for fragment in args.manifest_fragment
+        for node in ET.parse(fragment).getroot().findall("application/provider")
+    )
+    if roster != has_roster_provider or (roster and not args.roster_webrtc_jar.is_file()):
+        p.error("Roster SFU requires both the private provider fragment and matching libwebrtc.jar")
     if not args.input_apk.is_file() or not args.keystore_existing.is_file():
         p.error("Input APK and existing keystore must exist")
     if args.output_apk.exists() or args.output_apk.resolve() == args.input_apk.resolve():
@@ -319,7 +344,7 @@ def main():
     for fragment in args.manifest_fragment:
         merge_fragment(root, fragment, args.enable_experimental_oauth)
     if args.enable_updater_host or args.enable_collaboration_host:
-        verify_updater_host(root, args.enable_experimental_oauth, args.enable_collaboration_host)
+        verify_updater_host(root, args.enable_experimental_oauth, args.enable_collaboration_host, roster)
     verify_auth_manifest(root, args.enable_experimental_oauth)
     if args.enable_experimental_oauth:
         for abi, file in libs.items():
@@ -339,7 +364,8 @@ def main():
         classes, dex = work / "classes", work / "dex"
         classes.mkdir(); dex.mkdir()
         run(["java", "com.sun.tools.javac.Main", "-source", "8", "-target", "8", "-Xlint:all,-options", "-Werror", "-bootclasspath", str(jar) + os.pathsep + str(tools / "core-lambda-stubs.jar"), "-d", classes, *sources])
-        run([tools / "d8", "--min-api", "28", "--lib", jar, "--output", dex, *sorted(classes.rglob("*.class"))])
+        archives = [args.roster_webrtc_jar] if roster else []
+        run([tools / "d8", "--min-api", "28", "--lib", jar, "--output", dex, *sorted(classes.rglob("*.class")), *archives])
         dex_files = sorted(dex.glob("classes*.dex"))
         if not dex_files:
             raise ValueError("D8 produced no dex")
@@ -366,7 +392,7 @@ def main():
                     all_classes.update(original_classes)
                     if original_classes & additions:
                         raise ValueError("Generated DEX duplicates an original class")
-        verify_manifest_dex(root, all_classes, args.enable_experimental_oauth)
+        verify_manifest_dex(root, all_classes, args.enable_experimental_oauth, roster)
         # META-INF只去除签名项，保留其他元数据。v2/v3签名block不属于ZIP项，会随重封装清除。
         signing = re.compile(r"META-INF/(?:MANIFEST\.MF|[^/]+\.(?:SF|RSA|DSA|EC))$", re.I)
         dex_numbers = [1 if name == "classes.dex" else int(re.fullmatch(r"classes(\d+)\.dex", name)[1])
@@ -399,9 +425,9 @@ def main():
         final_xml = capture([analyzer, "manifest", "print", aligned])
         final_root = ET.fromstring(final_xml)
         if args.enable_updater_host or args.enable_collaboration_host:
-            verify_updater_host(final_root, args.enable_experimental_oauth, args.enable_collaboration_host)
+            verify_updater_host(final_root, args.enable_experimental_oauth, args.enable_collaboration_host, roster)
         verify_auth_manifest(final_root, args.enable_experimental_oauth)
-        verify_manifest_dex(final_root, all_classes, args.enable_experimental_oauth)
+        verify_manifest_dex(final_root, all_classes, args.enable_experimental_oauth, roster)
         for required in ["UpdaterInitProvider", "UpdateResultReceiver", "REQUEST_INSTALL_PACKAGES"]:
             if required not in final_xml:
                 raise ValueError(f"Final manifest missing {required}")

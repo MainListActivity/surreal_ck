@@ -23,6 +23,7 @@ strip = "debuginfo"
 default = []
 android-native-oauth = ["app/android-native-oauth"]
 android-native-media = ["app/android-native-media"]
+experimental-native-roster-sfu = ["app/experimental-native-roster-sfu"]
 
 # 仅显式实验构建；默认Release不启用企业媒体/文件。
 enterprise-collaboration = ["android-native-oauth", "android-native-media", "app/experimental-enterprise-media", "app/experimental-enterprise-files"]

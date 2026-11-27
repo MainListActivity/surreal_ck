@@ -15,6 +15,49 @@ INSERT INTO workbook_template [
     description: "债权人、债权申报与审查进度的一体化管理台账",
     builtin: true,
     sort_order: 60,
+    roster_meeting_presets: [
+      {
+        key: "creditor-meeting",
+        label: "债权人会议",
+        sheet_key: "creditors",
+        display_key: "creditor_name",
+        check_key: "identity_number",
+        check_label: "证件号码后四位",
+        check_mode: "suffix4",
+        admission: "waiting",
+        concurrency: "replace",
+        vote_weight_key: "voting_weight",
+        vote_agenda: [
+          {
+            title: "核查债权表",
+            options: [
+              { key: "approve", label: "赞成" },
+              { key: "reject", label: "反对" },
+              { key: "abstain", label: "弃权" },
+            ],
+            allowChange: true,
+          },
+          {
+            title: "通过债务人财产的管理方案",
+            options: [
+              { key: "approve", label: "赞成" },
+              { key: "reject", label: "反对" },
+              { key: "abstain", label: "弃权" },
+            ],
+            allowChange: true,
+          },
+          {
+            title: "通过破产财产的变价方案",
+            options: [
+              { key: "approve", label: "赞成" },
+              { key: "reject", label: "反对" },
+              { key: "abstain", label: "弃权" },
+            ],
+            allowChange: false,
+          },
+        ],
+      },
+    ],
     sheet_defs: [
       {
         key: "creditors",
@@ -59,6 +102,13 @@ INSERT INTO workbook_template [
             field_type: "text",
             aliases: ["通讯地址", "联系地址"],
           },
+          {
+            key: "voting_weight",
+            label: "表决权数额",
+            field_type: "decimal",
+            constraints: { min: 0 },
+            aliases: ["表决权额", "表决金额", "表决权重"],
+          },
         ],
         sample_records: [
           {
@@ -81,6 +131,7 @@ INSERT INTO workbook_template [
               contact_name: "王莉",
               contact_phone: "13800001002",
               address: "江州市鼓楼区航运大道 92 号",
+              voting_weight: 900000,
             },
           },
           {
@@ -103,6 +154,7 @@ INSERT INTO workbook_template [
               contact_name: "赵强",
               contact_phone: "13800001004",
               address: "江州市栖霞区恒泰工业园 7 号",
+              voting_weight: 950000,
             },
           },
           {
@@ -114,6 +166,7 @@ INSERT INTO workbook_template [
               contact_name: "陈洁",
               contact_phone: "13800001005",
               address: "江州市玄武区政务大街 1 号",
+              voting_weight: 585000,
             },
           },
           {
@@ -574,7 +627,8 @@ ON DUPLICATE KEY UPDATE
   sheet_defs = $input.sheet_defs,
   quick_tasks = $input.quick_tasks,
   row_analysis = $input.row_analysis,
-  default_dashboard = $input.default_dashboard;
+  default_dashboard = $input.default_dashboard,
+  roster_meeting_presets = $input.roster_meeting_presets;
 
 INSERT INTO claim_supplement_template [
   { key: "contract", label: "缺少合同", body: "请补充合同、协议及相关附件的完整清晰副本。" },

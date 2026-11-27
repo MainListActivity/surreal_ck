@@ -39,6 +39,7 @@ export type AuditRecord = {
   requestDigest: string;
   entitlementId: string | null;
   productPlanRevisionId: string | null;
+  assignmentItemId?: string;
 };
 
 /** LCA13：运营解释用的完整赠送事实（含撤销状态与理由）。 */
@@ -55,7 +56,7 @@ export interface ProductEntitlementStore {
   workspaceById(id: string): Promise<WorkspaceRuntimeRef | null>;
   membership(subject: string, workspaceId: string): Promise<"admin" | "participant" | null>;
   activeItem(workspaceId: string): Promise<SubscriptionFact | null>;
-  bindProductRevision(itemId: string, productPlanRevisionId: string): Promise<void>;
+  bindProductRevision(itemId: string, productPlanRevisionId: string): Promise<boolean>;
   productRevision(id: string): Promise<ProductRevisionBody | null>;
   resourceTemplateExists(id: string): Promise<boolean>;
   upsertCollection(key: string, label: string): Promise<{ id: string; key: string; label: string }>;
@@ -89,7 +90,6 @@ export interface ProductEntitlementStore {
   currentSnapshot(workspaceId: string): Promise<SnapshotRecord | null>;
   snapshotById(id: string): Promise<SnapshotRecord | null>;
   snapshotByDigest(workspaceId: string, digest: string): Promise<SnapshotRecord | null>;
-  newestSnapshotRevision(workspaceId: string, productPlanRevisionId: string): Promise<number | null>;
   /** 全部快照的最大序位（不分产品）：指针回指旧快照后，新快照序位必须从它继续。 */
   maxSnapshotRevision(workspaceId: string): Promise<number | null>;
   insertSnapshot(row: SnapshotRecord): Promise<"ok" | "conflict">;
@@ -202,13 +202,14 @@ export class ProductEntitlementService {
     if (item.billingAccountKey !== input.billingAccountKey) throw new ProductEntitlementError("cross_account", "订阅不属于该计费账户");
     const revision = await this.store.productRevision(input.productPlanRevisionId);
     if (!revision) throw new ProductEntitlementError("invalid_request", "产品版本不存在");
-    const replay = await this.claim(actor, "assign", input.reason, input.idempotencyKey, requestDigest, workspace.id, revision.id);
-    if (replay) {
-      await this.bindReplay(workspace.id, revision.id, replay.revision);
-      return replay;
+    const replay = await this.claim(actor, "assign", input.reason, input.idempotencyKey, requestDigest, workspace.id, revision.id, item.itemId);
+    if (replay) return replay;
+    const audit = await this.store.auditByKey(actor.subject, input.idempotencyKey);
+    if (audit?.assignmentItemId !== item.itemId) {
+      throw new ProductEntitlementError("conflict", "原订阅项已变更或无法确认，请重新确认后用新幂等键提交");
     }
     const materialized = await this.materialize(workspace, input.idempotencyKey, revision, false);
-    await this.bindAssigned(workspace.id, revision.id);
+    await this.bindAssigned(workspace.id, revision.id, item);
     await this.store.pointWorkspace(workspace.id, materialized.snapshot.id);
     await this.store.attachAuditEntitlement(actor.subject, input.idempotencyKey, materialized.snapshot.id);
     return (await this.storedView(actor.subject, input.idempotencyKey, requestDigest)) ?? materialized.view;
@@ -320,6 +321,7 @@ export class ProductEntitlementService {
     requestDigest: string,
     workspaceId: string,
     productPlanRevisionId: string | null,
+    assignmentItemId?: string,
   ): Promise<ProductEntitlementView | null> {
     const ready = await this.storedView(actor.subject, idempotencyKey, requestDigest);
     if (ready) return ready;
@@ -330,7 +332,7 @@ export class ProductEntitlementService {
     }
     const wrote = await this.store.insertAudit({
       actor: actor.subject, action, reason, idempotencyKey, requestDigest, workspaceId,
-      entitlementId: null, productPlanRevisionId,
+      entitlementId: null, productPlanRevisionId, assignmentItemId,
     });
     if (wrote === "ok") return null;
     const replay = await this.storedView(actor.subject, idempotencyKey, requestDigest);
@@ -351,19 +353,15 @@ export class ProductEntitlementService {
     return toView(snapshot.workspaceSlug, snapshot.revision, snapshot, resource);
   }
 
-  private async bindAssigned(workspaceId: string, productPlanRevisionId: string): Promise<void> {
+  private async bindAssigned(workspaceId: string, productPlanRevisionId: string, target: SubscriptionFact): Promise<void> {
     const item = await this.store.activeItem(workspaceId);
-    if (!item || item.status !== "active" || item.productPlanRevisionId === productPlanRevisionId) return;
-    await this.store.bindProductRevision(item.itemId, productPlanRevisionId);
-  }
-
-  private async bindReplay(workspaceId: string, productPlanRevisionId: string, snapshotRevision: number): Promise<void> {
-    const item = await this.store.activeItem(workspaceId);
-    if (item?.productPlanRevisionId && item.productPlanRevisionId !== productPlanRevisionId) {
-      const established = await this.store.newestSnapshotRevision(workspaceId, item.productPlanRevisionId);
-      if (established === null || snapshotRevision <= established) return;
+    if (!item || item.status !== "active" || item.itemId !== target.itemId || item.billingAccountKey !== target.billingAccountKey) {
+      throw new ProductEntitlementError("conflict", "绑定时有效订阅已变更，请重新确认");
     }
-    await this.bindAssigned(workspaceId, productPlanRevisionId);
+    if (item.productPlanRevisionId === productPlanRevisionId) return;
+    if (!await this.store.bindProductRevision(item.itemId, productPlanRevisionId)) {
+      throw new ProductEntitlementError("conflict", "绑定时有效订阅已变更，请重新确认");
+    }
   }
 
   private async viewFor(workspace: WorkspaceRef): Promise<ProductEntitlementView> {

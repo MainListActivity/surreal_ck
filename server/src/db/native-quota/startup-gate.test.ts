@@ -9,12 +9,12 @@ import {
 function compatibleCapability() {
   return {
     format_version: 1,
-    manifest_revision: "native-quota-v1.0",
+    manifest_revision: "native-quota-v2.0",
     fork: {
       id: "mainlistactivity/surrealdb-native-quota",
-      release: "3.3.0-native-quota.1",
+      release: "4.0.1-native-quota.1",
     },
-    build: { engine_version: "3.3.0", git_sha: "abcdef" },
+    build: { engine_version: "4.0.1", git_sha: "abcdef" },
     quota: {
       name: "native-quota-v1",
       contract_major: 1,
@@ -25,17 +25,17 @@ function compatibleCapability() {
     storage: {
       format_version: 1,
       backend: "rocksdb",
-      storage_version: 32771,
+      storage_version: 32772,
       state: "ready",
       ready: true,
       migration_required: false,
       marker: {
         format_revision: 1,
         fork_id: "mainlistactivity/surrealdb-native-quota",
-        upstream_storage_major: 3,
+        upstream_storage_major: 4,
         quota_policy_format_revision: 1,
         quota_usage_format_revision: 1,
-        minimum_compatible_fork_release: "3.3.0-native-quota.1",
+        minimum_compatible_fork_release: "4.0.1-native-quota.1",
         migration_state: "clean",
       },
     },
@@ -60,7 +60,7 @@ function compatibleCapability() {
       network_fault_model: "not-applicable-embedded",
     },
     cli: {
-      release: "3.3.0-native-quota.1",
+      release: "4.0.1-native-quota.1",
       requires_exact_release_for_destructive_operations: true,
     },
   };

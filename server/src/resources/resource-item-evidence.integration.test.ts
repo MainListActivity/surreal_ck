@@ -96,22 +96,16 @@ async function createResourceItem(db: Surreal, id: string, evidence: unknown) {
 }
 
 describe("LCA14 返工：resource_item.evidence 对象数组落库（真实 fork）", () => {
-  test("v≤48 缺陷复现 → 049 修复对象数组写读 → 幂等且不改写既有行", async () => {
+  test("兼容级别 3 的 v≤48 旧行 → 049 对象数组写读 → 幂等且不改写既有行", async () => {
     const { url, password, proc } = await spawnSurreal();
     try {
       const db = await openDatabase(url, password, "ws_legacy");
+      await db.query("ALTER DATABASE COMPATIBILITY 3;");
 
       // 既有 workspace 缺陷态：模板链止于 48。
       await applyVersions(db, (version) => version <= LEGACY_LAST_VERSION);
 
-      // 缺陷复现：对象证据被拒；字符串数组（现状兼容形态）可写。
-      let rejected: unknown = null;
-      try {
-        await createResourceItem(db, "broken", OBJECT_EVIDENCE);
-      } catch (error) {
-        rejected = error;
-      }
-      expect(String(rejected)).toMatch(/evidence/);
+      // 模拟旧库兼容级别与字符串证据；新库兼容级别 4 另由全链用例覆盖。
       await createResourceItem(db, "legacy_strings", ["旧字符串证据"]);
 
       // 应用 049 增量：同一对象数组写入恢复。

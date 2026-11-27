@@ -1,7 +1,8 @@
-import { Surreal } from "surrealdb";
+import { Surreal, type SurrealSession } from "surrealdb";
 import { env } from "../env";
+import { retryAtomicConflict } from "./atomic-conflict-retry";
 import { instrumentSurrealQuery } from "./query-logging";
-import { createRootSessionPool } from "./root-session-pool";
+import { createRootSessionPool, withScopedRootSessions } from "./root-session-pool";
 
 /**
  * root 连接状态机（生产 /health 假阴性卡死修复）。
@@ -75,6 +76,38 @@ function rootAuthentication(): RootAuthentication {
   };
 }
 
+const workspaceDatabaseOperations = new Map<string, Promise<void>>();
+
+async function serializeWorkspaceDatabaseOperation<T>(database: string, run: () => Promise<T>): Promise<T> {
+  const operation = (workspaceDatabaseOperations.get(database) ?? Promise.resolve()).then(run);
+  const settled = operation.then(() => undefined, () => undefined);
+  workspaceDatabaseOperations.set(database, settled);
+  try {
+    return await operation;
+  } finally {
+    if (workspaceDatabaseOperations.get(database) === settled) workspaceDatabaseOperations.delete(database);
+  }
+}
+
+async function workspaceDatabaseExists(connection: Surreal, database: string): Promise<boolean> {
+  const [catalog] = await connection.query<[{ databases: Record<string, unknown> }]>("INFO FOR NS;");
+  if (!catalog?.databases || typeof catalog.databases !== "object") {
+    throw new Error("workspace database catalog is unavailable");
+  }
+  return Object.hasOwn(catalog.databases, database);
+}
+
+export async function removeRootWorkspaceDatabase(database: string, getConnection = getRootConnection): Promise<void> {
+  if (!/^[a-z0-9_]+$/.test(database)) throw new Error("invalid workspace database name");
+  await serializeWorkspaceDatabaseOperation(database, async () => {
+    const connection = getConnection();
+    await retryAtomicConflict(() => connection.query(`REMOVE DATABASE IF EXISTS ${database};`));
+    if (await workspaceDatabaseExists(connection, database)) {
+      throw new Error("workspace database is still present after removal");
+    }
+  });
+}
+
 export function createRootSessionSource(getConnection: () => Surreal = getRootConnection) {
   return {
     async newSession() {
@@ -82,7 +115,20 @@ export function createRootSessionSource(getConnection: () => Surreal = getRootCo
       // authentication state，派生出的 session 仍以 root 身份登录；newSession 派生的是
       // 一条**未认证**的全新会话，匿名身份受 PERMISSIONS 限制看不到任何数据
       // （SELECT 返回 [[]]），导致 listWorkspaces 等永远查不到行。
-      const session = await getConnection().forkSession();
+      const connection = getConnection();
+      const session = await connection.forkSession();
+      const use = session.use.bind(session);
+      session.use = async (scope) => {
+        const database = scope?.database;
+        if (scope?.namespace !== env.SURREAL_NS || !database?.startsWith("ws_")) return use(scope);
+        // Root RPC USE can create a missing database. Check the catalog under the same lock as removal.
+        return serializeWorkspaceDatabaseOperation(database, async () => {
+          if (!await workspaceDatabaseExists(connection, database)) {
+            throw new Error("workspace database does not exist");
+          }
+          return use(scope);
+        });
+      };
       return instrumentSurrealQuery(session, { source: "server:root-session" });
     },
   };
@@ -531,6 +577,12 @@ export function getStableRootConnection(): Surreal {
 
 export function getRootDatabaseSession(database: string, namespace = env.SURREAL_NS) {
   return manager.getDatabaseSession(database, namespace);
+}
+
+export function withRootDatabaseSessions<TResult>(
+  run: (get: (database: string, namespace: string) => Promise<SurrealSession>) => Promise<TResult>,
+): Promise<TResult> {
+  return withScopedRootSessions(createRootSessionSource(), run);
 }
 
 export function checkRootConnection(timeoutMs = 5000): Promise<boolean> {

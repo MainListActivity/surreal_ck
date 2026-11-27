@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -7,12 +7,12 @@ import { Surreal } from "surrealdb";
 
 const RUN_SYSTEM_SCHEMA_TESTS =
   process.env.RUN_LOCAL_SURREALDB_SYSTEM_SCHEMA_TESTS === "1";
-// 迁移链逐条启动 surreal sql 子进程，bun 默认 5s 超时不够（044 之后约 44 条迁移）。
+// 迁移链逐条启动 surreal sql 子进程，bun 默认 5s 超时不够。
 const localSurrealTest = (name: string, fn: () => Promise<void>) =>
   test.skipIf(!RUN_SYSTEM_SCHEMA_TESTS)(name, fn, 120_000);
 const surrealBinary = process.env.SURREAL_BINARY ?? "surreal";
 const namespace = "main";
-const database = "_system";
+let database = "_system";
 const rootUsername = "root";
 const rootPassword = "root";
 const migrationsDirectoryUrl = new URL("../../sql/system/", import.meta.url);
@@ -84,6 +84,22 @@ beforeAll(async () => {
   await waitUntilReady();
 });
 
+beforeEach(async () => {
+  if (!RUN_SYSTEM_SCHEMA_TESTS) return;
+  database = `_system_cli_${crypto.randomUUID().replaceAll("-", "")}`;
+  expectSuccessful(await runSurrealCli(`
+    DEFINE NAMESPACE IF NOT EXISTS main;
+    DEFINE DATABASE IF NOT EXISTS ${database};
+  `));
+});
+
+afterEach(async () => {
+  if (!RUN_SYSTEM_SCHEMA_TESTS) return;
+  await recordSession?.close();
+  recordSession = null;
+  expectSuccessful(await runSurrealCli(`REMOVE DATABASE IF EXISTS ${database};`));
+});
+
 afterAll(async () => {
   await recordSession?.close();
   surrealServer?.kill();
@@ -106,6 +122,7 @@ async function runSurrealCli(
     username: rootUsername,
     password: rootPassword,
   },
+  expectFailure = false,
 ): Promise<string> {
   const args = [
     surrealBinary,
@@ -137,8 +154,8 @@ async function runSurrealCli(
     new Response(child.stderr).text(),
     child.exited,
   ]);
-  if (exitCode !== 0) {
-    throw new Error(`surreal sql failed (${exitCode}): ${stderr || stdout}`);
+  if (exitCode !== (expectFailure ? 1 : 0)) {
+    throw new Error(`unexpected surreal sql exit (${exitCode}): ${stdout}\n${stderr}`);
   }
   return `${stdout}\n${stderr}`;
 }
@@ -156,6 +173,25 @@ async function readMigrations(): Promise<string[]> {
   return await Promise.all(
     entries.map(async (entry) => await readFile(new URL(entry, migrationsDirectoryUrl), "utf8")),
   );
+}
+
+async function applyPendingMigrations(migrations: string[]): Promise<number> {
+  expectSuccessful(await runSurrealCli("DEFINE TABLE IF NOT EXISTS _system_schema_version SCHEMALESS;"));
+  const [versions] = JSON.parse(await runSurrealCli(
+    "SELECT VALUE version FROM _system_schema_version:current;",
+  )) as [number[]];
+  const fromVersion = versions[0] ?? 0;
+  let applied = 0;
+  for (const [index, sql] of migrations.entries()) {
+    const version = index + 1;
+    if (version <= fromVersion) continue;
+    expectSuccessful(await runSurrealCli(sql));
+    expectSuccessful(await runSurrealCli(`
+      UPSERT _system_schema_version:current CONTENT { version: ${version}, applied_at: time::now() };
+    `));
+    applied += 1;
+  }
+  return applied;
 }
 
 const productRule = `{
@@ -178,8 +214,8 @@ const compiledRule = `{
     "041 放宽能力白名单到 funnel.read：历史项仍通过、未知能力仍拒绝、重复迁移安全",
     async () => {
       const migrations = await readMigrations();
-      expect(migrations).toHaveLength(44);
-      for (const sql of migrations) expectSuccessful(await runSurrealCli(sql));
+      expect(migrations).toHaveLength(52);
+      expect(await applyPendingMigrations(migrations)).toBe(52);
 
       expectSuccessful(await runSurrealCli(`
         CREATE platform_operator:probe CONTENT {
@@ -212,11 +248,11 @@ const compiledRule = `{
           status: "active",
           granted_by_subject: "test"
         };
-      `);
+      `, undefined, true);
       expect(unknown).toMatch(/must conform to|Found 'funnel\.write'/u);
 
-      // 重复执行最新迁移安全：不报错，既有行不被改写或删除。
-      expectSuccessful(await runSurrealCli(migrations.at(-1)!));
+      // 重复执行 041 安全：不报错，既有行不被改写或删除。
+      expectSuccessful(await runSurrealCli(migrations[40]!));
       const rows = await runSurrealCli(
         "SELECT count() AS total FROM platform_operator_capability GROUP ALL;",
       );
@@ -229,11 +265,11 @@ describe("_system native quota schema against local SurrealDB", () => {
     "upgrades existing data, enforces authority invariants, denies database users, and reruns safely",
     async () => {
       const migrations = await readMigrations();
-      expect(migrations).toHaveLength(44);
+      expect(migrations).toHaveLength(52);
 
-      for (const sql of migrations.slice(0, 3)) {
-        expectSuccessful(await runSurrealCli(sql));
-      }
+      // 001–003 历史夹具来自 3.x 创建的数据库。
+      expectSuccessful(await runSurrealCli("ALTER DATABASE COMPATIBILITY 3;"));
+      expect(await applyPendingMigrations(migrations.slice(0, 3))).toBe(3);
       expectSuccessful(await runSurrealCli(`
         CREATE workspace:existing CONTENT {
           db_name: "ws_existing",
@@ -244,9 +280,8 @@ describe("_system native quota schema against local SurrealDB", () => {
         };
       `));
 
-      for (const sql of migrations.slice(3)) {
-        expectSuccessful(await runSurrealCli(sql));
-      }
+      expect(await applyPendingMigrations(migrations)).toBe(migrations.length - 3);
+      expectSuccessful(await runSurrealCli("ALTER DATABASE COMPATIBILITY 4;"));
       const existingWorkspace = await runSurrealCli(
         "SELECT id, status FROM ONLY workspace:existing;",
       );
@@ -303,7 +338,7 @@ describe("_system native quota schema against local SurrealDB", () => {
           published_at: time::now(),
           correlation_id: "corr-plan-duplicate"
         };
-      `);
+      `, undefined, true);
       expect(duplicatePlanRevision).toMatch(/quota_plan_revision_unique|already contains/iu);
 
       const duplicateActiveItem = await runSurrealCli(`
@@ -316,7 +351,7 @@ describe("_system native quota schema against local SurrealDB", () => {
           effective_from: time::now(),
           correlation_id: "corr-item-duplicate"
         };
-      `);
+      `, undefined, true);
       expect(duplicateActiveItem).toMatch(
         /quota_subscription_item_active_workspace_unique|already contains/iu,
       );
@@ -359,13 +394,15 @@ describe("_system native quota schema against local SurrealDB", () => {
           workspace: workspace:existing,
           active_revision: quota_override_revision:existing_v1
         };
-      `);
+      `, undefined, true);
       expect(duplicateOverride).toMatch(
         /workspace_quota_override_workspace_unique|already contains/iu,
       );
 
       const immutableRevision = await runSurrealCli(
         'UPDATE quota_plan_revision:plus_v1 SET correlation_id = "mutated";',
+        undefined,
+        true,
       );
       expect(immutableRevision).toContain(
         "immutable-control-plane-record:quota_plan_revision",
@@ -576,9 +613,7 @@ describe("_system native quota schema against local SurrealDB", () => {
         recordSession.query("DEFINE TABLE denied_structure SCHEMALESS;").collect(),
       ).rejects.toThrow();
 
-      for (const sql of migrations) {
-        expectSuccessful(await runSurrealCli(sql));
-      }
+      expect(await applyPendingMigrations(migrations)).toBe(0);
       const restartSnapshot = await runSurrealCli(`
         SELECT count() AS workspaces FROM workspace GROUP ALL;
         SELECT count() AS plans FROM quota_plan GROUP ALL;
@@ -596,9 +631,7 @@ describe("_system platform_secret sealed store against local SurrealDB", () => {
   localSurrealTest(
     "rotation write persists secret row and flexible audit detail (prod 030 schema regression)",
     async () => {
-      for (const sql of await readMigrations()) {
-        expectSuccessful(await runSurrealCli(sql));
-      }
+      expect(await applyPendingMigrations(await readMigrations())).toBe(52);
       // PlatformSecretStore.put() 的写入形状：UPSERT 密文行 + CREATE 审计事件，
       // detail 为开放元数据对象（031 前 SCHEMAFULL 严格 object 会拒绝
       // detail.verifiedAgainst，导致生产 rotate 端点 500）。
@@ -638,7 +671,7 @@ describe("_system platform_secret sealed store against local SurrealDB", () => {
           source: "ops_api",
           occurred_at: time::now()
         };
-      `);
+      `, undefined, true);
       expect(badAction).toMatch(/Found 'steal'/iu);
     },
     60_000,

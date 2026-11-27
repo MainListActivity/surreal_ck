@@ -15,6 +15,7 @@ import { ActivationSummaryService } from "../../activation-summary/service";
 import type { ActivationSummaryV1, FollowUpItem, SharedActivationSummary } from "@surreal-ck/shared";
 import { OpsFollowUpService } from "../../ops-follow-up/service";
 import { TestKitService } from "../../test-kit/service";
+import { env, overrideEnv } from "../../env";
 
 const source: ContentSourceRegistration = {
   sourceKey: "official-demo",
@@ -57,7 +58,7 @@ function createTestApp(
   return app;
 }
 
-async function call(app: Hono<AppBindings>, body: Record<string, unknown>) {
+async function call(app: Hono<AppBindings>, body: Record<string, unknown>, fenced = false) {
   return await app.fetch(
     new Request("https://api.example.test/api/ops/mcp", {
       method: "POST",
@@ -65,6 +66,7 @@ async function call(app: Hono<AppBindings>, body: Record<string, unknown>) {
         "content-type": "application/json",
         accept: "application/json, text/event-stream",
         authorization: "Bearer test-token",
+        ...(fenced ? { "x-surreal-ck-maintenance": "test-kit" } : {}),
       },
       body: JSON.stringify(body),
     }),
@@ -366,7 +368,7 @@ describe("platform content MCP", () => {
       reaperDeps: async () => { throw new Error("unused"); },
       emailPattern: "kit[+][a-z0-9-]+@example[.]com",
     });
-    const appFor = (scope: string | undefined) => {
+    const appFor = (scope: string | undefined, subject = "agent-arch", kind: "agent" | "human" = "agent") => {
       const app = new Hono<AppBindings>();
       app.onError(handleError);
       app.route("/", createContentMcpRoutes({
@@ -374,8 +376,8 @@ describe("platform content MCP", () => {
         testKitService: testKit,
         authorizationServer: "https://auth.example.test",
         requireOperator: async (c, next) => {
-          c.set("user", { subject: "agent-arch", raw: scope === undefined ? {} : { scope }, rawToken: "token" });
-          c.set("platformOperator", { subject: "agent-arch", kind: "agent", capabilities: ["test.provision"] } as never);
+          c.set("user", { subject, raw: scope === undefined ? {} : { scope }, rawToken: "token" });
+          c.set("platformOperator", { subject, kind, capabilities: ["test.provision"] });
           await next();
         },
       }));
@@ -390,6 +392,28 @@ describe("platform content MCP", () => {
     expect((await tool(scoped, "search_content")).result?.structuredContent?.error?.code).toBe("out_of_scope");
     expect((await tool(appFor(undefined), "test_kit_rules")).result?.structuredContent?.error?.code).toBe("forbidden");
     expect((await tool(appFor("content.read"), "test_kit_rules")).result?.structuredContent?.error?.code).toBe("forbidden");
+
+    const previousTestAgents = env.PLATFORM_OPERATOR_TEST_AGENTS;
+    overrideEnv({ PLATFORM_OPERATOR_TEST_AGENTS: "agent-arch" });
+    try {
+      const list = { jsonrpc: "2.0", id: 41, method: "tools/list", params: {} };
+      const allowed = await call(scoped, list, true);
+      expect(allowed.status).toBe(200);
+      const payload = await allowed.json() as { result: { tools: { name: string }[] } };
+      expect(payload.result.tools.map(({ name }) => name).sort()).toEqual([
+        "test_kit_add_member", "test_kit_list", "test_kit_provision", "test_kit_purge", "test_kit_rules", "test_kit_status",
+      ]);
+      const restrictedCall = await call(scoped, {
+        jsonrpc: "2.0", id: 42, method: "tools/call", params: { name: "publish_batch", arguments: {} },
+      }, true);
+      const restricted = await restrictedCall.json() as { result?: { isError?: boolean }; error?: unknown };
+      expect(restricted.result?.isError === true || restricted.error !== undefined).toBe(true);
+      expect((await call(appFor(undefined), list, true)).status).toBe(403);
+      expect((await call(appFor("test.provision", "other-agent"), list, true)).status).toBe(403);
+      expect((await call(appFor("test.provision", "agent-arch", "human"), list, true)).status).toBe(403);
+    } finally {
+      overrideEnv({ PLATFORM_OPERATOR_TEST_AGENTS: previousTestAgents });
+    }
   });
 });
 

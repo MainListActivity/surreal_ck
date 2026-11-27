@@ -1,5 +1,6 @@
-import { DateTime, StringRecordId } from "surrealdb";
-import { getRootDatabaseSession } from "../db/root-connection";
+import { DateTime, NotFoundError, StringRecordId } from "surrealdb";
+import { retryAtomicConflict } from "../db/atomic-conflict-retry";
+import { getRootDatabaseSession, withRootDatabaseSessions } from "../db/root-connection";
 import { toIsoDateTimeString, toStringRecordId, toSurrealNone } from "../db/surreal-values";
 import { env } from "../env";
 import type { ContentGrantFact, FeatureValue, NamedCollection, ProductRevisionBody, ResourceFact, SubscriptionFact } from "./resolve";
@@ -51,10 +52,25 @@ function isConflict(error: unknown): boolean {
 }
 
 export class SurrealProductEntitlementStore implements ProductEntitlementStore {
-  constructor(private readonly getSession: SessionFactory = getRootDatabaseSession, private readonly namespace = env.SURREAL_NS) {}
+  constructor(private readonly getSession?: SessionFactory, private readonly namespace = env.SURREAL_NS) {}
 
   private async db(): Promise<Queryable> {
-    return await this.getSession("_system", this.namespace);
+    return await (this.getSession ?? getRootDatabaseSession)("_system", this.namespace);
+  }
+
+  private async atomicWrite(sql: string, params: Record<string, unknown>): Promise<unknown> {
+    if (this.getSession) {
+      const db = await this.db();
+      return retryAtomicConflict(() => db.query(sql, params));
+    }
+    // 每次重试都用不受共享池淘汰影响的会话；会话不存在时 RPC 尚未执行事务。
+    return retryAtomicConflict(
+      () => withRootDatabaseSessions(async (openSession) => {
+        const db = await openSession("_system", this.namespace);
+        return await db.query(sql, params);
+      }),
+      (error) => error instanceof NotFoundError && error.details?.kind === "Session",
+    );
   }
 
   async workspaceBySlug(slug: string): Promise<WorkspaceRef | null> {
@@ -142,10 +158,12 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
     };
   }
 
-  async bindProductRevision(itemId: string, productPlanRevisionId: string): Promise<void> {
-    await (await this.db()).query(`UPDATE $item SET product_plan_revision = $revision, revision += 1;`, {
+  async bindProductRevision(itemId: string, productPlanRevisionId: string): Promise<boolean> {
+    const updated = await this.atomicWrite(`UPDATE $item SET product_plan_revision = $revision, revision += 1
+      WHERE status = "active" AND active_workspace != NONE RETURN AFTER;`, {
       item: new StringRecordId(itemId), revision: new StringRecordId(productPlanRevisionId),
     });
+    return first(updated) !== null;
   }
 
   async productRevision(id: string): Promise<ProductRevisionBody | null> {
@@ -425,16 +443,6 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
     return asNumber(row?.revision);
   }
 
-  async newestSnapshotRevision(workspaceId: string, productPlanRevisionId: string): Promise<number | null> {
-    const row = first(await (await this.db()).query(`SELECT revision FROM workspace_product_entitlement
-      WHERE workspace = $workspace AND product_plan_revision = $product
-      ORDER BY revision DESC LIMIT 1;`, {
-      workspace: new StringRecordId(workspaceId),
-      product: new StringRecordId(productPlanRevisionId),
-    }));
-    return asNumber(row?.revision);
-  }
-
   async snapshotByDigest(workspaceId: string, digest: string): Promise<SnapshotRecord | null> {
     return await this.mapSnapshot(first(await (await this.db()).query(`SELECT * FROM workspace_product_entitlement
       WHERE workspace = $workspace AND digest = $digest LIMIT 1;`, {
@@ -444,7 +452,7 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
 
   async insertSnapshot(row: SnapshotRecord): Promise<"ok" | "conflict"> {
     try {
-      await (await this.db()).query(`INSERT INTO workspace_product_entitlement {
+      await this.atomicWrite(`INSERT INTO workspace_product_entitlement {
         workspace: $workspace, revision: $revision, digest: $digest, summary: $summary, resolver_version: $resolverVersion,
         base_source_kind: $baseSourceKind, base_source_id: $baseSourceId, product_plan_revision: $productPlanRevision,
         product_plan_key: $productPlanKey, product_plan_name: $productPlanName, product_revision_number: $productRevisionNumber,
@@ -481,7 +489,8 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
     // 指针必须跟随当前绑定产品，而不是单调最大的快照 revision：
     // digest 命中旧快照的恢复指派（降级→恢复、grant 到期回退）需要回指到
     // 当前绑定产品的既有快照。单调保护只拦「目标产品不是当前绑定产品」的旧快照。
-    await (await this.db()).query(`
+    await this.atomicWrite(`
+      BEGIN TRANSACTION;
       LET $next = (SELECT revision, product_plan_revision FROM ONLY $snapshot);
       LET $current = (SELECT current_product_entitlement FROM ONLY $workspace);
       LET $linked = IF $current = NONE THEN NONE ELSE $current.current_product_entitlement END;
@@ -499,6 +508,7 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
            OR ($bound != NONE AND $next.product_plan_revision = $bound)) {
         UPDATE $workspace SET current_product_entitlement = $snapshot;
       };
+      COMMIT TRANSACTION;
     `, {
       workspace: new StringRecordId(workspaceId), snapshot: new StringRecordId(snapshotId),
     });
@@ -511,19 +521,22 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
     return {
       action: row.action as AuditRecord["action"], requestDigest: row.request_digest,
       entitlementId: idOf(row.entitlement), productPlanRevisionId: idOf(row.product_plan_revision),
+      assignmentItemId: idOf(row.assignment_item) ?? undefined,
     };
   }
 
   async insertAudit(row: AuditRecord & { actor: string; idempotencyKey: string; reason: string; workspaceId: string | null }): Promise<"ok" | "conflict"> {
     try {
-      await (await this.db()).query(`INSERT INTO product_entitlement_audit {
+      await this.atomicWrite(`INSERT INTO product_entitlement_audit {
         actor_subject: $actor, action: $action, workspace: $workspace, reason: $reason, idempotency_key: $idempotencyKey,
-        request_digest: $requestDigest, entitlement: $entitlement, product_plan_revision: $productPlanRevision
+        request_digest: $requestDigest, entitlement: $entitlement, product_plan_revision: $productPlanRevision,
+        assignment_item: $assignmentItem
       };`, {
         actor: row.actor, action: row.action, reason: row.reason, idempotencyKey: row.idempotencyKey, requestDigest: row.requestDigest,
         workspace: row.workspaceId ? new StringRecordId(row.workspaceId) : undefined,
         entitlement: row.entitlementId ? new StringRecordId(row.entitlementId) : undefined,
         productPlanRevision: row.productPlanRevisionId ? new StringRecordId(row.productPlanRevisionId) : undefined,
+        assignmentItem: row.assignmentItemId ? new StringRecordId(row.assignmentItemId) : undefined,
       });
       return "ok";
     } catch (error) {
@@ -533,7 +546,7 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
   }
 
   async attachAuditEntitlement(actor: string, idempotencyKey: string, entitlementId: string): Promise<"ok" | "conflict"> {
-    const updated = first(await (await this.db()).query(`UPDATE product_entitlement_audit SET entitlement = $entitlement
+    const updated = first(await this.atomicWrite(`UPDATE product_entitlement_audit SET entitlement = $entitlement
       WHERE actor_subject = $actor AND idempotency_key = $key AND entitlement = NONE RETURN AFTER;`, {
       actor, key: idempotencyKey, entitlement: new StringRecordId(entitlementId),
     }));

@@ -105,7 +105,7 @@ origin 是 `data.maplayer.top`（`129.146.179.37`）上的 systemd 服务 `surre
 2. **登记并分离执行（主机）**：`scripts/deploy/origin-release-ci.sh` 通过 SSH 调用 `--launch`。launch 只校验参数与上传件，登记状态并取锁，然后以 `nohup` 启动分离的工作进程并立即返回；SSH 断开不影响工作进程。工作进程依次执行：解包到 `releases/<sha7>-ci<run_id>`；回滚前提预检（登记的 `previous` 必须存在，并通过试用与分配来源门禁；纯静态，零服务与 env 变更，不通过即以 `refused` 结束）；`bunx pnpm@10.32.1 install --frozen-lockfile --prod`（包在 `timeout --kill-after=30 ${ORIGIN_INSTALL_TIMEOUT_SEC:-600}` 内，超时报「dependency install timed out」并失败，不再永久占锁）；撤销预检（`previous` 不含撤销过滤时，于新发布目录中读取撤销计数，计数非零或不可证明即以 `refused` 结束；零服务与 env 变更）；试用与分配来源门禁（纯静态、无副作用）；备份 `server.env` 到 `~/surreal_ck/backups/env/`；把 GitHub `production` Environment 中的 `ORIGIN_ENV_<NAME>` secret 逐行写成 `<NAME>=<值>`（只增改这些键，值必须单行，日志只打印键名；`UNSET` 哨兵表示删除该键）；撤销兼容门禁（见下）；若存在 `scripts/deploy/origin-pre-start.sh` 则停服执行该钩子（`ORIGIN_ENV_FILE` 指向 `server.env`，钩子必须幂等）；原子切换 `current`；重启服务；健康探测。
 3. **收敛（CI 读取主机状态文件）**：CI 每 15 秒用 `--status` 读取状态，最多等 20 分钟。只有 `healthy` 才算成功。`interrupted`（工作进程已消失且未到终态）时 CI 在主机接受 `--recover` 之前每轮请求一次（忙或结果未知时下一轮重试），接受后只等待主机状态，不重复请求。任何终态失败都会让 job 失败。SSH 失败、超时或状态不可读**既不是成功，也不是回滚**：job 以「结果未知」失败，由运维读取主机状态后判定。
 
-健康探测轮询 `http://127.0.0.1:8080/health` 最多 30 次，每次 curl 超时 5 秒、间隔 3 秒，合计约 240 秒（旧文档写的 90 秒已更正）。钩子失败或健康探测失败时，先过门禁，再恢复 `server.env` 备份与上一个 `current` 并重启，结果为 `rolled-back`，job 失败，Cloudflare 不会发布。CI 发布目录与 env 备份各保留最近 8 个，手工发布目录不动。
+健康探测轮询 `http://127.0.0.1:8080/health` 自开始探测起最多等待 240 秒，每次 curl 超时最多 5 秒、间隔最多 3 秒。使用 Linux 单调计时，最后一秒改用短间隔重试；立即拒绝连接不会提前耗尽窗口，回滚也使用同一探测窗口。钩子失败或健康探测失败时，先过门禁，再恢复 `server.env` 备份与上一个 `current` 并重启，结果为 `rolled-back`，job 失败，Cloudflare 不会发布。CI 发布目录与 env 备份各保留最近 8 个，手工发布目录不动。
 
 ### 状态与处置
 
@@ -537,12 +537,68 @@ gh api repos/MainListActivity/surreal_ck/actions/variables/RELEASE_APPROVER_LOGI
 
 ## 边界
 
-Hono 启动时会执行 schema 与数据迁移，代码回滚不会回滚数据库。需要的新环境变量先用 `ORIGIN_ENV_*` secret 配好，需要停写执行的迁移放进 `origin-pre-start.sh`，再合入 main。SurrealDB 服务本身（`surrealdb.service`）与 root 凭证不由 CI 管理。
+Hono 启动时会执行 schema 与数据迁移，代码回滚不会回滚数据库。需要的新环境变量先用 `ORIGIN_ENV_*` secret 配好，需要停写执行的迁移放进 `origin-pre-start.sh`，再合入 main。SurrealDB 的检查和离线升级只通过下述独立手动入口；日常 origin 发布不更换数据库 binary，root 凭证仍只留在主机。
+
+### 手动检查与升级 SurrealDB
+
+`.github/workflows/surrealdb-upgrade.yml`（`SurrealDB maintenance`）只有
+`workflow_dispatch`，只接受 `refs/heads/main`，使用 `production` environment
+审批及 `production-release` 发布锁，不随 push、PR 或普通 origin 发布自动运行。
+沿用 `ORIGIN_HOST`、`ORIGIN_USER`、`ORIGIN_KNOWN_HOSTS` 与
+`ORIGIN_SSH_KEY || SSH_KEY`；生产 environment 必须由仓库管理员配置 required reviewers，
+workflow 的 environment 声明本身不创建审批规则。
+
+先选择默认 `mode=check`，填写必填 `approval_ref`。它只读检查 systemd ExecStart
+可执行路径、脱敏 Podman 参数、容器实际 entrypoint 的 SHA256/version、数据路径/大小、空闲空间与
+`/capabilities` 的 storage/native-quota marker，结果上传 summary/artifact。
+它通过 SSH stdin 运行脚本，不上传主机文件、停服、导出或写主机报告。目标 binary/镜像
+先在 ARM64 runner 以所选 `storage_engine` 启动，打不开该引擎则 check 失败关闭。
+
+生产为 aarch64、root Podman `surrealdb` 容器、host network、
+`/etc/surrealdb/surrealdb.env` 和 `/home/ubuntu/surreal_ck/data-native-4.0-20261121T093915Z:/data`。
+当前生产为 4.0.1：镜像 `ghcr.io/mainlistactivity/surrealdb-native-quota@sha256:e68a34a400c8f8014f1cf1450fd5c4be6ffdf04f73e464d538cc5b9e06ebc66e`，
+版本 `4.0.1-native-quota.1+sha.eab8473e4d4e`，rocksdb，数据目录 `data-native-4.0-20261121T093915Z`
+（依据 2026-11-21 `SurrealDB maintenance` 运行 44890559131 报告）。3.3 源镜像
+`...@sha256:4873ac9db79f91196f2b5e6129263d660700fcbfad0c5e1d90595bd3d384dcf8`
+与原 `data-native` 目录仅作回滚保留，不动。
+主机 PATH 中的 surreal 为上游 3.2.3（本次未复核），不用于维护；不得用于任何维护或测试，导出使用容器 binary。
+
+`mode=upgrade` 另需确认文本 `UPGRADE 3.3 TO 4.0`，受审 binary、已配置且验证的公网
+HTTP/WSS 写围栏、可恢复快照与兼容 origin 目录；按
+[3.3 → 4.0 维护步骤](native-quota-release-cutover.md#33--40-存储升级独立维护窗)
+协调停写与应用版本。`target_image` 可填已晋升 receipt 对应的完整 digest 引用；
+留空则核验 ARM64 tgz 并将 binary 挂载到原 base image 中。`storage_engine` 支持
+`surrealkv`（默认）或 `rocksdb`。默认 CLI 缺 RocksDB；SurrealKV 虽可导入，
+但 fork manifest 将它标为未认证/非生产，因此 upgrade 必须在任何生产 SSH 前失败关闭。
+不能以 marker 正确或导入成功代替 backend 生产认证。
+成功路径在全新 `data-native-4.0-<UTC>` 导入全部库、验证后切换 drop-in，旧目录不变。
+备份及原 unit 保存在 `backups/surrealdb-<UTC>`，不覆盖既有 unit 或生产镜像 digest。
+该脚本不管理 root 凭证，也不部署 origin 发布目录。主机失败后保留围栏与 origin 停止；
+未开放 4.0 写入前，可恢复旧 unit 与从未被新 binary 打开的原目录；若恢复 snapshot 则只用新路径，
+不原地 downgrade。此 workflow 的准备与本地测试不代表已对
+生产检查、审批或升级；不要为了验证 workflow 而派发生产任务。
+
+若按「暂停自动部署 → 合并 → 升级 DB → 发布 origin/前端」执行单次维护窗，upgrade
+必须加 `defer_origin_start=true`。默认模式要求 `current` 已含 4.0 契约，并会自行启动
+origin、健康后解除围栏；延后模式允许旧 `current`，但保留 origin 停止和围栏，报告状态
+为 `database_ready_origin_stopped`，不是整场维护完成。
+
+自动 `Deploy production` 被 disable 时不能把它当成可直接派发的手动入口。要保持它
+停用到维护结束，先用 `deploy-origin-manual.yml` 的 `sha`、`approval_ref` 发布匹配的
+main commit，再运行 `release-frontend-recovery.yml`，填写同一 `sha`、证据
+`evidence_pr` 和 `approval_ref`，完成其 barrier 后的运营核定评论；不能省略证据门禁。
+若选择一次运行完成 origin 与前端，需先 enable `deploy-production.yml`，再在冻结
+main 提交期间以 `--ref main` 手动派发；它没有 `sha` 输入，使用派发时的 main SHA。
+这会提前恢复自动触发，应明确协调，不要重跑绑定旧 SHA 的历史发布。
+两条路径均须等待 DB 维护 workflow 已结束、释放 `production-release` 锁。origin/前端
+发布成功并确认运行版本、健康后，由运营执行受审的 unfence hook；新 origin 启动后
+可能已有后台写入，发布失败不自动回退旧 DB。围栏需允许健康检查、运营和发布验证，
+但不能允许公众写入。
 
 ### 各次运行所用的 SurrealDB 构建
 
 - 2026-10-21 收口链的 Quality gate 运行（本 PR 头）使用与既有仓库标准一致的 Linux runner 与公司 fork 候选制品；具体 run 号与合并 SHA 记录在交接文档与 PR 描述中。
 
-- Quality gate（CI）安装公司 fork 的候选制品 `sck-3.3.0-native-quota.1-candidate.105`（`MainListActivity/surrealdb`），sha256 固定并校验。集成测试使用此构建。
+- Quality gate（CI）安装公司 fork 的正式发行 CLI `sck-4.0.1-native-quota.1` linux-amd64（`MainListActivity/surrealdb`，提交 `eab8473e`，与生产镜像同一提交），校验 `.txt` 和固定 tgz SHA256 `44027466ac7ea219967b52827161d9cbafd042e30d7d7587f147cccedbe74a5f`。
 - 本机检查器日志 `checker-live-local-surreal-v3.3-nightly.log` 对应 v3.3 nightly 本地构建，不等同于 CI 或生产所用构建。
-- 生产主机 `surrealdb.service` 所用的构建未记录。启用前由运营只读记录（`surreal version` 的输出与服务的可执行文件路径）。
+- 生产主机 `surrealdb.service` 当前运行 `4.0.1-native-quota.1+sha.eab8473e4d4e`、镜像 `e68a34a4`、rocksdb，依据 2026-11-21 `SurrealDB maintenance` 运行 44890559131 报告（backend production/hard_quota/persistent_restart 认证均 true，数据目录 `data-native-4.0-20261121T093915Z`，备份 `backups/surrealdb-20261121T093915Z`）。

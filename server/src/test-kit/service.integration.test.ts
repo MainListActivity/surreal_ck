@@ -9,15 +9,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DateTime, Surreal, jsonify } from "surrealdb";
 
+import { createNativeMeetingBatchRunner, sweepNativeMeetingWorkspaces } from "../db/native-meeting-gc";
 import { InviteService } from "../invitations/invite-service";
 import { SurrealInviteAuditStore } from "../invitations/invite-store";
+import { SurrealProductEntitlementStore } from "../product-entitlement/store";
+import { stableSha256 } from "../quota/canonical";
 import type { Queryable } from "../test-subjects/store";
-import { purgeTestWorkspace } from "../test-subjects/reaper";
-import { TestKitService, type TestKitActor } from "./service";
+import { purgeTestWorkspace, runFailedTestKitInvitationReaper } from "../test-subjects/reaper";
+import { TestKitService, type TestKitActor, type TestKitDeps } from "./service";
 
 const RUN_INTEGRATION = process.env.RUN_LOCAL_SURREALDB_TEST_SUBJECT_TESTS === "1";
 const localTest = test.skipIf(!RUN_INTEGRATION);
 const surrealBinary = process.env.SURREAL_BINARY ?? "surreal";
+const testTiKV = process.env.SURREAL_TEST_KIT_TIKV === "1";
 
 const AGENT: TestKitActor = { subject: "agent-arch", kind: "agent", capabilities: ["test.provision"] };
 const OTHER_AGENT: TestKitActor = { subject: "agent-other", kind: "agent", capabilities: ["test.provision"] };
@@ -32,7 +36,8 @@ let db: Surreal | undefined;
 
 // ---- 外部依赖替身 ----
 const idpUsers = new Map<string, { id: string; email: string; displayName: string; status: string }>();
-let assignBehaviour: "ok" | "hang" | "fail" = "ok";
+const cancellationProofs = new Map<string, string>();
+let assignBehaviour: "ok" | "hang" | "fail" | "conflict" = "ok";
 let clockOffset = 0;
 
 function rows(result: unknown): Record<string, unknown>[] {
@@ -44,15 +49,21 @@ const q = async (sql: string, params?: Record<string, unknown>) => rows(await db
 const queryClient = (): Queryable => ({ query: async (sql, params) => await db!.query(sql, params) });
 
 const fakeIdp = {
-  async ensureUser(input: { email: string; displayName: string }) {
+  async ensureUser(input: { email: string; displayName: string; cancellationToken?: string }) {
     const email = input.email.toLowerCase();
     const existing = idpUsers.get(email);
     if (existing) return { user: existing, created: false, activationUrl: null };
     const user = { id: `sub-${email.split("+")[1]!.split("@")[0]}`, email, displayName: input.displayName, status: "pending" };
     idpUsers.set(email, user);
+    if (input.cancellationToken) cancellationProofs.set(input.cancellationToken, email);
     return { user, created: true, activationUrl: `https://auth.example/activate/${user.id}` };
   },
   async findUserByEmail(email: string) { return idpUsers.get(email.toLowerCase()) ?? null; },
+  async cancelProvision(token: string) {
+    const email = cancellationProofs.get(token);
+    if (email) idpUsers.delete(email);
+    cancellationProofs.delete(token);
+  },
 };
 
 function inviteService(opts: { syncWindowMs?: number; staleProcessingMs?: number } = {}) {
@@ -73,9 +84,26 @@ function inviteService(opts: { syncWindowMs?: number; staleProcessingMs?: number
       },
     } as never,
     products: {
-      async assign() {
+      async assign(actor, input) {
         if (assignBehaviour === "hang") return await new Promise<never>(() => {});
         if (assignBehaviour === "fail") throw new Error("entitlement backend down");
+        if (assignBehaviour === "conflict") {
+          const store = new SurrealProductEntitlementStore(async () => ({
+            async query(sql, params) {
+              if (assignBehaviour === "conflict") {
+                assignBehaviour = "ok";
+                throw { kind: "Quota", details: { code: "quota_conflict", retryable: true, details: {} } };
+              }
+              return await db!.query(sql, params);
+            },
+          }));
+          const [workspace] = await q("SELECT id FROM workspace WHERE slug = $slug;", { slug: input.workspaceSlug });
+          expect(await store.insertAudit({
+            actor: actor.subject, action: "assign", idempotencyKey: input.idempotencyKey,
+            reason: input.reason, requestDigest: stableSha256(input.idempotencyKey),
+            workspaceId: String(workspace?.id), entitlementId: null, productPlanRevisionId: null,
+          })).toBe("ok");
+        }
         return {} as never;
       },
     },
@@ -89,7 +117,7 @@ function inviteService(opts: { syncWindowMs?: number; staleProcessingMs?: number
   });
 }
 
-function kit(invites = inviteService()) {
+function kit(invites: TestKitDeps["invites"] = inviteService(), getSystemDb: TestKitDeps["getSystemDb"] = async () => queryClient()) {
   return new TestKitService({
     invites,
     members: {
@@ -102,11 +130,12 @@ function kit(invites = inviteService()) {
         return { kind: "added" };
       },
     },
-    getSystemDb: async () => queryClient(),
+    getSystemDb,
     idpFindUser: async (email) => { const u = await fakeIdp.findUserByEmail(email); return u ? { id: u.id } : null; },
     reaperDeps: async () => ({
       systemDb: queryClient(),
       dropDatabase: async (name: string) => { await db!.query(`REMOVE DATABASE IF EXISTS ${name};`); },
+      cancelIdpProvision: fakeIdp.cancelProvision,
       log: () => {},
     }),
     emailPattern: "kit[+][a-z0-9-]+@example[.]com",
@@ -123,26 +152,36 @@ const codeOf = (promise: Promise<unknown>) => promise.then(() => null, (error: {
 describe("test kit on real fork SurrealDB with the real invite service", () => {
   beforeAll(async () => {
     if (!RUN_INTEGRATION) return;
-    workingDirectory = await mkdtemp(join(tmpdir(), "surreal-ck-test-kit-"));
-    const port = await (async () => await new Promise<number>((resolve, reject) => {
-      const listener = createServer();
-      listener.once("error", reject);
-      listener.listen(0, "127.0.0.1", () => {
-        const address = listener.address();
-        if (!address || typeof address === "string") { listener.close(); reject(new Error("no port")); return; }
-        listener.close((error) => (error ? reject(error) : resolve(address.port)));
-      });
-    }))();
-    endpoint = `ws://127.0.0.1:${port}`;
-    server = Bun.spawn(
-      [surrealBinary, "start", "--no-banner", "--log", "none", "--bind", `127.0.0.1:${port}`,
-        "--user", "root", "--pass", "root", `rocksdb:${join(workingDirectory, "data")}`],
-      { cwd: workingDirectory, stdout: "ignore", stderr: "ignore" },
-    );
-    for (let attempt = 0; attempt < 50; attempt += 1) {
-      const probe = Bun.spawn([surrealBinary, "is-ready", "--endpoint", endpoint], { stdout: "ignore", stderr: "ignore" });
-      if ((await probe.exited) === 0) break;
-      await Bun.sleep(100);
+    if (testTiKV) {
+      const capability = await fetch("http://127.0.0.1:18000/capabilities", { redirect: "error" });
+      if (!capability.ok) throw new Error("TiKV candidate is not reachable");
+      const { storage } = await capability.json() as { storage?: { backend?: string; ready?: boolean } };
+      if (storage?.backend !== "tikv" || storage.ready !== true) throw new Error("Expected a ready TiKV candidate");
+      endpoint = "ws://127.0.0.1:18000";
+    } else {
+      workingDirectory = await mkdtemp(join(tmpdir(), "surreal-ck-test-kit-"));
+      const port = await (async () => await new Promise<number>((resolve, reject) => {
+        const listener = createServer();
+        listener.once("error", reject);
+        listener.listen(0, "127.0.0.1", () => {
+          const address = listener.address();
+          if (!address || typeof address === "string") { listener.close(); reject(new Error("no port")); return; }
+          listener.close((error) => (error ? reject(error) : resolve(address.port)));
+        });
+      }))();
+      endpoint = `ws://127.0.0.1:${port}`;
+      server = Bun.spawn(
+        [surrealBinary, "start", "--no-banner", "--log", "none", "--bind", `127.0.0.1:${port}`,
+          "--user", "root", "--pass", "root", `rocksdb:${join(workingDirectory, "data")}`],
+        { cwd: workingDirectory, stdout: "ignore", stderr: "inherit" },
+      );
+      for (let attempt = 0; ; attempt += 1) {
+        const ready = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(1000) })
+          .then((response) => response.ok, () => false);
+        if (ready) break;
+        if (server.exitCode !== null || attempt === 29) throw new Error("RocksDB fixture did not start");
+        await Bun.sleep(1000);
+      }
     }
     db = new Surreal();
     await db.connect(`${endpoint}/rpc`, { authentication: { username: "root", password: "root" } });
@@ -158,11 +197,14 @@ describe("test kit on real fork SurrealDB with the real invite service", () => {
       INSERT INTO test_subject { subject: "${A}", email: "ops-a@example.com", expires_at: <datetime>$exp, origin: "ops" };
       DEFINE DATABASE ws_signal_test_a;
     `, { exp: new DateTime(new Date(Date.now() + 20 * DAY)) });
-  });
+  }, 180_000);
 
   afterAll(async () => {
     try { await db?.close(); } catch { /* noop */ }
-    server?.kill();
+    if (server) {
+      server.kill();
+      await server.exited;
+    }
     if (workingDirectory) await rm(workingDirectory, { recursive: true, force: true });
   });
 
@@ -177,7 +219,16 @@ describe("test kit on real fork SurrealDB with the real invite service", () => {
   });
 
   localTest("开通：登记 30 天测试主体、标记 workspace、一次性链接；同邮箱重复调用幂等", async () => {
-    const out = await kit().provision(AGENT, provisionArgs("b")) as Record<string, unknown>;
+    const invites = inviteService();
+    const out = await kit({
+      provision: invites.provision.bind(invites),
+      get: invites.get.bind(invites),
+      async collect(key, options) {
+        expect(await invites.collect(key)).toBeNull();
+        expect(await invites.resend({ subject: "operator", capabilities: ["subscription.manage"] }, key)).toBeNull();
+        return invites.collect(key, options);
+      },
+    }).provision(AGENT, provisionArgs("b"));
     expect(out).toMatchObject({ status: "completed", subject: "sub-b", activationUrl: "https://auth.example/activate/sub-b" });
     expect((await subjectRow("sub-b"))?.origin).toBe("test-kit:agent-arch");
     expect((await q(`SELECT test_origin FROM workspace WHERE slug = "kit-b";`))[0]?.test_origin).toBe("test-kit:agent-arch");
@@ -186,12 +237,13 @@ describe("test kit on real fork SurrealDB with the real invite service", () => {
     expect(await q(`SELECT * FROM ops_invitation WHERE email = "kit+b@example.com";`)).toHaveLength(1);
   });
 
-  localTest("中断：首轮建出用户后进程死掉，超过阈值后 status 收养——登记本行建的用户交给 reaper，邮箱作废", async () => {
+  localTest("旧版开通中断：超过阈值后 status 收养已建出的用户", async () => {
     assignBehaviour = "hang";
     const first = await kit(inviteService({ syncWindowMs: 50 })).provision(AGENT, provisionArgs("stuck")) as Record<string, unknown>;
     expect(first.status).toBe("processing");
     expect((await kit().list(AGENT)).inFlight.map((r) => r.email)).toEqual(["kit+stuck@example.com"]);
     expect((await q(`SELECT VALUE idp_user_id FROM ops_invitation WHERE email = "kit+stuck@example.com";`))[0]).toBe("sub-stuck");
+    await db!.query(`UPDATE ops_invitation SET test_kit_managed = NONE WHERE email = "kit+stuck@example.com";`);
 
     assignBehaviour = "ok";
     clockOffset = 2 * DAY;
@@ -205,7 +257,7 @@ describe("test kit on real fork SurrealDB with the real invite service", () => {
     expect((await kit().list(AGENT)).inFlight).toEqual([]);
   });
 
-  localTest("收养后后台执行迟到完成：对外仍是 failed、不发链接，迟到建出的 workspace 照样进入到期清理", async () => {
+  localTest("仍在运行的开通不因超过阈值而被清理，可以正常完成", async () => {
     let release: () => void = () => {};
     assignBehaviour = "ok";
     const slow = inviteService({ syncWindowMs: 50 });
@@ -217,20 +269,47 @@ describe("test kit on real fork SurrealDB with the real invite service", () => {
     expect((await kit(slow).provision(AGENT, provisionArgs("late")) as Record<string, unknown>).status).toBe("processing");
 
     clockOffset = 2 * DAY;
-    expect((await kit().status(AGENT, { email: "kit+late@example.com" }) as Record<string, unknown>).status).toBe("failed");
-    expect((await subjectRow("sub-late"))?.origin).toBe("test-kit:agent-arch");
+    await runFailedTestKitInvitationReaper({
+      systemDb: queryClient(),
+      dropDatabase: async () => { throw new Error("fixture cleanup must not run"); },
+      cancelIdpProvision: fakeIdp.cancelProvision,
+      now: () => new Date(Date.now() + clockOffset),
+    });
+    expect(await kit().status(AGENT, { email: "kit+late@example.com" })).toMatchObject({ status: "processing", activationUrl: null });
+    expect(await subjectRow("sub-late")).toBeUndefined();
 
     release();
     for (let i = 0; i < 50 && (await q(`SELECT VALUE status FROM ops_invitation WHERE email = "kit+late@example.com";`))[0] !== "completed"; i += 1) await Bun.sleep(50);
     const after = await kit().status(AGENT, { email: "kit+late@example.com" }) as Record<string, unknown>;
-    expect(after).toMatchObject({ status: "failed", activationUrl: null });
+    expect(after).toMatchObject({ status: "completed", activationUrl: "https://auth.example/activate/sub-late" });
     expect((await q(`SELECT test_expires_at FROM workspace WHERE slug = "kit-late";`))[0]?.test_expires_at).toBeTruthy();
+  });
+
+  localTest("进程重启遗留的过期处理中记录由 reaper 撤销，即使 IdP 用户 ID 未写回", async () => {
+    const email = "kit+interrupted@example.com";
+    const token = crypto.randomUUID();
+    const key = `test-kit:${stableSha256(email).slice(0, 32)}`;
+    const store = new SurrealInviteAuditStore(async () => queryClient() as never);
+    await store.claim({
+      recordId: `ops_invitation:${stableSha256(key).slice(0, 40)}`,
+      idempotencyKey: key, operatorSubject: AGENT.subject, authorizedCapability: "subscription.manage",
+      email, displayName: "Interrupted", workspaceSlug: "interrupted", workspaceName: "Interrupted",
+      planKey: "trial", reason: "fixture", requestDigest: stableSha256("interrupted"), testKitCancellationToken: token,
+    });
+    await fakeIdp.ensureUser({ email, displayName: "Interrupted", cancellationToken: token });
+    expect(await kit().status(AGENT, { email })).toMatchObject({ status: "processing", activationUrl: null });
+    await runFailedTestKitInvitationReaper({
+      systemDb: queryClient(), dropDatabase: async () => { throw new Error("no workspace to remove"); },
+      cancelIdpProvision: fakeIdp.cancelProvision, now: () => new Date(Date.now() + DAY), log: () => {},
+    });
+    expect(await fakeIdp.findUserByEmail(email)).toBeNull();
+    expect(await kit().status(AGENT, { email })).toMatchObject({ status: "failed", activationUrl: null });
   });
 
   localTest("收养绝不按邮箱认领：本行没建出用户（未记 idp_user_id）时，之后别人建的同邮箱用户不会被登记", async () => {
     assignBehaviour = "hang";
     await kit(inviteService({ syncWindowMs: 50 })).provision(AGENT, provisionArgs("ghost"));
-    await db!.query(`UPDATE ops_invitation SET idp_user_id = NONE WHERE email = "kit+ghost@example.com";`);
+    await db!.query(`UPDATE ops_invitation SET idp_user_id = NONE, test_kit_managed = NONE WHERE email = "kit+ghost@example.com";`);
     idpUsers.set("kit+ghost@example.com", { id: "real-person", email: "kit+ghost@example.com", displayName: "x", status: "active" });
     assignBehaviour = "ok";
     clockOffset = 2 * DAY;
@@ -245,14 +324,76 @@ describe("test kit on real fork SurrealDB with the real invite service", () => {
     expect((await q(`SELECT VALUE slug FROM workspace;`)).length).toBe(before);
   });
 
-  localTest("建出用户后失败：status=failed，但账号被登记交给 reaper，邮箱作废", async () => {
+  localTest("权益写入遭遇 quota_conflict 后自动重试，不重复开出用户或工作区", async () => {
+    assignBehaviour = "conflict";
+    const svc = kit();
+    expect(await svc.provision(AGENT, provisionArgs("conflict"))).toMatchObject({ status: "completed", subject: "sub-conflict" });
+    expect(await q(`SELECT id FROM workspace WHERE owner_subject = "sub-conflict";`)).toHaveLength(1);
+    expect(await q(`SELECT id FROM product_entitlement_audit WHERE workspace = (SELECT VALUE id FROM ONLY workspace WHERE owner_subject = "sub-conflict" LIMIT 1);`)).toHaveLength(1);
+    expect(await svc.purge(AGENT, { subject: "sub-conflict", confirm: "purge sub-conflict" })).toMatchObject({ workspacesPurged: 1 });
+    expect(await databases()).not.toContain("ws_kit_conflict");
+  });
+
+  localTest("建出用户后失败：自动清理后才返回 failed，邮箱作废", async () => {
     assignBehaviour = "fail";
-    const out = await kit().provision(AGENT, provisionArgs("broken")) as Record<string, unknown>;
-    expect(out.status).toBe("failed");
-    expect((await subjectRow("sub-broken"))?.origin).toBe("test-kit:agent-arch");
-    expect((await q(`SELECT test_expires_at FROM workspace WHERE slug = "kit-broken";`))[0]?.test_expires_at).toBeTruthy();
+    const invites = inviteService();
+    let unavailable = false;
+    const svc = kit({
+      async provision(...args) {
+        const result = await invites.provision(...args);
+        unavailable = true;
+        return result;
+      },
+      get: invites.get.bind(invites),
+      collect: invites.collect.bind(invites),
+    }, async () => {
+      if (unavailable) throw new Error("fixture read unavailable");
+      return queryClient();
+    });
+    expect(await svc.provision(AGENT, provisionArgs("broken"))).toMatchObject({ status: "processing", activationUrl: null });
+    unavailable = false;
+    expect(await svc.status(AGENT, { email: "kit+broken@example.com" })).toMatchObject({ status: "failed", activationUrl: null });
+    expect(await subjectRow("sub-broken")).toBeUndefined();
+    expect(await fakeIdp.findUserByEmail("kit+broken@example.com")).toBeNull();
+    expect(await q(`SELECT id FROM workspace WHERE slug = "kit-broken";`)).toEqual([]);
+    expect(await databases()).not.toContain("ws_kit_broken");
+    expect((await q(`SELECT activation_url, test_kit_purged_at, test_kit_cancellation_token FROM ops_invitation WHERE email = "kit+broken@example.com";`))[0]).toEqual({
+      test_kit_purged_at: expect.any(String),
+    });
     assignBehaviour = "ok";
     expect((await kit().provision(AGENT, provisionArgs("broken")) as Record<string, unknown>).status).toBe("failed");
+  });
+
+  localTest("同步窗之后失败且 agent 未轮询，reaper 重试清理，不改变其他账号", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const svc = kit(inviteService({ syncWindowMs: 20, ...{
+      products: { async assign() { await gate; throw new Error("fixture failure"); } },
+    } }));
+    expect(await svc.provision(AGENT, provisionArgs("late-fail"))).toMatchObject({ status: "processing", activationUrl: null });
+    release();
+    for (let i = 0; i < 50 && (await q(`SELECT VALUE status FROM ops_invitation WHERE email = "kit+late-fail@example.com";`))[0] !== "failed"; i += 1) await Bun.sleep(20);
+    expect(await databases()).toContain("ws_kit_late_fail");
+    const deps = {
+      systemDb: queryClient(),
+      dropDatabase: async (name: string) => { await db!.query(`REMOVE DATABASE IF EXISTS ${name};`); },
+      cancelIdpProvision: fakeIdp.cancelProvision,
+      log: () => {},
+    };
+    await runFailedTestKitInvitationReaper({ ...deps, dropDatabase: async () => { throw new Error("fixture unavailable"); } });
+    expect(await databases()).toContain("ws_kit_late_fail");
+    expect(await codeOf(svc.purge(AGENT, { subject: "sub-late-fail", confirm: "purge sub-late-fail" }))).toBe("cleanup_pending");
+    await runFailedTestKitInvitationReaper({ ...deps, cancelIdpProvision: async () => { throw new Error("IdP unavailable"); } });
+    expect(await fakeIdp.findUserByEmail("kit+late-fail@example.com")).not.toBeNull();
+    expect((await svc.list(AGENT)).inFlight).toContainEqual(expect.objectContaining({ email: "kit+late-fail@example.com" }));
+    await runFailedTestKitInvitationReaper(deps);
+    expect(await databases()).not.toContain("ws_kit_late_fail");
+    expect(await databases()).toContain("ws_signal_test_a");
+    expect(await subjectRow("sub-late-fail")).toBeUndefined();
+    expect(await fakeIdp.findUserByEmail("kit+late-fail@example.com")).toBeNull();
+    expect(await subjectRow(A)).toBeDefined();
+    expect((await svc.list(AGENT)).inFlight.map((row) => row.email)).not.toContain("kit+late-fail@example.com");
+    expect(await svc.status(AGENT, { email: "kit+late-fail@example.com" })).toMatchObject({ status: "failed", activationUrl: null });
   });
 
   localTest("同步窗内完成后登记失败：仍返回一次性链接，下次 list 补登记", async () => {
@@ -357,6 +498,45 @@ describe("test kit on real fork SurrealDB with the real invite service", () => {
     await runTestSubjectReaper({ systemDb: queryClient(), dropDatabase: async (n) => { await db!.query(`REMOVE DATABASE IF EXISTS ${n};`); }, log: () => {} });
     expect(await databases()).not.toContain("ws_kit_quiet_late");
     expect(await q(`SELECT * FROM workspace WHERE slug = "kit-quiet-late";`)).toEqual([]);
+  });
+
+  localTest("清理已被会议清扫列出的测试库后，迟到的清扫不会重建它", async () => {
+    const service = kit();
+    await service.provision(AGENT, provisionArgs("meeting-gc-race"));
+    const database = "ws_kit_meeting_gc_race";
+    const sweep = await db!.forkSession();
+    const fixture = await db!.forkSession();
+    const runBatch = createNativeMeetingBatchRunner(endpoint, () => sweep.accessToken);
+    try {
+      await fixture.use({ namespace: "main", database });
+      await fixture.query(`
+        DEFINE TABLE schema_version SCHEMALESS;
+        CREATE schema_version:current SET version = 64;
+        DEFINE FUNCTION fn::meeting_gc() { CREATE meeting_gc_probe:ran; RETURN false; };
+      `);
+      expect(await runBatch("main", database)).toBe(false);
+      expect((await fixture.query<unknown[]>("SELECT * FROM meeting_gc_probe:ran;"))[0]).toHaveLength(1);
+      await fixture.closeSession();
+
+      const failures: string[] = [];
+      await sweepNativeMeetingWorkspaces({
+        use: (scope) => sweep.use(scope),
+        async query(sql) {
+          const list = await sweep.query<[string[]]>(sql);
+          expect(list[0]).toContain(database);
+          const result = await service.purge(AGENT, { subject: "sub-meeting-gc-race", confirm: "purge sub-meeting-gc-race" });
+          expect(result).toMatchObject({ workspacesPurged: 1, workspacesSkipped: 0 });
+          expect(await databases()).not.toContain(database);
+          return list;
+        },
+      }, "main", (namespace, name) => name === database ? runBatch(namespace, name) : Promise.resolve(false),
+      (name) => failures.push(name));
+      expect(failures).toEqual([database]);
+      expect(await databases()).not.toContain(database);
+    } finally {
+      await sweep.closeSession();
+      if (fixture.isValid) await fixture.closeSession();
+    }
   });
 
   localTest("开通中计入上限；已清理与他人账号不计入", async () => {

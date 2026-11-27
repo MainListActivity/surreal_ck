@@ -636,6 +636,37 @@ describe("workspace template scripts", () => {
     expect(sql).not.toMatch(/UPDATE |DELETE |REMOVE /i);
   });
 
+  test("070：独立的 V2 会议控制面不移除 V1", async () => {
+    const scripts = await loadTemplateScripts();
+    const v1 = scripts.find((script) => script.version === 69);
+    expect(v1?.name).toBe("069-native-meeting.surql");
+    expect(v1?.sql).toContain("fn::meeting_capability");
+    expect(scripts.find((script) => script.version === 70)?.name).toBe("070-meeting-v2.surql");
+  });
+
+  test("071：名册准入迁移追加到 V2 控制面", async () => {
+    const scripts = await loadTemplateScripts();
+    expect(scripts.find((script) => script.version === 71)?.name).toBe("071-roster-meeting.surql");
+  });
+
+  test("072：名册会议签到与表决回写迁移在名册会议后追加", async () => {
+    const scripts = await loadTemplateScripts();
+    expect(scripts.filter(({ version }) => version >= 71 && version <= 73).map(({ name }) => name)).toEqual([
+      "071-roster-meeting.surql",
+      "072-roster-meeting-records.surql",
+      "073-meeting-evidence-projection.surql",
+    ]);
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(scripts.at(-1)?.version);
+  });
+
+  test("073：会议存证仅投影可信根且拒绝改删", async () => {
+    const migration = (await loadTemplateScripts()).find(({ version }) => version === 73);
+    expect(migration?.name).toBe("073-meeting-evidence-projection.surql");
+    expect(migration?.sql).toContain("SCHEMAFULL PERMISSIONS NONE");
+    expect(migration?.sql).toContain("TYPE bytes READONLY");
+    expect(migration?.sql).toContain('["UPDATE", "DELETE"]');
+  });
+
   test("外部协作者门户 v2 的四个迁移按顺序追加", async () => {
     const scripts = await loadTemplateScripts();
     expect(scripts.filter((script) => script.version >= 64 && script.version <= 67).map((script) => script.name)).toEqual([
@@ -645,6 +676,16 @@ describe("workspace template scripts", () => {
       "067-claims-portal-supplement-templates.surql",
     ]);
     expect(WORKSPACE_TEMPLATE_VERSION).toBe(scripts.at(-1)?.version);
+  });
+
+  test("068 在既有元素字段修正和门户迁移后放宽模板列数组", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.name === "068-template-column-flexibility.surql");
+    expect(migration?.version).toBe(68);
+    expect(WORKSPACE_TEMPLATE_VERSION).toBeGreaterThanOrEqual(68);
+    expect(migration?.sql).toContain("DEFINE FIELD OVERWRITE sheet_defs.*.column_defs ON TABLE workbook_template");
+    expect(migration?.sql).toContain("TYPE array<object> FLEXIBLE DEFAULT []");
+    expect(scripts.find((script) => script.version === 63)?.name).toBe("063-template-flexible-array-elements.surql");
   });
 
   test("a1e2791c/ad5d63f0：059 funnel_event 追加式漏斗事件——去 subject、触发点幂等、无内容字段", async () => {

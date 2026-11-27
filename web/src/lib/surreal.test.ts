@@ -89,6 +89,7 @@ describe("SurrealDB 浏览器直连客户端", () => {
     expect(fake.connectCalls).toHaveLength(1);
     expect(fake.connectCalls[0].url).toBe("ws://localhost:8000/rpc");
     expect(fake.connectCalls[0].opts).toMatchObject({
+      reconnect: { attempts: 5, retryDelayMax: 60_000 },
       namespace: "main",
       database: "ws_a1b2c3d4e5f6",
     });

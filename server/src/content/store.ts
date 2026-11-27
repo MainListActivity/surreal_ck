@@ -1,4 +1,4 @@
-import { StringRecordId } from "surrealdb";
+import { RecordId, StringRecordId } from "surrealdb";
 import { SOURCE_LICENSE_ACTIONS } from "@surreal-ck/shared/product-entitlement";
 import {
   PublishBatchResponseSchema,
@@ -215,7 +215,7 @@ function parseBatch(row: Row, entryRows: Row[]): StoredContentBatch {
 }
 
 function publicationRequestId(publicationId: string): StringRecordId {
-  return new StringRecordId(`publication_request:${publicationId}`);
+  return new StringRecordId(new RecordId("publication_request", publicationId));
 }
 
 function itemRecordId(itemId: string): StringRecordId {
@@ -341,7 +341,7 @@ export class SurrealPlatformContentStore implements PlatformContentStore {
   }
 
   async saveBatch(batch: StoredContentBatch): Promise<void> {
-    const batchId = new StringRecordId(`ingestion_batch:${batch.batchId}`);
+    const batchId = new StringRecordId(new RecordId("ingestion_batch", batch.batchId));
     const statements = ["BEGIN TRANSACTION;"];
     const params: Record<string, unknown> = {
       batch: batchId,
@@ -372,29 +372,30 @@ export class SurrealPlatformContentStore implements PlatformContentStore {
         updated_at: time::now()
       };`,
     );
-    for (const entry of batch.entries) {
-      const entryId = this.idFactory("ingestion_entry");
-      const name = `entry_${params.entryCount}_${entry.entryKey.replace(/[^A-Za-z0-9_]/gu, "_")}`;
-      params[name] = entryId;
-      params[`${name}_key`] = entry.entryKey;
-      params[`${name}_operation`] = entry.operation;
-      params[`${name}_payload`] = batch.request.items.find((item) => item.entryKey === entry.entryKey);
-      params[`${name}_status`] = entry.status;
-      params[`${name}_issues`] = entry.issues;
-      params[`${name}_publication_status`] = entry.publicationStatus ?? undefined;
-      statements.push(
-        `CREATE $${name} CONTENT {
+    params.entries = batch.entries.map((entry) => ({
+      id: this.idFactory("ingestion_entry"),
+      key: entry.entryKey,
+      operation: entry.operation,
+      payload: batch.request.items.find((item) => item.entryKey === entry.entryKey),
+      status: entry.status,
+      issues: entry.issues,
+      publication_status: entry.publicationStatus ?? undefined,
+    }));
+    statements.push(
+      `FOR $entry IN $entries {
+        LET $entryId = $entry.id;
+        CREATE $entryId CONTENT {
           batch: $batch,
-          entry_key: $${name}_key,
-          operation: $${name}_operation,
-          payload: $${name}_payload,
-          status: $${name}_status,
-          issues: $${name}_issues,
-          publication_status: $${name}_publication_status,
+          entry_key: $entry.key,
+          operation: $entry.operation,
+          payload: $entry.payload,
+          status: $entry.status,
+          issues: $entry.issues,
+          publication_status: $entry.publication_status,
           created_at: time::now()
         };`,
-      );
-    }
+      "};",
+    );
     statements.push(
       "CREATE platform_content_audit_event CONTENT { kind: \"batch_received\", batch: $batch, actor_subject: $actorSubject, details: { entry_count: $entryCount }, occurred_at: time::now() };",
       "COMMIT TRANSACTION;",
@@ -817,45 +818,45 @@ export class SurrealPlatformContentStore implements PlatformContentStore {
       "IF $updated_item = [] { THROW \"platform-content-stale\" };",
     );
     if (payload.kind === "legislation") {
-      for (const [index, article] of payload.legislation.articles.entries()) {
-        const variable = `article_${index}`;
-        const articleId = this.idFactory("legal_article_version");
-        binds[variable] = articleId;
-        binds[`${variable}_local_key`] = article.localKey;
-        binds[`${variable}_label`] = article.label;
-        binds[`${variable}_hierarchy_path`] = article.hierarchyPath;
-        binds[`${variable}_body_text`] = article.bodyText;
-        binds[`${variable}_locator`] = article.locator ?? undefined;
-        binds[`${variable}_source_locator`] = article.sourceLocator ?? undefined;
-        binds[`${variable}_effective_on`] = article.effectiveOn ?? undefined;
-        statements.push(
-          `CREATE $${variable} CONTENT { regulation_version: $version, local_key: $${variable}_local_key, label: $${variable}_label, hierarchy_path: $${variable}_hierarchy_path, body_text: $${variable}_body_text, locator: $${variable}_locator, source_locator: $${variable}_source_locator, effective_on: $${variable}_effective_on, created_at: time::now() };`,
-        );
-      }
+      binds.articles = payload.legislation.articles.map((article) => ({
+        id: this.idFactory("legal_article_version"),
+        local_key: article.localKey,
+        label: article.label,
+        hierarchy_path: article.hierarchyPath,
+        body_text: article.bodyText,
+        locator: article.locator ?? undefined,
+        source_locator: article.sourceLocator ?? undefined,
+        effective_on: article.effectiveOn ?? undefined,
+      }));
+      statements.push(`FOR $article IN $articles {
+        LET $articleId = $article.id;
+        CREATE $articleId CONTENT { regulation_version: $version, local_key: $article.local_key, label: $article.label, hierarchy_path: $article.hierarchy_path, body_text: $article.body_text, locator: $article.locator, source_locator: $article.source_locator, effective_on: $article.effective_on, created_at: time::now() };
+      };`);
     }
     if (payload.kind === "judicial_document") {
-      for (const [index, citation] of payload.judgment.citations.entries()) {
-        const variable = `citation_${index}`;
-        const citationId = this.idFactory("content_citation");
-        const resolutionId = this.idFactory("citation_resolution");
-        binds[variable] = citationId;
-        binds[`${variable}_local_key`] = citation.localCitationKey;
-        binds[`${variable}_relation_kind`] = citation.relationKind;
-        binds[`${variable}_speaker`] = citation.speaker;
-        binds[`${variable}_quoted_text`] = citation.quotedText;
-        binds[`${variable}_locator`] = citation.locator;
-        binds[`${variable}_raw_law_name`] = citation.rawLawName ?? undefined;
-        binds[`${variable}_raw_article_label`] = citation.rawArticleLabel ?? undefined;
-        binds[`${variable}_resolution`] = citation.resolution;
-        binds[`${variable}_candidates`] = citation.candidates;
-        binds[`${variable}_treatment`] = citation.treatment ?? undefined;
-        binds[`${variable}_treatment_evidence`] = citation.treatmentEvidence ?? undefined;
-        binds[`${variable}_resolution_id`] = resolutionId;
-        statements.push(
-          `CREATE $${variable} CONTENT { document_version: $version, local_citation_key: $${variable}_local_key, relation_kind: $${variable}_relation_kind, speaker: $${variable}_speaker, quoted_text: $${variable}_quoted_text, locator: $${variable}_locator, raw_law_name: $${variable}_raw_law_name, raw_article_label: $${variable}_raw_article_label, resolution: $${variable}_resolution, candidates: $${variable}_candidates, treatment: $${variable}_treatment, treatment_evidence: $${variable}_treatment_evidence, created_at: time::now() };`,
-          `CREATE $${variable}_resolution_id CONTENT { citation: $${variable}, revision: 1, status: $${variable}_resolution, candidates: $${variable}_candidates, evidence_ref: NONE, verified_by_subject: IF $${variable}_resolution = \"verified\" THEN $actorSubject ELSE NONE END, created_at: time::now() };`,
-        );
-      }
+      binds.citations = payload.judgment.citations.map((citation) => ({
+        id: this.idFactory("content_citation"),
+        resolution_id: this.idFactory("citation_resolution"),
+        local_key: citation.localCitationKey,
+        relation_kind: citation.relationKind,
+        speaker: citation.speaker,
+        quoted_text: citation.quotedText,
+        locator: citation.locator,
+        raw_law_name: citation.rawLawName ?? undefined,
+        raw_article_label: citation.rawArticleLabel ?? undefined,
+        resolution: citation.resolution,
+        candidates: citation.candidates,
+        treatment: citation.treatment ?? undefined,
+        treatment_evidence: citation.treatmentEvidence ?? undefined,
+      }));
+      statements.push(
+        `FOR $citation IN $citations {
+            LET $citationId = $citation.id;
+            LET $resolutionId = $citation.resolution_id;
+            CREATE $citationId CONTENT { document_version: $version, local_citation_key: $citation.local_key, relation_kind: $citation.relation_kind, speaker: $citation.speaker, quoted_text: $citation.quoted_text, locator: $citation.locator, raw_law_name: $citation.raw_law_name, raw_article_label: $citation.raw_article_label, resolution: $citation.resolution, candidates: $citation.candidates, treatment: $citation.treatment, treatment_evidence: $citation.treatment_evidence, created_at: time::now() };
+            CREATE $resolutionId CONTENT { citation: $citationId, revision: 1, status: $citation.resolution, candidates: $citation.candidates, evidence_ref: NONE, verified_by_subject: IF $citation.resolution = "verified" THEN $actorSubject ELSE NONE END, created_at: time::now() };
+          };`,
+      );
     }
     statements.push(
       "LET $source_record = SELECT VALUE id FROM content_source_record WHERE source = $source AND record_key = $sourceRecordKey LIMIT 1;",

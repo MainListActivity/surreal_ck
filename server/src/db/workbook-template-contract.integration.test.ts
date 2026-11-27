@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { Surreal, Table } from "surrealdb";
+import { StringRecordId, Surreal, Table } from "surrealdb";
+import { loadTemplatePackScripts } from "@surreal-ck/shared/template-packs";
 import { loadTemplateScripts } from "@surreal-ck/shared/workspace-template";
 import { homedir } from "node:os";
 
@@ -40,6 +41,11 @@ async function spawnSurreal() {
 }
 
 const NS = "test";
+const voteOptions = [
+  { key: "approve", label: "赞成" },
+  { key: "reject", label: "反对" },
+  { key: "abstain", label: "弃权" },
+];
 const opened: Surreal[] = [];
 
 function track<T extends Surreal>(db: T): T {
@@ -169,6 +175,96 @@ describe("CV-01 workbook_template 契约（真实 SurrealDB）", () => {
 
       // 幂等重放后数据仍在（上面已重放过一次）。
       expect(rows.map((row) => row.key).sort()).toEqual(["equipment-ops", "legacy-ledger"]);
+    } finally {
+      await closeAll();
+      proc.kill();
+    }
+  }, 30_000);
+
+  test("名册会议：迁移可重放、模板预设可重播种且同场同行最多一张有效参会凭证", async () => {
+    const { url, password, proc } = await spawnSurreal();
+    const database = `roster_meeting_${Date.now().toString(36)}`;
+    try {
+      const root = await openRoot(url, password, database);
+      await applyTemplateChain(root);
+      const [pack] = await loadTemplatePackScripts({ selectedPacks: ["bankruptcy-claims"] });
+      expect(pack).toBeDefined();
+      await root.query(pack!.sql).collect();
+      await root.insert(new Table("workbook_template"), LEGACY_ROW);
+
+      await root.query(`
+        CREATE workbook:roster SET name = "示例工作簿";
+        CREATE sheet:roster SET workbook = workbook:roster, label = "名册", table_name = "test_roster";
+        DEFINE TABLE test_roster SCHEMALESS;
+        CREATE test_roster:first SET name = "样例一";
+        CREATE test_roster:second SET name = "样例二";
+        FOR $id IN [roster_meeting:first, roster_meeting:second] {
+          CREATE $id SET title = "名册会议", scheduled_at = time::now(),
+            roster_sheet = sheet:roster, display_field = "name", admission = "direct", created_by = "fixture";
+        };
+      `).collect();
+      const createPass = (id: string, meeting: string, row: string) => root.query(`
+        CREATE $id SET meeting = $meeting, roster_row = $row, pass_hash = $hash,
+          code_hash = "fixture-code-digest", expires_at = time::now() + 7d;
+      `, {
+        id: new StringRecordId(`roster_meeting_pass:${id}`),
+        meeting: new StringRecordId(`roster_meeting:${meeting}`),
+        row: new StringRecordId(`test_roster:${row}`),
+        hash: `fixture-digest-${id}`,
+      }).collect();
+
+      await createPass("initial", "first", "first");
+      await expect(createPass("duplicate", "first", "first")).rejects.toThrow("roster_meeting_pass_one_active");
+      await createPass("othermeeting", "second", "first");
+      await createPass("otherrow", "first", "second");
+      await root.query(`
+        UPDATE roster_meeting_pass:initial SET status = "revoked";
+        CREATE roster_meeting_audit:issued SET action = "issued", actor = "fixture", target = roster_meeting_pass:initial;
+      `).collect();
+      await createPass("replacement", "first", "first");
+      await root.query(`
+        UPDATE roster_meeting_pass:replacement SET status = "revoked";
+        UPDATE workbook_template SET roster_meeting_presets = [] WHERE key = "bankruptcy-claims";
+      `).collect();
+      await createPass("current", "first", "first");
+
+      await applyTemplateChain(root);
+      await root.query(pack!.sql).collect();
+      const [presets, legacy, statuses] = await root.query<[
+        Array<object[]>, unknown[], string[],
+      ]>(`
+        SELECT VALUE roster_meeting_presets FROM workbook_template WHERE key = "bankruptcy-claims";
+        SELECT VALUE roster_meeting_presets FROM workbook_template WHERE key = "legacy-ledger";
+        SELECT VALUE status FROM roster_meeting_pass
+          WHERE meeting = roster_meeting:first AND roster_row = test_roster:first;
+      `).collect();
+      expect(presets).toEqual([[
+        {
+          key: "creditor-meeting", label: "债权人会议", sheet_key: "creditors", display_key: "creditor_name",
+          check_key: "identity_number", check_label: "证件号码后四位", check_mode: "suffix4",
+          admission: "waiting", concurrency: "replace", vote_weight_key: "voting_weight",
+          vote_agenda: [
+            { title: "核查债权表", options: voteOptions, allowChange: true },
+            { title: "通过债务人财产的管理方案", options: voteOptions, allowChange: true },
+            { title: "通过破产财产的变价方案", options: voteOptions, allowChange: false },
+          ],
+        },
+      ]]);
+      expect(legacy).toEqual([undefined]);
+      expect(statuses.sort()).toEqual(["active", "revoked", "revoked"]);
+      await expect(createPass("stillduplicate", "first", "first")).rejects.toThrow("roster_meeting_pass_one_active");
+      await expect(root.query("DELETE roster_meeting_audit:issued").collect())
+        .rejects.toThrow("roster meeting audit: append only");
+
+      await seedUsers(root);
+      await defineMemberAccess(root);
+      const member = await signin(url, database, "member@example.com");
+      expect(await member.query(`
+        SELECT * FROM roster_meeting;
+        SELECT pass_hash, code_hash FROM roster_meeting_pass;
+        SELECT * FROM roster_meeting_audit;
+        UPDATE roster_meeting_pass SET status = "revoked" RETURN AFTER;
+      `).collect()).toEqual([[], [], [], []]);
     } finally {
       await closeAll();
       proc.kill();

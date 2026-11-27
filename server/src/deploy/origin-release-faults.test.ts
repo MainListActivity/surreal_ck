@@ -416,6 +416,35 @@ describe("F13 陈旧锁回收：互斥与并发", () => {
     expect(existsSync(join(h.stateDir, `${id}.state`))).toBe(false);
   });
 
+  t("探测旧登记进程时锁已交给 worker → busy（75），不误报中断", async () => {
+    const h = makeHarness();
+    const owner = await deadPid();
+    const worker = Bun.spawn(["sleep", "30"]);
+    h.procs.push(worker);
+    const pidPath = join(h.lockDir, "pid");
+    writeLock(h, owner, "f13-running");
+    writeStateFile(h, "f13-running", { worker_pid: String(worker.pid) });
+    stageRelease(h, "f13-contender");
+    writeFileSync(h.prelude, readText(h.prelude) + `
+kill() {
+  if [ "\${1:-}" = -0 ] && [ "\${2:-}" = "$T_LAUNCHER_PID" ]; then
+    printf '%s\\n' "$T_WORKER_PID" > "$T_LOCK_PID_FILE"
+    return 1
+  fi
+  builtin kill "$@"
+}
+`);
+    const result = launch(h, "f13-contender", { extraEnv: {
+      T_LAUNCHER_PID: String(owner),
+      T_WORKER_PID: String(worker.pid),
+      T_LOCK_PID_FILE: pidPath,
+    } });
+    expect(result.exitCode, result.stderr).toBe(75);
+    expect(readText(pidPath).trim()).toBe(String(worker.pid));
+    expect(listFiles(h.stateDir).filter((f) => f.endsWith(".state"))).toEqual(["f13-running.state"]);
+    expect(unitMutations(h)).toEqual([]);
+  });
+
   t("两个登记同时争抢同一陈旧锁（5 轮）→ 每轮恰好一个成功（0）、另一个忙（75），且只登记一个激活", async () => {
     for (let round = 0; round < 5; round++) {
       const h = makeHarness();

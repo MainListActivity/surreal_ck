@@ -4,7 +4,7 @@ use bytes::Bytes;
 use std::{io, process::Stdio, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    process::{Child, ChildStdin, ChildStdout, Command},
+    process::{Child, ChildStderr, ChildStdin, ChildStdout, Command},
 };
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -14,6 +14,9 @@ pub enum Error {
     PortalRequired,
     #[error("capture backend does not match the current operating system")]
     UnsupportedPlatform,
+    /// 采集进程（ffmpeg/ffplay）失败：附进程 stderr 尾部便于诊断，不再只有「early eof」。
+    #[error("{0}")]
+    Backend(String),
     #[error(transparent)]
     Io(#[from] io::Error),
 }
@@ -39,9 +42,15 @@ impl VideoConfig {
     }
 }
 pub enum CaptureInput {
-    /// AVFoundation 枚举后由用户选择的摄像头或屏幕索引。屏幕权限由 macOS TCC 管理。
+    /// AVFoundation 枚举后由用户选择的摄像头索引。屏幕权限由 macOS TCC 管理。
     MacVideo {
         device_index: u32,
+        video: VideoConfig,
+    },
+    /// AVFoundation 的屏幕伪设备按名引用（`Capture screen <n>`）；序号在无摄像头
+    /// 机型上不可预测，不能用普通摄像头索引代替。屏幕录制由 macOS TCC 授权。
+    MacScreen {
+        screen_index: u32,
         video: VideoConfig,
     },
     /// AVFoundation 枚举后由用户选择的麦克风索引。
@@ -83,6 +92,7 @@ pub enum Encoded {
 }
 pub struct Capture {
     child: Child,
+    stderr: Option<ChildStderr>,
     output: ChildStdout,
     video: Option<VideoConfig>,
     header_read: bool,
@@ -93,7 +103,9 @@ impl Capture {
     /// 需要官方 FFmpeg（libvpx/libopus、V4L2/Pulse/X11 支持）。缺失时返回错误，不装软件、不改权限。
     pub fn start(input: CaptureInput) -> Result<Self, Error> {
         let platform = match &input {
-            CaptureInput::MacVideo { .. } | CaptureInput::MacMicrophone { .. } => "macos",
+            CaptureInput::MacVideo { .. }
+            | CaptureInput::MacMicrophone { .. }
+            | CaptureInput::MacScreen { .. } => "macos",
             CaptureInput::WindowsCamera { .. }
             | CaptureInput::WindowsMicrophone { .. }
             | CaptureInput::WindowsScreen { .. } => "windows",
@@ -150,12 +162,14 @@ impl Capture {
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()?;
         let output = child.stdout.take().ok_or(Error::Invalid)?;
+        let stderr = child.stderr.take();
         Ok(Self {
             child,
+            stderr,
             output,
             video,
             header_read: false,
@@ -164,6 +178,37 @@ impl Capture {
         })
     }
     pub async fn next(&mut self) -> Result<Encoded, Error> {
+        match self.next_inner().await {
+            Ok(encoded) => Ok(encoded),
+            Err(error) => Err(self.annotate(error).await),
+        }
+    }
+    /// 把采集进程 stderr 尾部拼进错误：设备不存在 / TCC 未授权等只有 ffmpeg 知道。
+    async fn annotate(&mut self, error: Error) -> Error {
+        let Some(mut stderr) = self.stderr.take() else {
+            return error;
+        };
+        let mut buf = Vec::new();
+        let read =
+            tokio::time::timeout(Duration::from_millis(300), stderr.read_to_end(&mut buf)).await;
+        let tail = match read {
+            Ok(Ok(_)) => String::from_utf8_lossy(&buf).trim().to_owned(),
+            _ => String::new(),
+        };
+        if tail.is_empty() {
+            return error;
+        }
+        let tail: String = tail
+            .chars()
+            .rev()
+            .take(400)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        Error::Backend(format!("{error}: ffmpeg: {tail}"))
+    }
+    async fn next_inner(&mut self) -> Result<Encoded, Error> {
         if let Some(v) = self.video {
             if !self.header_read {
                 let mut header = [0; 32];
@@ -263,6 +308,23 @@ fn capture_args(input: CaptureInput) -> Result<(Vec<String>, Option<VideoConfig>
             ],
             None,
         )),
+        CaptureInput::MacScreen {
+            screen_index,
+            video,
+        } => {
+            let video = video.validate()?;
+            Ok((
+                vec![
+                    "-f".into(),
+                    "avfoundation".into(),
+                    "-framerate".into(),
+                    video.fps.to_string(),
+                    "-i".into(),
+                    format!("Capture screen {screen_index}:none"),
+                ],
+                Some(video),
+            ))
+        }
         CaptureInput::WindowsCamera { device, video } => {
             validate_windows_device(&device)?;
             let video = video.validate()?;

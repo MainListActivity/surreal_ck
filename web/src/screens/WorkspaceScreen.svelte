@@ -6,6 +6,7 @@
   import AdminConsoleScreen from "./AdminConsoleScreen.svelte";
   import HomeScreen from "./HomeScreen.svelte";
   import OfficeScreen from "./OfficeScreen.svelte";
+  import MeetingScreen from "../features/meeting/MeetingScreen.svelte";
   import ContentEntryScreen from "./ContentEntryScreen.svelte";
   import TemplatesScreen from "./TemplatesScreen.svelte";
   import PlaceholderScreen from "./PlaceholderScreen.svelte";
@@ -111,7 +112,7 @@
     {onopenquota}
   />
 
-  <div class="workspace-content">
+  <div class="workspace-content" class:meeting-content={page === "meeting"}>
     {#if page === "home"}
       <HomeScreen
         {query}
@@ -143,6 +144,8 @@
       <DashboardScreen />
     {:else if page === "office"}
       <OfficeScreen {slug} />
+    {:else if page === "meeting"}
+      <MeetingScreen />
     {:else if page === "admin"}
       <WorkspaceSettingsScreen />
     {:else if page === "admin-console"}
@@ -187,5 +190,9 @@
     min-width: 0;
     flex-direction: column;
     overflow: hidden;
+  }
+
+  .meeting-content {
+    overflow-y: auto;
   }
 </style>

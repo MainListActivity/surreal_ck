@@ -1,6 +1,6 @@
 import { createApp } from "./app";
 import { env } from "./env";
-import { closeRootConnection, getRootConnection, getRootDatabaseSession, initRootConnection } from "./db/root-connection";
+import { closeRootConnection, getRootDatabaseSession, initRootConnection, removeRootWorkspaceDatabase } from "./db/root-connection";
 import { closeHealthProbe, initHealthProbe } from "./db/health-probe";
 import { ensureSystemSchema } from "./db/system-schema";
 import { ensurePlatformContentSchema } from "./content/schema";
@@ -14,7 +14,10 @@ import { seedPlatformOperators } from "./db/platform-operator-seed";
 import { seedQuotaPlans } from "./db/quota-plan-seed";
 import { migrateAllWorkspaces } from "./db/migration-runner";
 import { startReconcileLoop, type ReconcileLoopHandle } from "./db/reconciler";
-import { runTestSubjectReaper } from "./test-subjects/reaper";
+import { startNativeMeetingGc } from "./db/native-meeting-gc";
+import { runFailedTestKitInvitationReaper, runTestSubjectReaper, type TestSubjectReaperDeps } from "./test-subjects/reaper";
+import { createIdpAdminClientFromEnv, createIdpProvisionCancellation } from "./invitations/idp-admin-client";
+import { createPlatformSecretStore } from "./platform/secret-store";
 import { startFunnelLoop, type FunnelLoopHandle } from "./funnel/loop";
 import {
   NativeQuotaStartupGateError,
@@ -153,13 +156,19 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
         // 测试主体清理心跳：每轮扫到期 workspace/test_subject，失败只告警。
         const intervalMs = env.TEST_SUBJECT_REAPER_INTERVAL_SEC * 1000;
         let stopped = false;
-        const tick = async () => {
+        const cancelIdpProvision = createIdpProvisionCancellation(createIdpAdminClientFromEnv({
+          secretStore: createPlatformSecretStore(env.PLATFORM_SECRET_KEY),
+        }));
+        const tick = async (sweep: (deps: TestSubjectReaperDeps) => Promise<unknown>) => {
           try {
-            await runTestSubjectReaper({
-              systemDb: await getRootDatabaseSession("_system"),
-              dropDatabase: async (dbName) => {
-                await getRootConnection().query(`REMOVE DATABASE IF EXISTS ${dbName};`);
+            await sweep({
+              systemDb: {
+                async query(sql, params) {
+                  return (await getRootDatabaseSession("_system")).query(sql, params);
+                },
               },
+              dropDatabase: removeRootWorkspaceDatabase,
+              cancelIdpProvision,
             });
           } catch (cause) {
             console.error("[test-subject-reaper] sweep failed; retry next tick", {
@@ -167,9 +176,23 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
             });
           }
         };
-        void tick();
-        const timer = setInterval(() => { void tick(); }, intervalMs);
-        return { stop: () => { if (!stopped) { stopped = true; clearInterval(timer); } } };
+        const expire = () => { void tick(runTestSubjectReaper); };
+        let cleaning = false;
+        const cleanup = async () => {
+          if (cleaning) return;
+          cleaning = true;
+          try { await tick(runFailedTestKitInvitationReaper); } finally { cleaning = false; }
+        };
+        expire();
+        void cleanup();
+        const timer = setInterval(expire, intervalMs);
+        const cleanupTimer = setInterval(() => { void cleanup(); }, 60_000);
+        return { stop: () => {
+          if (stopped) return;
+          stopped = true;
+          clearInterval(timer);
+          clearInterval(cleanupTimer);
+        } };
       });
   const closeRoot = deps.closeRootConnection ?? closeRootConnection;
   const initProbe = deps.initHealthProbe
@@ -253,6 +276,7 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
     fetch: app.fetch,
     websocket: app.websocket,
   });
+  const nativeMeetingGc = envName === "test" ? undefined : startNativeMeetingGc();
 
   console.info("[server] listening", { host, port, env: envName });
 
@@ -314,6 +338,7 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
       server.stop();
       reconcileLoop?.stop();
       funnelLoop?.stop();
+      await nativeMeetingGc?.stop();
       quotaRuntime.stop();
       testSubjectReaper?.stop();
       await claimsRiskDispatcher?.stop();

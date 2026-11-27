@@ -58,6 +58,12 @@ python scripts/native-client/package-android-host.py \
 
 测试：`python scripts/native-client/test_android_host.py`。
 
+## 名册会议 SFU（实验）
+
+设置 `ANDROID_ROSTER_SFU=1` 后，`scripts/native-client/build-android-host.sh` 使用锁文件编入 LiveKit，并保留 NSH 的 `JNI_OnLoad` 和 WebRTC 的 Java 回调导出。执行 `scripts/native-client/package.sh android` 时还须将 `ANDROID_ROSTER_WEBRTC_JAR` 指向同一锁定构建从 WebRTC SDK 解包的 `libwebrtc.jar`（在 Cargo 目标目录下搜索）；打包器核验私有初始化 Provider、JNI 导出和所需 WebRTC Java 类。
+
+Android 参会端入场默认只听，可举手。主持人授权后，参会人仍须主动点击开麦；首次系统授权后需再次点击。Android 主持端可进行名册管控，但不提供屏幕共享；Android 的 MediaProjection 屏幕共享不在本次范围内。
+
 ## 单独的媒体实验构建
 
 `ANDROID_NATIVE_MEDIA=1 bash scripts/native-client/build-android-host.sh` 显式启用host的 `android-native-media` feature；直接调用该低层脚本默认关闭；标准 package.sh 已选择完整协同宿主。封装时在已有两个manifest片段之外加入 `--manifest-fragment native-media-platform/android/media-manifest.xml`，使用新名称 `SurrealCK-stage5-media-test-only.apk`，不能覆盖既有被测APK。

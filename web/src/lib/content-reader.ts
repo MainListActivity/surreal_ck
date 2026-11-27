@@ -40,7 +40,7 @@ type ContentRow = {
 };
 
 export interface ContentConnection {
-  connect(url: string, options: { namespace: string; database: string }): Promise<unknown>;
+  connect(url: string, options: { namespace: string; database: string; reconnect?: { attempts: number; retryDelayMax: number } }): Promise<unknown>;
   authenticate(token: string): Promise<unknown>;
   query(sql: string, bindings: Record<string, unknown>): { collect(): Promise<unknown[]> };
   close(): Promise<unknown>;
@@ -145,6 +145,7 @@ export function createContentReader(deps: ContentReaderDependencies) {
       const next = deps.connect();
       try {
         await next.connect(deps.surrealUrl, {
+          reconnect: { attempts: 5, retryDelayMax: 60_000 },
           namespace: exchange.namespace,
           database: exchange.database,
         });

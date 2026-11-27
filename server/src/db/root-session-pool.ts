@@ -7,6 +7,29 @@ export type RootSessionSource<TSession extends RootDatabaseSession = RootDatabas
   newSession(): Promise<TSession>;
 };
 
+type RootSessionGetter<TSession> = (database: string, namespace: string) => Promise<TSession>;
+
+export async function withScopedRootSessions<TSession extends RootDatabaseSession, TResult>(
+  source: RootSessionSource<TSession>,
+  run: (get: RootSessionGetter<TSession>) => Promise<TResult>,
+): Promise<TResult> {
+  const sessions: Promise<TSession>[] = [];
+  try {
+    return await run(async (database, namespace) => {
+      const opening = source.newSession();
+      sessions.push(opening);
+      const session = await opening;
+      await session.use({ namespace, database });
+      return session;
+    });
+  } finally {
+    await Promise.allSettled(sessions.map(async (opening) => {
+      const session = await opening;
+      await session.closeSession();
+    }));
+  }
+}
+
 export type RootSessionPool<TSession extends RootDatabaseSession = RootDatabaseSession> = {
   get(database: string, namespace: string): Promise<TSession>;
   closeAll(): Promise<void>;
@@ -58,8 +81,13 @@ export function createRootSessionPool<TSession extends RootDatabaseSession>(
 
       const creating = (async () => {
         const session = await source.newSession();
-        await session.use({ namespace, database });
-        return session;
+        try {
+          await session.use({ namespace, database });
+          return session;
+        } catch (error) {
+          await session.closeSession().catch(() => undefined);
+          throw error;
+        }
       })();
 
       sessions.set(key, creating);

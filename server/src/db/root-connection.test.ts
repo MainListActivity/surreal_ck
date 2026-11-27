@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type { Surreal } from "surrealdb";
+import { env } from "../env";
 import {
   createRootConnectionManager,
   createRootSessionSource,
   nextBackoffDelayMs,
+  removeRootWorkspaceDatabase,
 } from "./root-connection";
 
 class FakeRootSession {
@@ -48,6 +50,50 @@ describe("root connection session source", () => {
     expect(session.signinCalls).toBe(0);
     expect(session_factory.forkCalls).toBe(1);
     expect(session_factory.newSessionCalls).toBe(0);
+  });
+
+  test("a background task cannot select a workspace after a concurrent removal", async () => {
+    const database = "ws_removing";
+    const scope = { namespace: env.SURREAL_NS, database };
+    const selected: string[] = [];
+    const state = new Set([database, "ws_other"]);
+    const removalStarted = Promise.withResolvers<void>();
+    const finishRemoval = Promise.withResolvers<void>();
+    const root = {
+      async forkSession() {
+        return {
+          async query() { return []; },
+          async use(value: typeof scope) {
+            state.add(value.database);
+            selected.push(value.database);
+            return value;
+          },
+        };
+      },
+      async query(sql: string) {
+        if (sql === `REMOVE DATABASE IF EXISTS ${database};`) {
+          removalStarted.resolve();
+          await finishRemoval.promise;
+          state.delete(database);
+          return [];
+        }
+        expect(sql).toBe("INFO FOR NS;");
+        return [{ databases: Object.fromEntries([...state].map((name) => [name, true])) }];
+      },
+    } as unknown as Surreal;
+    const stale = await createRootSessionSource(() => root).newSession();
+    const removing = removeRootWorkspaceDatabase(database, () => root);
+    await removalStarted.promise;
+    const racing = stale.use(scope).catch((error: unknown) => error);
+    try {
+      await stale.use({ ...scope, database: "ws_other" });
+    } finally {
+      finishRemoval.resolve();
+    }
+    await removing;
+    expect(await racing).toEqual(new Error("workspace database does not exist"));
+    expect(selected).toEqual(["ws_other"]);
+    expect(state.has(database)).toBe(false);
   });
 });
 

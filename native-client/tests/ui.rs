@@ -59,6 +59,19 @@ fn collaboration_starts_offline() -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(all(target_os = "linux", feature = "experimental-native-roster-sfu"))]
+#[test]
+fn roster_has_guest_entry_without_login_but_no_host_or_mic_controls() -> Result<(), String> {
+    let mut app = collaboration(480.0, 800.0)?;
+    app.press("会议")?;
+    scroll_to(&mut app, "名册核验大会")?;
+    scroll_to(&mut app, "核验并加入")?;
+    assert!(app.press("核验并加入").is_err());
+    assert!(!app.shows("主持名册大会"));
+    assert!(!app.shows("已获准发言 · 开启麦克风"));
+    Ok(())
+}
+
 #[test]
 fn first_screen_shows_message_chrome_and_honest_empty_state() -> Result<(), String> {
     for (width, height) in [(480.0, 800.0), (1100.0, 760.0)] {

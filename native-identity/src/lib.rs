@@ -2,8 +2,11 @@
 //! 网络调用不自动打开浏览器、不保存令牌、不创建账号或注册回调。
 mod auth;
 mod discovery;
+mod ice;
 mod loopback;
+pub mod meeting;
 mod members;
+pub mod roster;
 mod scope;
 mod signaling;
 mod transport;
@@ -13,6 +16,7 @@ pub use auth::{
     IdentityClient, IdentityConfig, LoginAttempt, Session, Workspace, WorkspaceList, WorkspaceRole,
 };
 pub use discovery::OidcTokenMode;
+pub use ice::{IceServer, IceServers};
 pub use loopback::LoopbackReceiver;
 pub use members::{load_members, Member, SurrealConfig};
 pub use signaling::{SignalBinding, SignalConnection, SignalRow, SignalStatus, SignalSummary};
@@ -20,6 +24,30 @@ pub use transport::HttpsTransport;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum IdentityError {
+    #[error("会议需要真人 RECORD 会话")]
+    MeetingRecordRequired,
+    #[error("会议不存在或未获邀请")]
+    MeetingNotFound,
+    #[error("会议人数已满")]
+    MeetingFull,
+    #[error("会议已过期")]
+    MeetingExpired,
+    #[error("会议状态冲突，请刷新后重试")]
+    MeetingRetry,
+    #[error("会议请求过于频繁")]
+    MeetingRateLimited,
+    #[error("会议操作被拒绝")]
+    MeetingDenied,
+    #[error("会议结构尚未启用")]
+    MeetingSchemaMissing,
+    #[error("会议服务不可用")]
+    MeetingUnavailable,
+    #[error("会议绑定不匹配")]
+    MeetingBinding,
+    #[error("会议参数无效")]
+    MeetingInput,
+    #[error("会议操作结果不确定")]
+    MeetingUncertain,
     #[error("企业登录配置缺失或不安全，请先配置已注册的原生回调和对应客户端")]
     Configuration,
     #[error("OIDC discovery 的 issuer、端点主机或 public S256 能力不符合受信任配置")]

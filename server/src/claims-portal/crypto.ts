@@ -1,26 +1,6 @@
-import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { signPayload, verifySignature } from "../secure-token";
 
-/** ≥256 bit 随机，URL-safe base64（去 padding）。 */
-export function generateToken(byteLength = 32): string {
-  return randomBytes(byteLength).toString("base64url");
-}
-
-/** SHA-256(token || pepper) 的 hex；库中只存哈希。 */
-export function hashToken(token: string, pepper: string): string {
-  return createHash("sha256").update(token, "utf8").update(pepper, "utf8").digest("hex");
-}
-
-export function signPayload(payload: string, pepper: string): string {
-  return createHmac("sha256", pepper).update(payload, "utf8").digest("base64url");
-}
-
-export function verifySignature(payload: string, signature: string, pepper: string): boolean {
-  const expected = signPayload(payload, pepper);
-  const left = Buffer.from(expected);
-  const right = Buffer.from(signature);
-  if (left.length !== right.length) return false;
-  return timingSafeEqual(left, right);
-}
+export { generateToken, hashToken, signPayload, verifySignature } from "../secure-token";
 
 export function encodeSessionCookie(parts: {
   slug: string;

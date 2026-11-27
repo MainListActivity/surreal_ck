@@ -132,6 +132,7 @@ describe("CV-02 破产债权管理模板包（两表形状）", () => {
       ["contact_name", "text"],
       ["contact_phone", "text"],
       ["address", "text"],
+      ["voting_weight", "decimal"],
     ]);
     expect(editor.rows).toHaveLength(6);
     const creditorIds = new Set(editor.rows.map((row) => row.id));

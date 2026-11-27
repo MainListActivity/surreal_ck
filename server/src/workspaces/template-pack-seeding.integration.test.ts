@@ -170,9 +170,10 @@ function assertPackShape(pack: PackRow) {
     "contact_name",
     "contact_phone",
     "address",
+    "voting_weight",
   ]);
   for (const column of creditors!.column_defs) {
-    expect(column.field_type).toBe("text");
+    expect(column.field_type).toBe(column.key === "voting_weight" ? "decimal" : "text");
     expect((column.aliases ?? []).length).toBeGreaterThan(0);
   }
   expect(creditors!.column_defs.filter((column) => column.required).map((column) => column.key)).toEqual([

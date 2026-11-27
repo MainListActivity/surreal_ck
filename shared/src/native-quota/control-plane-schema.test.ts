@@ -93,6 +93,10 @@ describe("_system native quota control-plane schema", () => {
       // 050：测试标记 workspace 名下不可变控制面行放行 DELETE（UPDATE 仍禁），
       // 修复 test_kit_purge/到期清理删库后抛 internal error；真实 workspace 行不变。
       50,
+      // 051：持久保留测试开通失败的清理归属与 IdP 撤销凭证。
+      51,
+      // 052：绑定产品指派幂等键与原订阅项。
+      52,
     ]);
   });
 

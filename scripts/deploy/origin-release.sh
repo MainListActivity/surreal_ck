@@ -47,12 +47,45 @@ svc_touched=0
 env_dirty=0
 switched=0
 
+health_clock_cs() {
+  local uptime
+  uptime=$(cat /proc/uptime) || return 1
+  [[ "$uptime" =~ ^([0-9]+)\.([0-9]{2})[[:space:]] ]] || return 1
+  printf '%s\n' "$((10#${BASH_REMATCH[1]} * 100 + 10#${BASH_REMATCH[2]}))"
+}
+
 healthy() {
-  for _ in $(seq 1 30); do
-    if curl -fsS --max-time 5 "$health_url" 2>/dev/null | grep -q '"status":"ok","surrealdb":"up"'; then
+  local now deadline remaining limit pause duration body matched
+  now=$(health_clock_cs) || return 1
+  deadline=$((now + 24000))
+  while (( (remaining = deadline - now) > 0 )); do
+    # 为末秒保留短间隔重试，不让一次探测耗尽末秒。
+    if ((remaining > 100)); then
+      limit=$((remaining - 100 < 500 ? remaining - 100 : 500))
+    else
+      limit=$((remaining < 20 ? remaining : 20))
+    fi
+    printf -v duration '%d.%02d' "$((limit / 100))" "$((limit % 100))"
+    matched=0
+    if body=$(curl -fsS --max-time "$duration" "$health_url" 2>/dev/null) \
+      && grep -q '"status":"ok","surrealdb":"up"' <<<"$body"; then
+      matched=1
+    fi
+    now=$(health_clock_cs) || return 1
+    if ((matched && now <= deadline)); then
       return 0
     fi
-    sleep 3
+    remaining=$((deadline - now))
+    if ((remaining <= 0)); then
+      break
+    elif ((remaining > 100)); then
+      pause=$((remaining - 100 < 300 ? remaining - 100 : 300))
+    else
+      pause=$((remaining < 10 ? remaining : 10))
+    fi
+    printf -v duration '%d.%02d' "$((pause / 100))" "$((pause % 100))"
+    sleep "$duration"
+    now=$(health_clock_cs) || return 1
   done
   return 1
 }
@@ -538,6 +571,12 @@ acquire_lock() {
   if [ -n "$other" ] && [ "$other" != "${3:-}" ]; then
     other_state=$(read_field "$other" state)
     if [ -n "$other_state" ] && ! is_terminal "$other_state"; then
+      # 登记进程退出前会把锁交给 worker；旧 pid 消失并不表示发布中断。
+      if [ "$(cat "$lock_dir/pid" 2>/dev/null || true)" != "$owner" ]; then
+        echo "busy: activation $other changed lock owner" >&2
+        release_reclaim
+        return 75
+      fi
       echo "interrupted=$other"
       echo "activation $other was interrupted (worker gone); run --recover $other first" >&2
       release_reclaim

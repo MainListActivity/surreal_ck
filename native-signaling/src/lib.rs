@@ -1,5 +1,8 @@
 //! 工作区认证的一对一邀请协议。SDP 只作信令，聊天、文件及媒体不得进入数据库。
 //! 不提供从手工字符串构造 AuthenticatedOffer/Answer 的公共 API。
+pub mod meeting;
+#[cfg(any(test, feature = "mock"))]
+pub mod mock_meeting;
 mod protocol;
 mod session;
 pub use protocol::{AuthenticatedAnswer, AuthenticatedOffer, Error, InvitationSummary, Result};

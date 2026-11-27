@@ -5,6 +5,8 @@ mod android_call_bridge;
 pub mod android_documents;
 #[cfg(all(target_os = "android", feature = "android-native-oauth"))]
 pub mod android_oauth;
+#[cfg(all(target_os = "android", feature = "experimental-native-roster-sfu"))]
+pub mod android_roster_sfu;
 mod bridge;
 mod call_bridge;
 mod call_ui;
@@ -22,9 +24,26 @@ mod first_screen;
 #[cfg(feature = "github-manual-updates")]
 mod github_update_ui;
 mod identity_ui;
+#[cfg(feature = "experimental-enterprise-meeting")]
+mod meeting_actor;
 pub mod model;
 mod network_config;
 mod network_ui;
+#[cfg(all(
+    any(target_os = "linux", target_os = "android"),
+    feature = "experimental-native-roster-sfu"
+))]
+mod roster_actor;
+#[cfg(all(
+    any(target_os = "linux", target_os = "android"),
+    feature = "experimental-native-roster-sfu"
+))]
+mod roster_media;
+#[cfg(all(
+    any(target_os = "linux", target_os = "android"),
+    feature = "experimental-native-roster-sfu"
+))]
+mod roster_ui;
 #[cfg_attr(feature = "github-manual-updates", allow(dead_code))]
 mod startup;
 mod ui;
@@ -76,6 +95,8 @@ pub fn Collaboration() -> impl IntoElement {
     let status = signal("离线".to_owned());
     let session = signal(Session::Offline);
     let identity = signal(first_screen::IdentitySummary::default());
+    #[cfg(feature = "experimental-enterprise-meeting")]
+    let meeting_bridge = meeting_actor::Bridge::new();
     let messages = signal(Vec::<first_screen::Message>::new());
     let query = signal(String::new());
     let filter = signal(ConversationFilter::All);
@@ -472,7 +493,17 @@ pub fn Collaboration() -> impl IntoElement {
                     )),
             ),
         );
-    // 会议首页：入口与进行中列表。会议能力接入前入口保持禁用，并说明下一步，不显示假舞台。
+    // 会议首页：企业会议构建接入真实 actor；其余构建保持禁用入口与说明，不显示假舞台。
+    #[cfg(feature = "experimental-enterprise-meeting")]
+    let meeting_page = view()
+        .gap_4()
+        .style_when(move || page.get() != Page::Meeting, |style| style.hidden())
+        .child(ui::meeting::meeting_page(
+            meeting_bridge.state(),
+            meeting_bridge.sender(),
+            meeting_bridge.video(),
+        ));
+    #[cfg(not(feature = "experimental-enterprise-meeting"))]
     let meeting_page = view()
         .gap_4()
         .style_when(move || page.get() != Page::Meeting, |style| style.hidden())
@@ -559,6 +590,27 @@ pub fn Collaboration() -> impl IntoElement {
                 )),
             ),
         );
+    #[cfg(all(
+        any(target_os = "linux", target_os = "android"),
+        feature = "experimental-native-roster-sfu"
+    ))]
+    let (roster_host, host_scope) = tokio::sync::watch::channel(None);
+    #[cfg(all(
+        any(target_os = "linux", target_os = "android"),
+        feature = "experimental-native-roster-sfu"
+    ))]
+    let meeting_page = meeting_page.child(roster_ui::panel(host_scope));
+    let identity_panel = identity_ui::enterprise_identity(
+        identity,
+        #[cfg(feature = "experimental-enterprise-meeting")]
+        &meeting_bridge,
+        #[cfg(all(
+            any(target_os = "linux", target_os = "android"),
+            feature = "experimental-native-roster-sfu"
+        ))]
+        roster_host,
+    )
+    .into_element();
     // 通讯录：账号与工作区、成员目录。登录是使用其他模块的前提，放在这里集中处理。
     let members_page = view()
         .gap_4()
@@ -571,7 +623,30 @@ pub fn Collaboration() -> impl IntoElement {
             move || first_screen::members_empty(&identity.get()).0.to_owned(),
             move || first_screen::members_empty(&identity.get()).1,
         )))
-        .child(ui::card().child(identity_ui::enterprise_identity(identity)));
+        .child(ui::card().child(identity_panel));
+    #[cfg(feature = "experimental-enterprise-meeting")]
+    let meeting_diagnostics =
+        {
+            let meeting = meeting_bridge.state();
+            view()
+                .style_when(move || meeting.get().room.is_none(), |style| style.hidden())
+                .child(text("会议选路"))
+                .child(text(move || {
+                    let current = meeting.get();
+                    let mut lines = Vec::new();
+                    if current.managed_ice_unavailable {
+                        lines.push("托管 ICE 配置不可用；新连接仅尝试直连。".to_owned());
+                    }
+                    if let Some(room) = current.room {
+                        lines.extend(room.members.iter().filter(|member| !member.is_local).map(
+                            |member| format!("{}：{}", member.display_name, member.edge.label()),
+                        ));
+                    }
+                    lines.join("\n")
+                }))
+        };
+    #[cfg(not(feature = "experimental-enterprise-meeting"))]
+    let meeting_diagnostics = view();
     // 开发者诊断：手动 P2P、STUN/TURN、连接指纹、媒体与文件调试。安全能力保留，只是不在首屏。
     let diagnostics_page = view()
         .gap_3()
@@ -585,6 +660,7 @@ pub fn Collaboration() -> impl IntoElement {
                 .font_weight(FontWeight::BOLD),
         )
         .child(ui::note(|| first_screen::DIAGNOSTICS_NOTICE.to_owned()))
+        .child(meeting_diagnostics)
         .child(text(move || status.get()).text_color(move || theme().muted_foreground))
         .child(verification.panel(verification_commands, busy))
         .child(

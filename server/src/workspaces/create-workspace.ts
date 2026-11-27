@@ -13,9 +13,10 @@ import {
 import { NATIVE_QUOTA_EXPECTED_CONTRACT } from "@surreal-ck/shared/native-quota";
 import { DateTime, StringRecordId } from "surrealdb";
 import { env } from "../env";
-import { getRootDatabaseSession } from "../db/root-connection";
+import { withRootDatabaseSessions } from "../db/root-connection";
 import { toSurrealNone, toIsoDateTimeString } from "../db/surreal-values";
 import { materializeWorkspaceMigrationSql } from "../db/workspace-migration-execution";
+import { retryAtomicConflict } from "../db/atomic-conflict-retry";
 import {
   SurrealNativeQuotaClient,
   type NativeQuotaClient,
@@ -108,16 +109,16 @@ export type CreateWorkspaceCreatorOptions = {
 
 const SYSTEM_DATABASE = "_system";
 const MAX_DB_NAME_ATTEMPTS = 5;
+export async function runProvisioningTransaction(
+  db: CreateWorkspaceClient,
+  sql: string,
+  params?: Record<string, unknown>,
+): Promise<unknown> {
+  return retryAtomicConflict(() => db.query(sql, params));
+}
 
 function defaultGenerateId(): string {
   return crypto.randomUUID().replace(/-/g, "").slice(0, 12);
-}
-
-async function defaultGetDbSession(
-  database: string,
-  namespace: string,
-): Promise<CreateWorkspaceClient> {
-  return getRootDatabaseSession(database, namespace);
 }
 
 function rowCount(result: unknown): number {
@@ -270,7 +271,7 @@ function createSurrealControlPlane(
         );
         if (rowCount(dbNameResult) > 0) return { kind: "db-name-conflict" };
 
-        const result = await systemDb.query(
+        const result = await runProvisioningTransaction(systemDb,
           `
             CREATE ONLY workspace CONTENT {
               db_name: $dbName,
@@ -448,7 +449,7 @@ function createSurrealControlPlane(
             ? "provider"
             : input.sourceKind;
 
-      await systemDb.query(
+      await runProvisioningTransaction(systemDb,
         `
           BEGIN TRANSACTION;
 
@@ -462,7 +463,7 @@ function createSurrealControlPlane(
               status: "active"
             }
             ON DUPLICATE KEY UPDATE
-              name = $input.name,
+              name = $accountName,
               status = "active"
           )[0] };
 
@@ -580,7 +581,7 @@ function createSurrealControlPlane(
         );
       }
 
-      await systemDb.query(
+      await runProvisioningTransaction(systemDb,
         `
           BEGIN TRANSACTION;
 
@@ -675,7 +676,7 @@ function createSurrealControlPlane(
     },
 
     async markStage(input) {
-      await systemDb.query(
+      await runProvisioningTransaction(systemDb,
         `
           BEGIN;
           IF $activateTrial {
@@ -726,8 +727,9 @@ function createSurrealControlPlane(
     },
 
     async markAppliedFromNative(input) {
-      await systemDb.query(
+      await runProvisioningTransaction(systemDb,
         `
+          BEGIN;
           UPDATE $workspace SET
             applied_entitlement = $entitlementId,
             applied_quota_projection = $projectionId,
@@ -769,6 +771,7 @@ function createSurrealControlPlane(
               ledger_state = $ledgerState,
               usage_trusted = $usageTrusted;
           };
+          COMMIT;
         `,
         {
           workspace: input.workspaceId,
@@ -784,7 +787,7 @@ function createSurrealControlPlane(
 
     async createPhysicalDatabase(dbName) {
       try {
-        await systemDb.query(`DEFINE DATABASE ${dbName};`);
+        await runProvisioningTransaction(systemDb, `DEFINE DATABASE ${dbName};`);
         return { kind: "created" };
       } catch (cause) {
         if (isDbNameConflict(cause)) return { kind: "db-name-conflict" };
@@ -822,7 +825,10 @@ export function createWorkspaceCreator(
       loadTemplatePackScriptsDefault({ selectedPacks: env.WORKSPACE_TEMPLATE_PACKS }));
   const generateId = options.generateId ?? defaultGenerateId;
   const namespace = options.namespace ?? env.SURREAL_NS;
-  const getDbSession = options.getDbSession ?? defaultGetDbSession;
+  const injectedGetDbSession = options.getDbSession;
+  const withDbSessions = injectedGetDbSession
+    ? <T>(run: (get: CreateWorkspaceSessionFactory) => Promise<T>) => run(injectedGetDbSession)
+    : withRootDatabaseSessions;
   const engineCapabilities = options.engineCapabilities ?? [
     NATIVE_QUOTA_EXPECTED_CONTRACT.capabilityName,
   ];
@@ -838,33 +844,36 @@ export function createWorkspaceCreator(
         };
       }
 
-      const systemDb = await getDbSession(SYSTEM_DATABASE, namespace);
+      // 建库和应用模板共用本次开通的独占会话，不受空闲会话缓存淘汰影响。
+      return withDbSessions(async (getDbSession) => {
+        const systemDb = await getDbSession(SYSTEM_DATABASE, namespace);
 
-      for (let attempt = 0; attempt < MAX_DB_NAME_ATTEMPTS; attempt += 1) {
-        const dbName = makeWorkspaceDbName(generateId());
-        const result = await tryCreateWorkspace({
-          systemDb,
-          getDbSession,
-          namespace,
-          input,
-          dbName,
-          loadScripts,
-          loadPackScripts,
-          idpTokenScopeAdapter,
-          nativeQuotaClient: options.nativeQuotaClient,
-          engineCapabilities,
-          controlPlane: options.controlPlane,
-          deliverTrial: options.deliverTrial,
-        });
+        for (let attempt = 0; attempt < MAX_DB_NAME_ATTEMPTS; attempt += 1) {
+          const dbName = makeWorkspaceDbName(generateId());
+          const result = await tryCreateWorkspace({
+            systemDb,
+            getDbSession,
+            namespace,
+            input,
+            dbName,
+            loadScripts,
+            loadPackScripts,
+            idpTokenScopeAdapter,
+            nativeQuotaClient: options.nativeQuotaClient,
+            engineCapabilities,
+            controlPlane: options.controlPlane,
+            deliverTrial: options.deliverTrial,
+          });
 
-        if (result.kind !== "db-name-conflict") {
-          return result;
+          if (result.kind !== "db-name-conflict") {
+            return result;
+          }
         }
-      }
 
-      throw new Error(
-        `workspace db_name allocation failed after ${MAX_DB_NAME_ATTEMPTS} attempts`,
-      );
+        throw new Error(
+          `workspace db_name allocation failed after ${MAX_DB_NAME_ATTEMPTS} attempts`,
+        );
+      });
     },
   };
 }
@@ -914,7 +923,7 @@ async function tryCreateWorkspace({
         params?: Record<string, unknown>,
       ): Promise<T> {
         // Root client already scoped per session; native DDL uses ON DATABASE.
-        return systemDb.query(sql, params) as Promise<T>;
+        return runProvisioningTransaction(systemDb, sql, params) as Promise<T>;
       },
     });
 
@@ -1018,7 +1027,7 @@ async function tryCreateWorkspace({
       await workspaceDb.query(script.sql);
     }
 
-    await workspaceDb.query(
+    await runProvisioningTransaction(workspaceDb,
       `INSERT INTO user {
          subject: $subject,
          email: $email,
@@ -1168,7 +1177,7 @@ async function createMembershipIndex(
   dbName: string,
   workspaceId: StringRecordId,
 ): Promise<void> {
-  await systemDb.query(
+  await runProvisioningTransaction(systemDb,
     `
       INSERT INTO user_workspace_index {
         subject: $subject,

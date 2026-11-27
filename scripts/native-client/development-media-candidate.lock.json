@@ -1,13 +1,28 @@
 {
-  "artifact_id": 13845177716,
+  "artifact_id": 15102618847,
   "platform": "windows",
   "arch": "x86_64",
-  "zip_sha256": "2967d8e6d99f37b1d0f7a22beeeef1efe9e49324b3c374b9766050c0af370fc1",
-  "manifest_sha256": "a1f2592a783553f9d84113d0b4976b761005115d82e2e7bdd5907531e15a0ed6",
-  "source_commit": "bcd7fe7155c233165fe204148e9d033ccafc88c9",
+  "zip_sha256": "bff68459bfa068d2278586821967e356097bc247e66f47d0df2837b7fcf80469",
+  "manifest_sha256": "d7bfd545482f1f9a76290cac48623937cebbf527f179db4032084f5ad719a3b9",
+  "source_commit": "b83322d5b7a494e65a79ba169af153f8a3161bf0",
   "repository": "MainListActivity/surreal_ck",
-  "run_id": 42997627548,
-  "expires_at": "2026-11-24T00:00:00+00:00",
+  "run_id": 45790178370,
+  "expires_at": "2026-12-09T00:00:00+00:00",
   "purpose": "development-only; no redistribution approval; business and devices unverified",
-  "enabled": true
+  "enabled": true,
+  "additional_candidates": [
+    {
+      "artifact_id": 15102483642,
+      "platform": "macos",
+      "arch": "aarch64",
+      "zip_sha256": "73d53d238a62af98e9dbe890cfea1bcd9efd256a6c5fd5b8db7f47f74cd7b51a",
+      "manifest_sha256": "6892649bea0b4201ce472b7dde52b01704aba9d1517eda643e4f6c28d599e7d1",
+      "source_commit": "b83322d5b7a494e65a79ba169af153f8a3161bf0",
+      "repository": "MainListActivity/surreal_ck",
+      "run_id": 45790178370,
+      "expires_at": "2026-12-09T00:00:00+00:00",
+      "purpose": "development-only; no redistribution approval; business and devices unverified",
+      "enabled": true
+    }
+  ]
 }

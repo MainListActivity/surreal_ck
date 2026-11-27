@@ -1,6 +1,7 @@
 import { isRetryableConflict, QueryError, StringRecordId, SurrealError } from "surrealdb";
 import { aiAllowancePlanPrefix, aiAllowanceConsumptionReason, AI_ALLOWANCE_CONSUMABLE_SQL,
   emptyAiAllowanceBalance, addAiAllowanceBalance } from "@surreal-ck/shared";
+import { retryAtomicConflict } from "../db/atomic-conflict-retry";
 
 /**
  * LCA05 工作区共享 AI 额度账本服务。
@@ -551,8 +552,7 @@ export class AiAllowanceService {
       throw new AiAllowanceError("ai-allowance-unavailable", "grant amount must be a positive integer");
     }
     const session = await this.deps.workspaceSession(input.db);
-    const result = await collect(
-      session,
+    const result = await retryAtomicConflict(async () => await session.query(
       `BEGIN;
        LET $b = (CREATE ONLY ai_allowance_bucket CONTENT {
          kind: $kind, label: $label, source: $source, period_key: $period,
@@ -575,7 +575,7 @@ export class AiAllowanceService {
         exp: input.expiresAt,
         note: `${input.kind} grant by ${input.operatorSubject}`,
       },
-    );
+    )).catch(toAllowanceError);
     const bucket = first<{ id: unknown }>(Array.isArray(result) ? result[result.length - 1] : result);
     return { bucket: bucket?.id };
   }
