@@ -34,6 +34,17 @@ describe("health route", () => {
     expect(calls.sort()).toEqual([5000, 5000]);
   });
 
+  test("/api/health 与 /health 返回同一份健康报告", async () => {
+    const routes = createHealthRoutes({ checkHealthProbe: up, checkRootConnection: down });
+
+    const response = await routes.request("/api/health");
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.status).toBe("degraded");
+    expect(body.surrealdb).toBe("down");
+  });
+
   test("探测连接失败 → 如实 down（演练断连对象的失败即 /health down）", async () => {
     const routes = createHealthRoutes({
       checkHealthProbe: down,
