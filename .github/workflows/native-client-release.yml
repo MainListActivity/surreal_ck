@@ -296,9 +296,36 @@ jobs:
       - name: Build Windows installer
         if: matrix.target == 'windows'
         env:
-          WINDOWS_CERT_THUMBPRINT: ${{ secrets.WINDOWS_CERT_THUMBPRINT }}
+          WINDOWS_CERT_THUMBPRINT: ${{ github.event_name == 'release' && secrets.WINDOWS_CERT_THUMBPRINT || '' }}
+          WINDOWS_SIGN_CERT_PFX_BASE64: ${{ github.event_name == 'release' && secrets.WINDOWS_SIGN_CERT_PFX_BASE64 || '' }}
+          WINDOWS_SIGN_CERT_PASSWORD: ${{ github.event_name == 'release' && secrets.WINDOWS_SIGN_CERT_PASSWORD || '' }}
         shell: pwsh
-        run: ./scripts/native-client/package-windows.ps1
+        run: |
+          $thumbprint = $env:WINDOWS_CERT_THUMBPRINT
+          $pfx = Join-Path $env:RUNNER_TEMP 'native-release-signing.pfx'
+          $imported = @()
+          try {
+            if ($thumbprint) {
+              if ($thumbprint -notmatch '^[0-9a-fA-F]{40}$') { throw 'Invalid Windows signing certificate thumbprint' }
+              if (-not ($env:WINDOWS_SIGN_CERT_PFX_BASE64 -and $env:WINDOWS_SIGN_CERT_PASSWORD)) {
+                throw 'Windows signing on hosted runners requires a password-protected signing PFX'
+              }
+              [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_SIGN_CERT_PFX_BASE64))
+              $password = ConvertTo-SecureString $env:WINDOWS_SIGN_CERT_PASSWORD -AsPlainText -Force
+              $imported = @(Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password)
+              if (-not ($imported | Where-Object { $_.Thumbprint -eq $thumbprint -and $_.HasPrivateKey })) {
+                throw 'The PFX does not contain the configured signing identity'
+              }
+              Remove-Item -LiteralPath $pfx -Force
+            }
+            Remove-Item Env:WINDOWS_SIGN_CERT_PFX_BASE64, Env:WINDOWS_SIGN_CERT_PASSWORD -ErrorAction SilentlyContinue
+            ./scripts/native-client/package-windows.ps1
+          } finally {
+            Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
+            foreach ($certificate in $imported) {
+              Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($certificate.Thumbprint)" -DeleteKey -ErrorAction SilentlyContinue
+            }
+          }
       - name: Build explicitly requested experimental Android media artifact
         if: matrix.target == 'android' && github.event_name == 'workflow_dispatch' && inputs.experimental_android_media
         shell: bash
