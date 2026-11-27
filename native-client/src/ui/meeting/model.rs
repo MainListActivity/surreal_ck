@@ -382,7 +382,7 @@ impl MeetingView {
                 self.error = Some(e);
             }
             MeetingUpdate::Left | MeetingUpdate::Ended { .. } => {
-                if matches!(update, MeetingUpdate::Ended { by_host: true })
+                if matches!(update, MeetingUpdate::Ended { .. })
                     && let Some(room) = &self.room
                 {
                     self.remember_ended(room.room_code.clone());
@@ -394,7 +394,7 @@ impl MeetingView {
                 self.notice = Some(
                     match update {
                         MeetingUpdate::Ended { by_host: true } => "主持人已结束会议",
-                        MeetingUpdate::Ended { by_host: false } => "会议已过期",
+                        MeetingUpdate::Ended { by_host: false } => "会议已结束",
                         _ => "已离开会议",
                     }
                     .into(),

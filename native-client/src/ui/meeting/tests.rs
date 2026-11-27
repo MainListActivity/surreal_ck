@@ -25,6 +25,18 @@ fn snapshot_versions_only_advance() {
     assert_eq!(view.room.unwrap().version, 3);
 }
 
+#[test]
+fn participant_end_adds_the_room_to_recently_ended() {
+    let mut view = MeetingView::default();
+    let room = room();
+    let code = room.room_code.clone();
+    view.apply(MeetingUpdate::Snapshot(room));
+    view.apply(MeetingUpdate::Ended { by_host: false });
+    assert_eq!(view.recently_ended, vec![code]);
+    assert!(view.room.is_none());
+    assert_eq!(view.notice.as_deref(), Some("会议已结束"));
+}
+
 #[component]
 fn StopPreview() -> impl IntoElement {
     let state = MeetingState::new();
