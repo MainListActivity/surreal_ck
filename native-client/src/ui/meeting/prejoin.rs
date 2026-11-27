@@ -228,8 +228,10 @@ fn tool(name: &str) -> io::Result<PathBuf> {
     } else {
         (parent, "media-runtime/bin", format!("{name}.exe"))
     };
-    let executable = bundle.join(bin).join(filename).canonicalize()?;
-    if !executable.starts_with(bundle.canonicalize()?) || !executable.is_file() {
+    let bundle = bundle.canonicalize()?;
+    let root = bundle.join(bin).canonicalize()?;
+    let executable = root.join(filename).canonicalize()?;
+    if !root.starts_with(&bundle) || !executable.starts_with(&root) || !executable.is_file() {
         return Err(io::Error::other("tool outside application bundle"));
     }
     Ok(executable)
@@ -361,7 +363,9 @@ async fn run(
             },
         }
     };
-    child.kill().await.map_err(|_| STOP_UNCONFIRMED)?;
+    if child.try_wait().map_err(|_| STOP_UNCONFIRMED)?.is_none() {
+        child.kill().await.map_err(|_| STOP_UNCONFIRMED)?;
+    }
     outcome
 }
 

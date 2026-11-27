@@ -252,7 +252,15 @@ pub fn meeting_page_in_shell(
                                 || false,
                                 move || {
                                     if let Some(cmd) = retry.get() {
-                                        send(cmd);
+                                        match cmd {
+                                            MeetingCommand::Create
+                                            | MeetingCommand::CreateFor { .. }
+                                            | MeetingCommand::Join { .. } => {
+                                                join_with_mic.set(false);
+                                                prejoin.set(Some(cmd));
+                                            }
+                                            _ => send(cmd),
+                                        }
                                     }
                                 },
                             )
@@ -381,22 +389,7 @@ pub fn meeting_page_in_shell(
                             "静音入会"
                         }
                     }))
-                    .child(when(
-                        || system_media_settings().is_some(),
-                        || {
-                            ui::secondary(
-                                "打开系统设置",
-                                || false,
-                                || {
-                                    if let Some(url) = system_media_settings() {
-                                        spawn(async move {
-                                            let _ = open_url(url).await;
-                                        });
-                                    }
-                                },
-                            )
-                        },
-                    ))
+                    .child(permissions_settings())
                     .child(
                         view()
                             .flex_row()
@@ -895,14 +888,36 @@ pub fn meeting_page_in_shell(
         )
 }
 
-fn system_media_settings() -> Option<&'static str> {
-    match std::env::consts::OS {
-        "macos" => {
-            Some("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
-        }
-        "windows" => Some("ms-settings:privacy-microphone"),
+fn permissions_settings() -> impl IntoElement {
+    let settings = match std::env::consts::OS {
+        "macos" => Some([
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+        ]),
+        "windows" => Some([
+            "ms-settings:privacy-webcam",
+            "ms-settings:privacy-microphone",
+        ]),
         _ => None,
+    };
+    let mut controls = view().flex_row().flex_wrap().gap_2();
+    if let Some([camera, microphone]) = settings {
+        for (label, url) in [
+            ("打开摄像头权限设置", camera),
+            ("打开麦克风权限设置", microphone),
+        ] {
+            controls = controls.child(ui::secondary(
+                label,
+                || false,
+                move || {
+                    spawn(async move {
+                        let _ = open_url(url).await;
+                    });
+                },
+            ));
+        }
     }
+    controls
 }
 
 pub(super) fn screen_name() -> &'static str {
