@@ -543,7 +543,10 @@ async fn run(
                             retry_after.clear();
                             refresh_ice!();
                         }
-                        Err(error) => fail!(error),
+                        Err(error) => {
+                            eprintln!("[meeting] create failed: {error}");
+                            emit!(MeetingUpdate::Error(map_error(error)));
+                        }
                     },
                     MeetingCommand::Invite { member_ids, .. } => {
                         match meeting.invite(&member_ids).await {
@@ -560,7 +563,10 @@ async fn run(
                             retry_after.clear();
                             refresh_ice!();
                         }
-                        Err(error) => fail!(error),
+                        Err(error) => {
+                            eprintln!("[meeting] join failed: {error}");
+                            emit!(MeetingUpdate::Error(map_error(error)));
+                        }
                     },
                     MeetingCommand::SetDevice { source, on } => {
                         set_device(&mut media, &gate, &mut lease, source, on, &out, epoch, generation).await;

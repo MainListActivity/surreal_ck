@@ -215,6 +215,7 @@ fn Preview() -> impl IntoElement {
         state,
         move |cmd| {
             if matches!(&cmd, MeetingCommand::Join { room_code } if room_code == "RETRY001") {
+                assert!(state.get().error.is_none());
                 state.apply(MeetingUpdate::Error(MeetingError::Retryable {
                     msg: "请检查网络".into(),
                 }));
@@ -331,5 +332,9 @@ fn joining_again_after_retryable_error_requires_confirmation() -> Result<(), Str
     app.wait_for("会前检查")?;
     app.press("取消")?;
     assert!(!app.shows("会前检查"));
+    app.press("重试")?;
+    app.press("切换入会时的麦克风状态")?;
+    app.press("确认入会")?;
+    app.wait_for("操作失败：请检查网络")?;
     Ok(())
 }
