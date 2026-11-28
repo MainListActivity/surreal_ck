@@ -30,3 +30,16 @@ Status: ready-for-human
 ## Comments
 
 - [架构与存证 ADR](../../../docs/adr/meeting-architecture-and-evidence.md)已起草并核对现有会议 schema、成员直连及工作区隔离契约。独立产品与工程/安全复核尚未完成，不记为 `done`。
+
+### 2026-11-28 独立工程与安全复核
+
+在主干 `3fd77731` 上按仓库约定与工单验收标准独立复核，修订了 [会议 ADR](../../../docs/adr/meeting-architecture-and-evidence.md)。
+
+| 核对项 | 结论与依据 |
+| --- | --- |
+| 权责与直连 | Bun 负责准入和会控，私有 LiveKit 执行媒体权限，TURN 负责中继。普通工作簿读写、LIVE 和管理员 DDL 沿用 [前端直连](../../../docs/adr/frontend-direct-connect.md)、[workspace database](../../../docs/adr/workspace-as-database.md) 的边界。日常 V2 使用 [origin 专用 RECORD](../../../server/src/routes/meeting-v2-store.ts)。[名册服务](../../../server/src/meeting/roster.ts)及[归档](../../../server/src/meeting/roster-archive.ts)、[存证投影](../../../server/src/meeting/evidence-archive.ts)仍有 root 业务调用偏差。[名册管理入口](../../../server/src/routes/meeting-roster.ts)须补当前成员和配额资格复核。 |
+| 外部身份 | 日常访客经限时链接和等候室，名册主体经个人令牌、访问码和单活租约。两个公开入口只授予同场权限，均不创建 `user` 或发放数据库凭证。等候态无媒体与成员目录权限。核对了 [V2 入口](../../../server/src/routes/meeting-v2.ts)、[名册入口](../../../server/src/routes/meeting-roster.ts)和 [SFU 控制面](../../../server/src/routes/meeting-sfu.ts)。 |
+| 升级、互通与术语 | [069](../../../shared/sql/workspace-template/069-native-meeting.surql) 保留成员信令。[070](../../../shared/sql/workspace-template/070-meeting-v2.surql) 增加日常 V2，[071](../../../shared/sql/workspace-template/071-roster-meeting.surql)、[072](../../../shared/sql/workspace-template/072-roster-meeting-records.surql) 增加名册及账本，[073](../../../shared/sql/workspace-template/073-meeting-evidence-projection.surql) 增加归档投影。查验 [CONTEXT](../../../CONTEXT.md)、上述迁移、会议服务、Web 和原生会议入口，未发现平台会议模型或流程的行业硬编码。ADR 已同步四席 Mesh、独立 SFU、HTTPS 快照轮询、协办人权限和首期 Web 名册范围。 |
+| 存证与 E2EE | 服务端轨道录制需要媒体平面读取轨道。录制模式使用传输加密和封存加密，与 E2EE 互斥。[SFU](../../../server/src/meeting/sfu.ts)、[Track Egress](../../../server/src/meeting/evidence-recording.ts)和[归档](../../../server/src/meeting/evidence-archive.ts)的现状已写入 ADR。录制告知闭环、暂存加密和独立不可变留存仍需验收。工作区 Owner 可经 DDL 改动工作区投影，独立存证域负责可信根核验。 |
+
+工程与安全复核已记录，联合验收仍保留 `ready-for-human`。工程侧待收口名册服务最小权限、管理员资格复核，以及 ADR §6 列出的录制和协议差距。产品侧待负责人确认日常录制启用条件、正式会议的告知与留存策略，以及从已定的首期 Web 名册入口扩展到原生端的上线范围。
