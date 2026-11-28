@@ -23,8 +23,8 @@ Status: ready-for-agent
 - [x] 生产配置未注入 Turnstile secret 时拒绝按“绕过校验”放行（fail-closed 单测覆盖）。
 - [x] 高频请求触发限流返回 `429` 且不消耗业务表配额或生成垃圾记录；无效令牌与错访问码响应形态保持不可区分。
 - [x] 生产试用页渲染 Turnstile。试用 API 拒绝缺失及伪造令牌与非法 Origin，门户开会话接口拒绝缺失令牌。
-- [ ] 前端外部门户与表单完成真实浏览器端到端核验。试用申请需人工通过生产 Turnstile，核对提交回执和落库。
-- [ ] 现有原生名册客户端接入 Turnstile 令牌并完成生产衔接验收。
+- [ ] 前端外部门户与表单完成真实浏览器端到端核验（官网试用表单已于 2026-11-28T06:38:43Z 由真人浏览器通过生产 Turnstile 完成提交、落库隔离校验与清理，回执 `7db09d49a4a7f226cbb1925b0daf1049cc4e553bb648ca7ef7705f73ecf24a07`；外部门户浏览器实测并入 `06` 生产 QA 结案）。
+- [ ] 现有原生名册客户端接入 Turnstile 令牌并完成生产衔接验收（或由老板确认首期试点外部名册参会统一走 Web 端并移交主线 1 M-08）。
 
 **依赖**：无。Cloudflare Turnstile 生产配置已部署。
 
@@ -35,4 +35,5 @@ Status: ready-for-agent
 - 生产 Widget `surreal-ck-maplayer` 及 GitHub `production` 的 6 项运行配置已部署，`https://www.maplayer.top/trial/` 可渲染真实小组件。
 - `POST /api/public/trial-request` 在缺令牌、伪造令牌或非法 Origin 时均返回 `403`。`POST /api/claims-portal/…/session` 缺令牌与无效令牌均统一返回 `401`（`claims-open-failed`）。
 - 2026-11-28 UTC 生产限流实测：向 `POST https://l.maplayer.top/api/public/trial-request`（`Origin: https://www.maplayer.top`，合法 UUID `requestKey` + 伪造 `turnstileToken`）连续发起请求，第 1–12 次均返回 `HTTP 403`（`trial-verification-failed`，带 `Access-Control-Expose-Headers: Retry-After`），**第 13 次精确触发 `HTTP 429`（`public-rate-limited`，`Retry-After: 3`，`Access-Control-Allow-Origin: https://www.maplayer.top`）**，零垃圾记录入库。
-- 单测已覆盖失败关闭、跨 action 与 hostname、重放和边缘/源站限流。余项为真人浏览器人工通过 Turnstile 勾选提交及原生名册客户端 Turnstile 衔接。[发布与验收手册](../../../docs/runbooks/public-entry-protection.md)
+- 2026-11-28T06:38:43Z 老板在真实浏览器访问 `https://www.maplayer.top/trial/` 完成真人 Cloudflare Turnstile 勾选提交，获取收件回执 `7db09d49a4a7f226cbb1925b0daf1049cc4e553bb648ca7ef7705f73ecf24a07`，生产库回读确认 `product_feedback` 与自动生成 `product_requirement` 均正确落库且联系方式零泄漏，随后完成双表清理归零。
+- 单测已覆盖失败关闭、跨 action 与 hostname、重放和边缘/源站限流。余项为外部门户浏览器端复测（并入 `06`）及原生名册客户端 Turnstile 衔接决策。[发布与验收手册](../../../docs/runbooks/public-entry-protection.md)

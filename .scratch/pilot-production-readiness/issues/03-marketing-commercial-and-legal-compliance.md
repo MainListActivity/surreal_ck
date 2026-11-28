@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: ready-for-human
 
 # 03 · 官网商业化文案对齐、隐私/协议上线与半自助试用申请
 
@@ -18,7 +18,7 @@ Status: ready-for-agent
 
 - [x] `www.maplayer.top` 与 `/bankruptcy` 页面不再出现 `fixture` / “内部验收用途” 等工程测试文案，页脚《隐私政策》《用户协议》可点击打开且内容完整（正式法务定稿以负责人/持牌法务确认为准）。
 - [x] 官网明确呈现“破产债权管理 + 外部协作者门户 + 保密日常协同与免安装债权人会议”完整场景与上手路径。
-- [ ] 试用申请表单在真实浏览器提交后，正确写入公司反馈/商机通道并返回收件回执号；缺 Turnstile 令牌、超长输入或高频提交被拒绝；联系方式按既有隐私策略不进入模型上下文（服务端通道、幂等、冲突、联系方式隔离与限流均已实测通过；仅余浏览器端人工点击 Turnstile 复选框一次提交）。
+- [x] 试用申请表单在真实浏览器提交后，正确写入公司反馈/商机通道并返回收件回执号；缺 Turnstile 令牌、超长输入或高频提交被拒绝；联系方式按既有隐私策略不进入模型上下文。
 - [x] `marketing` 构建、类型检查及上线后生产 URL 可访问性检查通过。
 
 **依赖**：表单防滥用接入依赖 `04`（文案与协议页面可先独立完成上线）。  
@@ -35,4 +35,8 @@ Status: ready-for-agent
   3. 同 `requestKey` 修改正文返回 `HTTP 409`（`code: conflict`）；
   4. `company/main.product_feedback` 回读确认 `contact` 字段与 `text` 独立存放、未混入模型文本；
   5. 合成测试记录已从生产库清理并二次回读确认清空（`CLEANUP VERIFIED: True`）。
-- 合规边界：AI 不绕过或代点 Cloudflare Turnstile 人机校验；仅余真人浏览器访问 `https://www.maplayer.top/trial/` 完成一次 Turnstile 勾选提交，及负责人/法务对正式协议文本的最终签字确认。
+- 2026-11-28T06:38:43Z 老板在真实浏览器访问 `https://www.maplayer.top/trial/` 手动通过生产 Cloudflare Turnstile 校验并完成提交，完整贯通 `www.maplayer.top/trial/ → Turnstile Siteverify → l.maplayer.top/api/public/trial-request → company.maplayer.top/api/feedback/surreal_ck → company/main.product_feedback → sck-owner-minute product_requirement`：
+  - 返回 64 位收件回执 `7db09d49a4a7f226cbb1925b0daf1049cc4e553bb648ca7ef7705f73ecf24a07`；
+  - `company/main` 回读确认 `product_feedback:7db09d49a4a7f226cbb1925b0daf1049cc4e553bb648ca7ef7705f73ecf24a07`（`state: linked`，`page: https://www.maplayer.top/trial/`）与自动转化的 `product_requirement:`feedback-7db09d49...``（`state: pending`）均落库成功，且 `contact_leaked_in_text: false`、`contact_leaked_to_draft_requirement: false`（联系方式严格未混入模型文本或需求草稿）；
+  - 测试记录已从 `product_feedback` 与 `product_requirement` 双表清理并二次回读归零（`feedback_remaining: 0`、`requirement_remaining: 0`）。
+- 余项：技术验收项已全部勾完；仅余老板/持牌法务对《隐私政策》与《用户协议》正式文本的最终确认签字后即可标 `Status: done`。
