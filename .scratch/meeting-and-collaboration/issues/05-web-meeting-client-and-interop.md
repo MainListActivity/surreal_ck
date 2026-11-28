@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: ready-for-human
 
 # 05 · Web 浏览器会议端与原生协同 APP 互通
 
@@ -21,8 +21,14 @@ Status: ready-for-agent
 - [ ] 内部成员在 Chrome / Safari 浏览器打开 `l.maplayer.top` 可创建会议并生成会议号，原生协同 APP 输入该会议号可成功入会，反之亦然。
 - [ ] Web 端与原生端之间双向音频、视频、屏幕共享与会中文本消息互通正常，成员列表与离开/结束状态在 3 秒内同步。
 - [ ] 拒绝浏览器摄像头权限时可降级为纯音频入会；离开或主持人结束会议后浏览器媒体占用指示灯立即熄灭。
-- [ ] 模拟微信内置浏览器 UA 打开会议链接时展示清晰的外部浏览器打开引导，不触发未捕获异常。
+- [x] 模拟微信内置浏览器 UA 打开会议链接时展示清晰的外部浏览器打开引导，不触发未捕获异常（浏览器能力单测及本地 Chrome 页面）。
 - [ ] 前端组件/状态机测试 + 真实浏览器与原生端联测记录通过并留档。
 
 **依赖**：`01`、`04`。  
 **验证方式**：前端单测 + 桌面 Chrome/Safari 与 macOS 原生 APP 真实联测 + 手机浏览器实测。
+
+## 本轮证据
+
+- `main` 已合入 Web 会议、直连查询响应解析、管理员使用本人参会票据、连接恢复后清除旧错误提示和主持人结束状态修正。Web 会议套件 49 项覆盖会前权限分类、共享停止、信令、主持人散会和媒体回收。原生信令夹具用完整模板及 069 前模板在公司 fork 实测通过。[PR #308](https://github.com/MainListActivity/surreal_ck/pull/308) · [PR #321](https://github.com/MainListActivity/surreal_ck/pull/321) · [PR #322](https://github.com/MainListActivity/surreal_ck/pull/322) · [PR #334](https://github.com/MainListActivity/surreal_ck/pull/334)
+- Mac 上 Rust 原生媒体对端与 Chrome 各发起一次连接，两轮均实收音频包与两路视频帧。媒体输入为合成信号，协商和 RTP 走本机真实连接。原生身份探测另修复 4.0.1 fork 对缺表查询返回空结果导致的误判。[本轮回执](12-meeting-e2e-and-pilot-acceptance.md#本地验收回执)
+- 待在固定候选包和真实浏览器执行双向建会与入会、音视频/共享/聊天以及 3 秒同步，确认拒绝摄像头后纯音频及退出前设备灯熄灭。需覆盖 Chrome、Safari、手机和对应的原生候选端。
