@@ -151,7 +151,11 @@ describe("quota migration scanners", () => {
           throw new Error("The table 'resource_quota_plan' does not exist");
         }
         if (sql === "SELECT id, table_name FROM sheet ORDER BY id;") {
-          return [[{ id: "sheet:case", table_name: "ent_case" }]];
+          return [[
+            { id: "sheet:case", table_name: "ent_case" },
+            { id: "sheet:ledger", table_name: "enterprise_ledger" },
+            { id: "sheet:roster", table_name: "creditor_roster" },
+          ]];
         }
         return [false];
       },
