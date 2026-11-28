@@ -11,6 +11,7 @@ import {
   FAIL_THRESHOLD,
   FAIL_WINDOW_MS,
   LOCK_MS,
+  MAX_ATTACHMENT_BYTES,
   OPEN_FAILURE_MESSAGE,
   SESSION_TTL_MS,
 } from "./constants";
@@ -18,6 +19,8 @@ import { decodeSessionCookie, encodeSessionCookie, generateToken, hashToken } fr
 import {
   buildClaimsAttachmentKey,
   createAttachmentStorage,
+  getTmpDirAvailableBytes,
+  requiredUploadHeadroomBytes,
   type ClaimsAttachmentStorage,
 } from "./storage";
 import {
@@ -37,6 +40,8 @@ export type ClaimsPortalDeps = {
   getAttachmentConfig?: () => ReturnType<typeof getClaimsAttachmentConfig>;
   /** 注入存储实现；缺省按附件配置创建（CF API 或 S3）。 */
   createStorage?: (config: NonNullable<ReturnType<typeof getClaimsAttachmentConfig>>) => ClaimsAttachmentStorage;
+  /** 注入磁盘可用空间检查（默认 statfs os.tmpdir()）；返回可用字节数。 */
+  checkDiskSpace?: () => Promise<number>;
   now?: () => number;
 };
 
@@ -201,6 +206,7 @@ export class ClaimsPortalService {
   private readonly createStorage: (
     config: NonNullable<ReturnType<typeof getClaimsAttachmentConfig>>,
   ) => ClaimsAttachmentStorage;
+  private readonly checkDiskSpace: () => Promise<number>;
   private readonly now: () => number;
 
   constructor(deps: ClaimsPortalDeps = {}) {
@@ -209,6 +215,7 @@ export class ClaimsPortalService {
     this.getPepper = deps.getPepper ?? (() => getClaimsPortalPepper());
     this.getAttachmentConfig = deps.getAttachmentConfig ?? (() => getClaimsAttachmentConfig());
     this.createStorage = deps.createStorage ?? createAttachmentStorage;
+    this.checkDiskSpace = deps.checkDiskSpace ?? getTmpDirAvailableBytes;
     this.now = deps.now ?? (() => Date.now());
   }
 
@@ -906,6 +913,24 @@ export class ClaimsPortalService {
     requireAttachmentConfig(this.getAttachmentConfig);
   }
 
+  async assertUploadDiskHeadroom(requiredBytes: number): Promise<void> {
+    const availableBytes = await this.checkDiskSpace().catch(() => NaN);
+    if (!Number.isFinite(availableBytes)) {
+      throw new HttpError(503, "upload-storage-check-failed", "暂时无法检查服务器存储空间，请稍后重试");
+    }
+    if (availableBytes < requiredUploadHeadroomBytes(requiredBytes)) {
+      console.warn("[claims-portal] upload disk headroom insufficient", {
+        requiredBytes,
+        availableBytes,
+      });
+      throw new HttpError(
+        507,
+        "upload-insufficient-storage",
+        "服务器暂存空间不足，请稍后重试",
+      );
+    }
+  }
+
   /**
    * 上传附件字节到 R2，并写入 claim_attachment 元数据。
    * 缺配置 → 501；无字节 → 400；对象键 claims/{ws}/{submission}/{attachmentId}/{file}。
@@ -920,6 +945,10 @@ export class ClaimsPortalService {
     bytes?: Uint8Array;
   }): Promise<Record<string, unknown>> {
     const config = requireAttachmentConfig(this.getAttachmentConfig);
+    // 请求体还包含编码和元数据，附件上限按解码后的字节执行。
+    if (input.bytes && input.bytes.byteLength > MAX_ATTACHMENT_BYTES) {
+      throw new HttpError(413, "attachment-too-large", "附件超出大小限制");
+    }
     const meta = assertAttachmentMeta({
       attachmentType: input.attachmentType,
       fileName: input.fileName,
@@ -954,6 +983,9 @@ export class ClaimsPortalService {
       attachmentId,
       fileName: meta.fileName,
     });
+
+    // 写对象存储前按实际字节数复核暂存盘空间；不足则 507，不写 R2 也不落库。
+    await this.assertUploadDiskHeadroom(input.bytes.byteLength);
 
     const storage = this.createStorage(config);
     await storage.putObject({

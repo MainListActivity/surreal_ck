@@ -5,7 +5,8 @@ import type { AppBindings } from "../hono-types";
 import { createPublicProtection } from "../public-entry/protection";
 import { handleError } from "../middleware/error";
 import { ClaimsPortalService, type ClaimsQueryable } from "../claims-portal/service";
-import { SESSION_COOKIE_NAME } from "../claims-portal/constants";
+import { MAX_ATTACHMENT_BYTES, SESSION_COOKIE_NAME } from "../claims-portal/constants";
+import { HttpError } from "../http-error";
 import { createClaimsPortalRoutes } from "./claims-portal";
 import { hashToken } from "../claims-portal/crypto";
 
@@ -181,18 +182,18 @@ function createMemoryDb(store: Store): ClaimsQueryable {
   };
 }
 
-function makeMemoryStorage() {
+function makeMemoryStorage(putObjectError?: HttpError) {
   const objects = new Map<string, { bytes: Uint8Array; contentType: string }>();
   return {
     objects,
     storage: {
       async putObject(input: { key: string; bytes: Uint8Array; contentType: string }) {
+        if (putObjectError) throw putObjectError;
         objects.set(input.key, { bytes: input.bytes, contentType: input.contentType });
       },
       async getObject(key: string) {
         const hit = objects.get(key);
         if (!hit) {
-          const { HttpError } = await import("../http-error");
           throw new HttpError(404, "attachment-object-missing", "missing");
         }
         return {
@@ -208,6 +209,8 @@ function makeMemoryStorage() {
 function makeApp(options?: {
   pepper?: string | null;
   attachmentConfigured?: boolean;
+  checkDiskSpace?: () => Promise<number>;
+  putObjectError?: HttpError;
   user?: typeof testUser;
 }) {
   const store: Store = {
@@ -219,7 +222,7 @@ function makeApp(options?: {
     seq: 0,
   };
   const db = createMemoryDb(store);
-  const memoryStorage = makeMemoryStorage();
+  const memoryStorage = makeMemoryStorage(options?.putObjectError);
   const service = new ClaimsPortalService({
     getSession: async () => db,
     resolveWorkspace: async (slug) => (slug === "case-a" ? { dbName: "ws_case_a" } : null),
@@ -235,6 +238,7 @@ function makeApp(options?: {
           }
         : null,
     createStorage: () => memoryStorage.storage,
+    checkDiskSpace: options?.checkDiskSpace ?? (async () => Number.MAX_SAFE_INTEGER),
   });
   const app = new Hono<AppBindings>();
   app.onError(handleError);
@@ -246,6 +250,33 @@ function makeApp(options?: {
     }),
   );
   return { app, store, service, memoryStorage };
+}
+
+async function openAttachmentUpload(app: Hono<AppBindings>) {
+  const mint = await app.request("/api/workspaces/case-a/claims-portal/tokens", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ rosterId: "creditor_roster:r1" }),
+  });
+  expect(mint.status).toBe(200);
+  const { tokenPlaintext } = await mint.json<{ tokenPlaintext: string }>();
+  const open = await app.request(`/api/claims-portal/case-a/${tokenPlaintext}/session`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "张三", identityCode: "ID-001" }),
+  });
+  expect(open.status).toBe(200);
+  const cookie = open.headers.get("set-cookie")!.split(";")[0]!;
+  return { path: `/api/claims-portal/case-a/${tokenPlaintext}/attachments`, cookie };
+}
+
+function jsonAttachment(bytes: Uint8Array): string {
+  return JSON.stringify({
+    attachmentType: "contract",
+    fileName: "a.pdf",
+    contentType: "application/pdf",
+    bytesBase64: Buffer.from(bytes).toString("base64"),
+  });
 }
 
 describe("claims-portal routes", () => {
@@ -534,6 +565,117 @@ describe("claims-portal routes", () => {
     expect(download.headers.get("cache-control")).toContain("no-store");
     expect(download.headers.get("content-disposition")).toContain("a.pdf");
     expect(await download.text()).toBe("%PDF-1.4 mock");
+  });
+
+  test.each(["multipart", "base64"] as const)("%s 文件 20 MiB 可上传，超出一个字节返回 413", async (format) => {
+    const { app, store, memoryStorage } = makeApp({ attachmentConfigured: true });
+    const { path, cookie } = await openAttachmentUpload(app);
+    let declaredBytes = 0;
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(request) {
+        declaredBytes = Number(request.headers.get("content-length"));
+        return app.fetch(request);
+      },
+    });
+    try {
+      for (const size of [MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_BYTES + 1]) {
+        const bytes = new Uint8Array(size);
+        const headers = new Headers({ cookie });
+        let body: FormData | string;
+        if (format === "multipart") {
+          const form = new FormData();
+          form.set("attachmentType", "contract");
+          form.set("file", new File([bytes], "a.pdf", { type: "application/pdf" }));
+          body = form;
+        } else {
+          headers.set("content-type", "application/json");
+          body = jsonAttachment(bytes);
+        }
+        const res = await fetch(new URL(path, server.url), { method: "POST", headers, body });
+        expect(declaredBytes).toBeGreaterThan(MAX_ATTACHMENT_BYTES);
+        if (size === MAX_ATTACHMENT_BYTES) {
+          expect(res.status).toBe(200);
+          expect((await res.json()).attachment.byteSize).toBe(MAX_ATTACHMENT_BYTES);
+        } else {
+          expect(res.status).toBe(413);
+          expect((await res.json()).error.code).toBe("attachment-too-large");
+        }
+      }
+    } finally {
+      server.stop(true);
+    }
+    expect(memoryStorage.objects.size).toBe(1);
+    expect(store.attachments).toHaveLength(1);
+  });
+
+  test("声明的请求体超限时，在磁盘查询和解析前返回 413", async () => {
+    let probes = 0;
+    const { app, store, memoryStorage } = makeApp({
+      attachmentConfigured: true,
+      checkDiskSpace: async () => { probes++; return 0; },
+    });
+    const { path, cookie } = await openAttachmentUpload(app);
+    const res = await app.request(path, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json", "content-length": String(2 * MAX_ATTACHMENT_BYTES) },
+      body: "invalid json",
+    });
+    expect(res.status).toBe(413);
+    expect((await res.json()).error.code).toBe("attachment-too-large");
+    expect(probes).toBe(0);
+    expect(memoryStorage.objects.size).toBe(0);
+    expect(store.attachments).toHaveLength(0);
+  });
+
+  test.each([1, 2])("第 %i 次磁盘检查不足时返回 507，且对象和元数据均未写入", async (failingProbe) => {
+    let probes = 0;
+    const { app, store, memoryStorage } = makeApp({
+      attachmentConfigured: true,
+      checkDiskSpace: async () => ++probes === failingProbe ? 0 : Number.MAX_SAFE_INTEGER,
+    });
+    const { path, cookie } = await openAttachmentUpload(app);
+    const res = await app.request(path, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: jsonAttachment(new Uint8Array(16)),
+    });
+    expect(res.status).toBe(507);
+    expect((await res.json()).error.code).toBe("upload-insufficient-storage");
+    expect(probes).toBe(failingProbe);
+    expect(memoryStorage.objects.size).toBe(0);
+    expect(store.attachments).toHaveLength(0);
+  });
+
+  test("磁盘查询故障返回固定 503 文案", async () => {
+    const { app, store } = makeApp({
+      attachmentConfigured: true,
+      checkDiskSpace: async () => { throw new Error("mock-private-probe-details"); },
+    });
+    const { path, cookie } = await openAttachmentUpload(app);
+    const res = await app.request(path, { method: "POST", headers: { cookie }, body: "invalid json" });
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.error.code).toBe("upload-storage-check-failed");
+    expect(JSON.stringify(body)).not.toContain("mock-private-probe-details");
+    expect(store.attachments).toHaveLength(0);
+  });
+
+  test("对象存储 507 透传，附件元数据未写入", async () => {
+    const { app, store } = makeApp({
+      attachmentConfigured: true,
+      putObjectError: new HttpError(507, "attachment-storage-full", "附件存储空间不足，请稍后重试"),
+    });
+    const { path, cookie } = await openAttachmentUpload(app);
+    const res = await app.request(path, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: jsonAttachment(new Uint8Array(16)),
+    });
+    expect(res.status).toBe(507);
+    expect((await res.json()).error.code).toBe("attachment-storage-full");
+    expect(store.attachments).toHaveLength(0);
   });
 });
 

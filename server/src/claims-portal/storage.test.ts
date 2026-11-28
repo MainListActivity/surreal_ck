@@ -3,6 +3,7 @@ import {
   buildClaimsAttachmentKey,
   createAttachmentStorage,
   createCloudflareApiAttachmentStorage,
+  createS3AttachmentStorage,
 } from "./storage";
 
 describe("claims-portal storage", () => {
@@ -97,6 +98,99 @@ describe("claims-portal storage", () => {
       expect(calls[1]?.method).toBe("GET");
     } finally {
       globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("CF REST 容量错误和传输失败均返回固定文案", async () => {
+    const originalFetch = globalThis.fetch;
+    const storage = createCloudflareApiAttachmentStorage({
+      accountId: "test-account",
+      accessKeyId: "test-key",
+      secretAccessKey: "test-value",
+      bucket: "test-bucket",
+      endpoint: "https://api.cloudflare.com",
+    });
+    const input = { key: "a.pdf", bytes: new Uint8Array(16), contentType: "application/pdf" };
+    const privateDetails = "mock-private-upstream-details";
+    try {
+      for (const [status, body, expectedStatus, code] of [
+        [507, privateDetails, 507, "attachment-storage-full"],
+        [400, `{"code":"QuotaExceeded","message":"${privateDetails}"}`, 507, "attachment-storage-full"],
+        [413, privateDetails, 413, "attachment-too-large"],
+        [500, privateDetails, 502, "attachment-upload-failed"],
+      ] as const) {
+        globalThis.fetch = (async () => new Response(body, { status })) as unknown as typeof fetch;
+        const error = await storage.putObject(input).catch((cause: unknown) => cause);
+        expect(error).toMatchObject({ status: expectedStatus, code });
+        expect(String(error)).not.toContain(privateDetails);
+      }
+      globalThis.fetch = (async () => { throw new Error(privateDetails); }) as unknown as typeof fetch;
+      await expect(storage.putObject(input)).rejects.toMatchObject({
+        status: 502,
+        code: "attachment-upload-failed",
+        message: "附件上传失败，请稍后重试",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("S3 签名 PUT 发送原始字节，映射裸 HTTP 状态与已知错误码", async () => {
+    const results = [
+      [507, "full", 507, "attachment-storage-full"],
+      [400, "<Error><Code>InsufficientStorage</Code></Error>", 507, "attachment-storage-full"],
+      [413, "too large", 413, "attachment-too-large"],
+      [400, "<Error><Code>EntityTooLarge</Code></Error>", 413, "attachment-too-large"],
+      [500, "mock-private-signed-url-details", 502, "attachment-upload-failed"],
+    ] as const;
+    const uploads: Array<{ method: string; path: string; mime: string | null; bytes: Uint8Array; signed: boolean }> = [];
+    const upstream = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      async fetch(req) {
+        const url = new URL(req.url);
+        uploads.push({
+          method: req.method,
+          path: decodeURIComponent(url.pathname),
+          mime: req.headers.get("content-type"),
+          bytes: new Uint8Array(await req.arrayBuffer()),
+          signed: url.searchParams.has("X-Amz-Signature"),
+        });
+        const result = results[uploads.length - 1];
+        return result ? new Response(result[1], { status: result[0] }) : new Response(null);
+      },
+    });
+    try {
+      const storage = createS3AttachmentStorage({
+        accountId: "test-account",
+        accessKeyId: "test-key",
+        secretAccessKey: "test-value",
+        bucket: "test-bucket",
+        endpoint: `http://127.0.0.1:${upstream.port}`,
+      });
+      const input = {
+        key: "claims/example/合同 1.pdf",
+        bytes: new Uint8Array([37, 80, 68, 70]),
+        contentType: "application/pdf",
+      };
+      for (const [, , status, code] of results) {
+        const error = await storage.putObject(input).catch((cause: unknown) => cause);
+        expect(error).toMatchObject({ status, code });
+        expect(String(error)).not.toContain("mock-private-signed-url-details");
+      }
+      await storage.putObject(input);
+      expect(uploads).toHaveLength(results.length + 1);
+      for (const upload of uploads) {
+        expect(upload).toEqual({
+          method: "PUT",
+          path: `/test-bucket/${input.key}`,
+          mime: input.contentType,
+          bytes: input.bytes,
+          signed: true,
+        });
+      }
+    } finally {
+      upstream.stop(true);
     }
   });
 });

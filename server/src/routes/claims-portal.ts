@@ -10,13 +10,18 @@ import { HttpError } from "../http-error";
 import { requireOidc } from "../middleware/oidc";
 import { ClaimsPortalService } from "../claims-portal/service";
 import { renderClaimRecordPdf } from "../claims-portal/record-pdf";
-import { OPEN_FAILURE_MESSAGE, SESSION_COOKIE_NAME } from "../claims-portal/constants";
+import { MAX_ATTACHMENT_BYTES, OPEN_FAILURE_MESSAGE, SESSION_COOKIE_NAME } from "../claims-portal/constants";
 
 export type ClaimsPortalRouteOptions = {
   protection?: typeof publicProtection;
   service?: ClaimsPortalService;
   requireUser?: () => MiddlewareHandler<AppBindings>;
 };
+
+/** 两种上传格式都需要为文件名、类型和编码信封留出空间。 */
+const ATTACHMENT_REQUEST_OVERHEAD_BYTES = 64 * 1024;
+const MAX_MULTIPART_ATTACHMENT_REQUEST_BYTES = MAX_ATTACHMENT_BYTES + ATTACHMENT_REQUEST_OVERHEAD_BYTES;
+const MAX_JSON_ATTACHMENT_REQUEST_BYTES = 4 * Math.ceil(MAX_ATTACHMENT_BYTES / 3) + ATTACHMENT_REQUEST_OVERHEAD_BYTES;
 
 function assertAdminScope(user: AppBindings["Variables"]["user"], dbName: string): void {
   const raw = user.raw as { db?: unknown; ac?: unknown };
@@ -218,13 +223,22 @@ export function createClaimsPortalRoutes(
     // 缺附件存储配置时先 fail-closed，不把 multipart/字节体读入内存再 501。
     service.assertAttachmentStorageConfigured();
     const contentType = c.req.header("content-type") ?? "";
+    const multipart = contentType.startsWith("multipart/form-data");
+    const maxRequestBytes = multipart ? MAX_MULTIPART_ATTACHMENT_REQUEST_BYTES : MAX_JSON_ATTACHMENT_REQUEST_BYTES;
+    const length = Number(c.req.header("content-length"));
+    if (length > maxRequestBytes) {
+      throw new HttpError(413, "attachment-too-large", "附件请求超出大小限制");
+    }
+    const declaredBytes = Number.isSafeInteger(length) && length > 0 ? length : 0;
+    await service.assertUploadDiskHeadroom(declaredBytes);
+
     let attachmentType: unknown;
     let fileName: unknown;
     let mime: unknown;
     let byteSize: unknown;
     let bytes: Uint8Array | undefined;
 
-    if (contentType.includes("multipart/form-data")) {
+    if (multipart) {
       const form = await c.req.parseBody();
       attachmentType = form.attachmentType ?? form.attachment_type;
       const file = form.file;

@@ -1,6 +1,33 @@
+import { statfs } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { S3Client } from "bun";
 import { HttpError } from "../http-error";
 import type { ClaimsAttachmentConfig } from "./config";
+
+/** 上传暂存盘最低可用空间（64 MiB）。 */
+const UPLOAD_DISK_MIN_HEADROOM_BYTES = 64 * 1024 * 1024;
+
+/** 上传所需 headroom：至少 64MB，或待写字节数的 2 倍。 */
+export function requiredUploadHeadroomBytes(requiredBytes: number): number {
+  return Math.max(UPLOAD_DISK_MIN_HEADROOM_BYTES, requiredBytes * 2);
+}
+
+/** os.tmpdir() 所在卷可用字节数（bavail * bsize）。 */
+export async function getTmpDirAvailableBytes(): Promise<number> {
+  const stats = await statfs(tmpdir());
+  return Number(stats.bavail) * Number(stats.bsize);
+}
+
+/** 上游错误正文只用于识别已知容量错误。 */
+function mapAttachmentStorageUploadError(status: number | null, detail = ""): HttpError {
+  if (status === 507 || (status !== 413 && /quota ?exceeded|insufficient ?storage/i.test(detail))) {
+    return new HttpError(507, "attachment-storage-full", "附件存储空间不足，请稍后重试");
+  }
+  if (status === 413 || /entity ?too ?large/i.test(detail)) {
+    return new HttpError(413, "attachment-too-large", "附件超出大小限制");
+  }
+  return new HttpError(502, "attachment-upload-failed", "附件上传失败，请稍后重试");
+}
 
 export type PutObjectInput = {
   key: string;
@@ -19,6 +46,26 @@ export type ClaimsAttachmentStorage = {
   putObject: (input: PutObjectInput) => Promise<void>;
   getObject: (key: string) => Promise<GetObjectResult>;
 };
+
+async function putAttachment(
+  url: string,
+  input: PutObjectInput,
+  headers: Record<string, string> = {},
+): Promise<void> {
+  const response = await fetch(url, {
+    method: "PUT",
+    redirect: "error",
+    headers: { ...headers, "Content-Type": input.contentType },
+    body: input.bytes,
+  }).catch(() => { throw mapAttachmentStorageUploadError(null); });
+
+  if (!response.ok) {
+    const detail = response.status === 507 || response.status === 413
+      ? ""
+      : await response.text().catch(() => "");
+    throw mapAttachmentStorageUploadError(response.status, detail);
+  }
+}
 
 function encodeObjectKeyPath(key: string): string {
   return key
@@ -65,22 +112,7 @@ export function createCloudflareApiAttachmentStorage(
 
   async function putObject(input: PutObjectInput): Promise<void> {
     const url = `${base}/${encodeObjectKeyPath(input.key)}`;
-    const response = await fetch(url, {
-      method: "PUT",
-      headers: {
-        Authorization: `Bearer ${config.secretAccessKey}`,
-        "Content-Type": input.contentType,
-      },
-      body: input.bytes,
-    });
-    if (!response.ok) {
-      const detail = await response.text().catch(() => "");
-      throw new HttpError(
-        502,
-        "attachment-upload-failed",
-        `R2 upload failed (${response.status})${detail ? `: ${detail.slice(0, 200)}` : ""}`,
-      );
-    }
+    await putAttachment(url, input, { Authorization: `Bearer ${config.secretAccessKey}` });
   }
 
   async function getObject(key: string): Promise<GetObjectResult> {
@@ -118,12 +150,14 @@ export function createS3AttachmentStorage(config: ClaimsAttachmentConfig): Claim
   });
 
   async function putObject(input: PutObjectInput): Promise<void> {
+    // Bun S3Client.write 的错误没有 HTTP 状态。使用签名 PUT 读取 507/413。
+    let url: string;
     try {
-      await client.write(input.key, input.bytes, { type: input.contentType });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "unknown";
-      throw new HttpError(502, "attachment-upload-failed", `R2 S3 upload failed: ${message.slice(0, 200)}`);
+      url = client.presign(input.key, { method: "PUT", expiresIn: 900 });
+    } catch {
+      throw mapAttachmentStorageUploadError(null);
     }
+    await putAttachment(url, input);
   }
 
   async function getObject(key: string): Promise<GetObjectResult> {

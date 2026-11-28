@@ -264,6 +264,7 @@ function makeService(options?: {
           }
         : null,
     createStorage: () => memoryStorage.storage,
+    checkDiskSpace: async () => Number.MAX_SAFE_INTEGER,
     now: options?.now,
   });
   return { service, store, db, memoryStorage };
