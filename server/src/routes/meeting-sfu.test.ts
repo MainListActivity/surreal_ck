@@ -135,10 +135,10 @@ function rosterTelemetryFixture(recordTrack?: ConstructorParameters<typeof Priva
 test("受控房间要求主持人与访客确认，只有受控房间派发已签名轨道录制事件", async () => {
   const tracks: string[] = [];
   const { service, host, guest, now, post, app, body } = rosterTelemetryFixture(async (_room, track) => { tracks.push(track); });
-  const events: { id: string; kind: string; at: number; subject: string }[] = [];
+  const events: { id: string; kind: string; at: number; subject?: string }[] = [];
   try {
     const managed = await service.startRoster(host, 2, undefined, {
-      append: async (id, kind, at, { subject }) => { events.push({ id, kind, at, subject }); },
+      append: async (id, kind, at, payload) => { events.push({ id, kind, at, subject: "subject" in payload ? payload.subject : undefined }); },
     });
     const endpoint = `/api/meeting/sfu/rooms/${managed.id}`;
     const headers = { Authorization: "roster-host|workspace1", "Content-Type": "application/json" };

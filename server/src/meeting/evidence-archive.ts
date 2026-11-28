@@ -32,7 +32,8 @@ export class MeetingEvidenceArchive {
   ) { this.ledger = new MeetingEvidenceLedger(vault); }
 
   append(workspace: string, meeting: string, event: EvidenceEvent) {
-    return this.ledger.append(scoped(workspace, meeting), event);
+    // 取消发布可能在散会后到达，已封存的账本无需再收录该通知。
+    return this.ledger.append(scoped(workspace, meeting), event, { whileOpen: event.kind === "track-unpublished" });
   }
 
   events(workspace: string, meeting: string) {

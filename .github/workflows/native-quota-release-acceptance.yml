@@ -329,6 +329,9 @@ jobs:
           done
           echo "container=$container" >> "$GITHUB_OUTPUT"
 
+      - name: 安装存证回归使用的 FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
       - name: Run complete application gates
         env:
           NATIVE_QUOTA_E2E_BINARY: ${{ steps.cli.outputs.binary }}

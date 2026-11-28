@@ -74,7 +74,7 @@ export class MeetingEvidenceLedger {
     }
   }
 
-  private async appendEntry(scope: EvidenceScope, event: EvidenceEvent): Promise<void> {
+  private async appendEntry(scope: EvidenceScope, event: EvidenceEvent, whileOpen = false): Promise<void> {
     for (;;) {
       const { records, tail } = await this.entries(scope);
       const existing = records.find((item) => item.event.id === event.id);
@@ -82,17 +82,20 @@ export class MeetingEvidenceLedger {
         if (evidenceJson(existing.event).equals(evidenceJson(event))) return;
         throw new Error("会议存证事件标识冲突");
       }
-      if (tail.sealed) throw new Error("会议存证账本已封存");
+      if (tail.sealed) {
+        if (whileOpen) return;
+        throw new Error("会议存证账本已封存");
+      }
       const entry = { sequence: tail.sequence + 1, previous: tail.digest, event };
       if (await this.vault.create(scope, ledgerPath(entry.sequence), evidenceJson(entry))) return;
     }
   }
 
-  append(scope: EvidenceScope, event: EvidenceEvent): Promise<void> {
+  append(scope: EvidenceScope, event: EvidenceEvent, { whileOpen = false } = {}): Promise<void> {
     if (!event.id || event.id === "seal" || !event.kind || event.kind === "seal" || !Number.isFinite(Date.parse(event.at))) {
       throw new Error("会议存证事件无效");
     }
-    return this.appendEntry(scope, event);
+    return this.appendEntry(scope, event, whileOpen);
   }
 
   async events(scope: EvidenceScope): Promise<EvidenceEvent[]> {

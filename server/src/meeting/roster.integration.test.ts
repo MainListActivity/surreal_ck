@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { chown, mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ENTITY_TABLE_MEMBER_PERMISSIONS } from "@surreal-ck/shared";
@@ -7,8 +8,8 @@ import { loadTemplateScripts } from "@surreal-ck/shared/workspace-template";
 import { extractNativeQuotaError } from "@surreal-ck/shared/native-quota";
 import { PUBLIC_ACTION } from "@surreal-ck/shared/public-entry";
 import { Hono } from "hono";
-import { EgressClient } from "livekit-server-sdk";
-import { SignJWT, exportJWK, generateKeyPair, jwtVerify } from "jose";
+import { DirectFileOutput, EgressClient, EgressInfo, EgressStatus, ParticipantInfo, Room, RoomServiceClient, TwirpError } from "livekit-server-sdk";
+import { SignJWT, decodeJwt, exportJWK, generateKeyPair, jwtVerify } from "jose";
 import { DateTime, RecordId, Surreal, Table, type SurrealSession } from "surrealdb";
 import { createCallerSession } from "../ai/caller-session";
 import { migrateAllWorkspaces } from "../db/migration-runner";
@@ -24,7 +25,7 @@ import { recordingBrowser } from "./evidence-browser-fixture";
 import { privateEvidenceDirectory } from "./evidence-filesystem";
 import { MeetingEvidenceLedger, verifyEvidenceArtifact } from "./evidence-ledger";
 import { MeetingTrackRecording } from "./evidence-recording";
-import { EvidenceVault, deriveEvidenceWorkspaceKey } from "./evidence-vault";
+import { EvidenceVault, deriveEvidenceWorkspaceKey, evidenceHash } from "./evidence-vault";
 import { RosterMeetingService } from "./roster";
 import { callRosterGateway, RosterMeetingGateway } from "./roster-gateway";
 import { PrivateMeetingSfu, type RosterSfuEvent, type SfuActor } from "./sfu";
@@ -693,20 +694,218 @@ test.skipIf(!binary)("真实 fork：会议存证投影拒绝改删且独立核�
     await expect(archive.status(database, evidenceMeeting)).rejects.toMatchObject({ status: 409 });
   }), 30_000);
 
+for (const [title, scenario] of [
+  ["短轨启动接口返回未找到后，重建录制服务仍可封存、下载并验真", "short"],
+  ["短轨异步报告未找到且取消发布通知迟到，仍可封存", "late-end"],
+  ["磁盘写入失败时管理员仍收到 409", "disk"],
+  ["前一次起录失败不能被随后返回的未找到覆盖", "retry"],
+  ["已开始采集的轨道异常中断时管理员仍收到 409", "interrupted"],
+  ["超过短轨窗口的未找到仍返回 409", "long"],
+  ["没有取消发布凭据的未找到仍返回 409", "no-end"],
+] as const) {
+  test.skipIf(!binary)(`名册存证回归：${title}`, () => withFork(async ({ root, rootSession, owner, login, gateway }) => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "meeting-track-regression-")));
+    const spool = join(directory, "spool");
+    const sealed = join(directory, "sealed");
+    const key = "egress-fixture";
+    const secret = crypto.randomUUID();
+    const endpoint = "http://127.0.0.1:7880";
+    const signalUrl = "http://127.0.0.1:7881";
+    const publishedAt = Math.floor(Date.now() / 1000) * 1000;
+    let now = publishedAt - 1000;
+    const short = "TR_short";
+    const recorded = "TR_recorded";
+    const results: EgressInfo[] = [];
+    const canSeal = scenario === "short" || scenario === "late-end";
+    const notFound = () => new TwirpError("Not Found", "track not found", 404, "not_found");
+    let shortAttempts = 0;
+    let stopCalls = 0;
+    let shortListReads = 0;
+    class FixtureEgress extends EgressClient {
+      override async startTrackEgress(room: string, output: DirectFileOutput | string, track: string) {
+        const info = new EgressInfo({ egressId: `EG_${track}`, roomName: room, request: {
+          case: "track", value: { roomName: room, trackId: track },
+        } });
+        if (track === recorded) {
+          if (typeof output === "string") throw new Error("测试夹具需要文件输出");
+          const filename = output.filepath + ".ogg";
+          expect(Bun.spawnSync(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+            "-c:a", "libopus", filename]).exitCode).toBe(0);
+          info.status = EgressStatus.EGRESS_COMPLETE;
+          info.fileResults = new EgressInfo({ fileResults: [{ filename, startedAt: BigInt(publishedAt) * 1_000_000n }] }).fileResults;
+        } else if (scenario === "late-end") {
+          info.status = EgressStatus.EGRESS_STARTING;
+        } else if (scenario === "interrupted") {
+          info.status = EgressStatus.EGRESS_FAILED;
+          info.errorCode = 500;
+          info.error = "recording ended early: connection to room failed";
+          info.startedAt = BigInt(publishedAt) * 1_000_000n;
+        } else {
+          if (scenario === "disk" || (scenario === "retry" && ++shortAttempts === 1)) {
+            throw new TwirpError("Internal Server Error", "no space left on device", 500, "internal");
+          }
+          throw notFound();
+        }
+        results.push(info);
+        return info;
+      }
+      override async listEgress() {
+        const pending = results.find(({ status }) => status === EgressStatus.EGRESS_STARTING);
+        if (pending && ++shortListReads > 1) {
+          pending.status = EgressStatus.EGRESS_FAILED;
+          pending.errorCode = 404;
+          pending.error = `track ${short} not found`;
+        }
+        return results;
+      }
+      override async stopEgress() {
+        stopCalls++;
+        throw new Error("测试轨道应在分配录制时自行返回终态");
+      }
+    }
+    const egress = new FixtureEgress(endpoint, key, secret);
+    const recording = new MeetingTrackRecording(spool, egress);
+    const media = new PrivateMeetingSfu({ privateUrl: endpoint, signalUrl, key, secret, maxSeats: 8 }, {
+      createRoom: async ({ name }) => new Room({ name }),
+      listRooms: async () => [],
+      deleteRoom: async () => {},
+      removeParticipant: async () => {},
+      updateParticipant: async () => new ParticipantInfo(),
+    }, () => now, recording.start.bind(recording));
+    try {
+      await mkdir(spool);
+      await chown(spool, process.getuid!(), process.getgid!());
+      expect(Bun.spawnSync(["chmod", "2770", spool]).exitCode).toBe(0);
+      await mkdir(sealed);
+      const staging = privateEvidenceDirectory(join(directory, "vault"));
+      const vault = new EvidenceVault(staging, deriveEvidenceWorkspaceKey(crypto.getRandomValues(new Uint8Array(32))));
+      const query = gateway.session.bind(gateway);
+      const archive = new MeetingEvidenceArchive(vault, "fixture", 60, query, () => now);
+      const jobs = archive.finalization((job) => service.finalizeEvidence(job));
+      const collector = new MeetingTrackRecording(spool, egress);
+      const service: RosterMeetingService = new RosterMeetingService({
+        media, recording: collector, evidence: archive, evidenceJobs: jobs, getSession: query,
+        readQuota: (db) => new SurrealNativeQuotaClient(root).info(db), getPepper: () => pepper, now: () => now,
+      });
+      const app = new Hono().onError(handleError).route("/", createMeetingRosterRoutes({
+        service, evidence: archive, origin, workspaceScope: createWorkspaceScopeModule({ getDbSession: rootSession, namespace: "main" }),
+        requireUser: () => async (c, next) => {
+          c.set("user", { subject: "fixture-admin", rawToken: "", raw: { db: database, ac: "admin" } });
+          await next();
+        },
+      })).route("/", createMeetingSfuRoutes({
+        service: media,
+        config: { NODE_ENV: "test", MEETING_SFU_PRIVATE_URL: endpoint, MEETING_SFU_SIGNAL_URL: signalUrl,
+          MEETING_SFU_KEY: key, MEETING_SFU_SECRET: secret, MEETING_SFU_MAX_SEATS: 8 },
+        workspaceScope: { async resolveCollaborationScope() { return { kind: "forbidden" }; } },
+      }));
+      await login();
+      const host = { workspace: database, subject: "fixture-admin", name: "主持人", expiresAt: now + 60_000, workspaceAdmin: true };
+      const { id: meeting } = await service.create(owner, host.subject, { title: "短轨回归", scheduled_at: new Date(now).toISOString(),
+        sheet_id: "sheet:roster", display_field: "name", check_field: "check", check_mode: "suffix4", admission: "direct", concurrency: "replace" });
+      const room = await service.start(host, meeting);
+      const { token } = await media.credentials(host, room.id, true);
+      const trackEvent = async (event: "track_published" | "track_unpublished", track: string, at = now) => {
+        const body = JSON.stringify({ event, room: { name: `ck-meeting-${room.id}` }, createdAt: String(at / 1000),
+          participant: { identity: decodeJwt(token).sub, sid: "PA_fixture" }, track: { sid: track, type: "AUDIO", source: "MICROPHONE" } });
+        const signature = await new SignJWT({ sha256: createHash("sha256").update(body).digest("base64") })
+          .setProtectedHeader({ alg: "HS256" }).setIssuer(key).setExpirationTime("1m").sign(new TextEncoder().encode(secret));
+        return app.request("/internal/meeting/sfu/livekit-webhook", { method: "POST", body, headers: { authorization: signature } });
+      };
+      now = publishedAt;
+      expect((await trackEvent("track_published", recorded)).status).toBe(204);
+      const publish = await trackEvent("track_published", short);
+      const endedAt = publishedAt + (scenario === "long" ? 6000 : 1000);
+      now = endedAt;
+      if (scenario !== "late-end" && scenario !== "no-end") {
+        expect((await trackEvent("track_unpublished", short)).status).toBe(204);
+      }
+      if (scenario === "retry") {
+        expect(publish.status).toBe(500);
+        expect((await trackEvent("track_published", short, publishedAt)).status).toBe(204);
+      }
+      now += 2000;
+      await service.end(host, meeting);
+      if (scenario === "late-end") expect((await trackEvent("track_unpublished", short, endedAt)).status).toBe(204);
+      await jobs.resume();
+      const evidencePath = `${admin}/${encodeURIComponent(meeting)}/evidence`;
+      const headers = { authorization: "fixture" };
+      const status = await app.request(evidencePath + "/status", { headers });
+      const scope = { workspace: database, meeting: evidenceHash(Buffer.from(meeting)).toString("hex") };
+      if (!canSeal) {
+        expect(status.status).toBe(409);
+        await jobs.resume();
+        expect((await app.request(evidencePath + "/grant", { method: "POST", headers })).status).toBe(409);
+        expect(await vault.read(scope, "root.sha256")).toBeNull();
+        if (scenario === "disk" || scenario === "retry") {
+          expect((await archive.events(database, meeting)).some(({ kind }) => kind === "track-egress-start-failed")).toBe(true);
+        }
+        return;
+      }
+      expect(status.status).toBe(200);
+      expect(publish.status).toBe(204);
+      expect(stopCalls).toBe(0);
+      const rootFromVault = (await vault.read(scope, "root.sha256"))!.toString("hex");
+      const grant = await app.request(evidencePath + "/grant", { method: "POST", headers });
+      expect(grant.status).toBe(200);
+      const { url } = await grant.json() as { url: string };
+      const downloaded = await app.request(url, { headers });
+      expect(downloaded.status).toBe(200);
+      const tar = join(directory, "archive.tar");
+      await Bun.write(tar, await downloaded.arrayBuffer());
+      const unpack = Bun.spawnSync(["tar", "-xf", tar, "-C", sealed]);
+      expect(unpack.exitCode).toBe(0);
+      const ledger = await Bun.file(join(sealed, "ledger.json")).json() as { event: { kind: string; payload: unknown } }[];
+      expect(ledger.map(({ event }) => event)).toContainEqual(expect.objectContaining({
+        kind: "track-recording-skipped", at: new Date(endedAt).toISOString(), payload: {
+          track: short, reason: "ended-before-recording", publishedAt: new Date(publishedAt).toISOString(),
+        },
+      }));
+      expect(await Bun.file(join(sealed, `${recorded}-${publishedAt}-audio.ogg`)).exists()).toBe(true);
+      const verify = () => Bun.spawnSync(["python3", "../scripts/verify-meeting-evidence.py", sealed, "--trusted-root", rootFromVault]);
+      expect(verify().exitCode).toBe(0);
+      const path = join(sealed, "ledger.json");
+      const bytes = Buffer.from(await Bun.file(path).arrayBuffer());
+      const reason = bytes.indexOf("ended-before-recording");
+      expect(reason).toBeGreaterThanOrEqual(0);
+      bytes[reason] ^= 1;
+      await Bun.write(path, bytes);
+      const tampered = verify();
+      expect(tampered.exitCode).toBe(1);
+      expect(tampered.stderr.toString()).toContain("ledger.json");
+    } finally {
+      media.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }), 30_000);
+}
+
 const { M13_TEST_BROWSER: chrome, M13_TEST_WEBHOOK_PORT: hookPort, M13_TEST_ENDPOINT: endpoint,
   M13_TEST_KEY: key, M13_TEST_SECRET: secret, M13_TEST_SPOOL: spool } = process.env;
 
 test.skipIf(!binary || !chrome || !hookPort || !endpoint || !key || !secret || !spool)(
-  "真实名册存证：共享屏幕、重新入会、点名、表决异议与视频时间轴相差不超过两秒",
+  "真实名册存证：短发言撤麦后仍可封存，共享、重入、点名和表决时间轴相差不超过两秒",
   () => withFork(async ({ root, owner, login, gateway }) => {
     const directory = await mkdtemp(join(tmpdir(), "meeting-alignment-"));
     const vault = new EvidenceVault(privateEvidenceDirectory(directory), deriveEvidenceWorkspaceKey(Buffer.alloc(32, 7)));
     const query = gateway.session.bind(gateway);
     const archive = new MeetingEvidenceArchive(vault, "fixture", 60, query);
-    const recording = new MeetingTrackRecording(spool!, new EgressClient(endpoint!, key!, secret!));
+    const egress = new EgressClient(endpoint!, key!, secret!);
+    const api = new RoomServiceClient(endpoint!, key!, secret!);
+    const recording = new MeetingTrackRecording(spool!, egress);
     const signalUrl = "http://127.0.0.1:" + hookPort;
+    const releaseShortStart = Promise.withResolvers<void>();
+    const shortStart = Promise.withResolvers<string>();
+    let holdNextAudio = false;
     const media = new PrivateMeetingSfu({ privateUrl: endpoint!, signalUrl, key: key!, secret: secret!, maxSeats: 8 },
-      undefined, Date.now, recording.start.bind(recording));
+      undefined, Date.now, async (room, track, audio, at) => {
+        if (holdNextAudio && audio) {
+          holdNextAudio = false;
+          shortStart.resolve(track);
+          await releaseShortStart.promise;
+        }
+        return recording.start(room, track, audio, at);
+      });
     let service: RosterMeetingService;
     const jobs = archive.finalization((job) => service.finalizeEvidence(job));
     service = new RosterMeetingService({ media, evidence: archive, recording, evidenceJobs: jobs, getSession: query,
@@ -721,12 +920,13 @@ test.skipIf(!binary || !chrome || !hookPort || !endpoint || !key || !secret || !
     const host = { workspace: database, subject: "fixture-host", name: "主持人", expiresAt: Date.now() + 180_000, workspaceAdmin: true };
     let browser: Awaited<ReturnType<typeof recordingBrowser>> | undefined;
     let roomId: string | undefined;
-    const waitFor = async <T>(get: () => Promise<T | undefined>, description: string) => {
-      for (let i = 0; i < 100; i++) {
+    const waitFor = async <T>(get: () => Promise<T | undefined>, description: string, timeout = 10_000) => {
+      const deadline = Date.now() + timeout;
+      do {
         const result = await get();
         if (result) return result;
         await Bun.sleep(100);
-      }
+      } while (Date.now() < deadline);
       throw new Error(description);
     };
     try {
@@ -785,16 +985,47 @@ test.skipIf(!binary || !chrome || !hookPort || !endpoint || !key || !secret || !
       await service.vote(guest.cookie, poll.id, { option: "no", note: "记录异议" });
       const voted = await event("ballot");
       await evaluate('window.color = "white"');
-      await Bun.sleep(900);
+      // 让真实的 startTrackEgress 在主持人收回真实 Chrome 音轨之后调用。
+      holdNextAudio = true;
+      const shortTrack = await evaluate(`(async () => {
+        const audio = new AudioContext();
+        const tone = new OscillatorNode(audio, { frequency: 880 });
+        const sink = audio.createMediaStreamDestination();
+        tone.connect(sink); tone.start();
+        const publication = await guest.localParticipant.publishTrack(sink.stream.getAudioTracks()[0], { source: lk.Track.Source.Microphone });
+        return publication.trackSid;
+      })()`);
+      expect(typeof shortTrack).toBe("string");
+      await waitFor(async () => holdNextAudio ? undefined : shortStart.promise, "缺少短发言发布 webhook");
+      expect(await shortStart.promise).toBe(shortTrack);
+      await Bun.sleep(1000);
+      await service.moderation(host, meeting, { action: "withdraw", identity: target.id });
+      const roomName = `ck-meeting-${room.id}`;
+      await waitFor(async () => (await api.listParticipants(roomName)).some(({ tracks }) => tracks.some(({ sid }) => sid === shortTrack))
+        ? undefined : true, "主持人收麦后 LiveKit 仍有短发言轨道");
+      releaseShortStart.resolve();
+      const shortResult = await waitFor(async () => (await egress.listEgress({ roomName })).find((item) =>
+        item.request.case === "track" && item.request.value.trackId === shortTrack && item.status >= EgressStatus.EGRESS_COMPLETE),
+      "短发言 Egress 未报告终态", 45_000);
+      expect(shortResult.status).toBe(EgressStatus.EGRESS_FAILED);
+      expect(shortResult.errorCode).toBe(404);
+      expect(shortResult.error).toBe(`track ${shortTrack} not found`);
+      expect(shortResult.fileResults.every(({ size, startedAt, duration }) => size === 0n && startedAt === 0n && duration === 0n)).toBe(true);
       await service.end(host, meeting);
       await jobs.resume();
-      const { token, root: trustedRoot } = await archive.grant(database, meeting, host.subject);
+      const scope = { workspace: database, meeting: evidenceHash(Buffer.from(meeting)).toString("hex") };
+      const trustedRoot = (await vault.read(scope, "root.sha256"))!.toString("hex");
+      const { token } = await archive.grant(database, meeting, host.subject);
       const tar = join(directory, "archive.tar");
       const writer = Bun.file(tar).writer();
       for await (const chunk of await archive.download(database, meeting, host.subject, token)) writer.write(chunk);
       await writer.end();
       expect(Bun.spawnSync(["tar", "-xf", tar, "-C", directory]).exitCode).toBe(0);
       expect(Bun.spawnSync(["python3", "../scripts/verify-meeting-evidence.py", directory, "--trusted-root", trustedRoot]).exitCode).toBe(0);
+      const timeline = await Bun.file(join(directory, "timeline.json")).json() as { kind: string; payload: unknown }[];
+      expect(timeline).toContainEqual(expect.objectContaining({
+        kind: "track-recording-skipped", payload: expect.objectContaining({ track: shortTrack, reason: "ended-before-recording" }),
+      }));
       const sample = Bun.spawnSync(["ffmpeg", "-v", "error", "-i", join(directory, "archive.mp4"), "-an", "-vf",
         "crop=2:2:480:270,fps=25,scale=1:1", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"]);
       expect(sample.exitCode).toBe(0);
@@ -814,10 +1045,12 @@ test.skipIf(!binary || !chrome || !hookPort || !endpoint || !key || !secret || !
         expect(difference).toBeLessThanOrEqual(2000);
       }
     } finally {
+      releaseShortStart.resolve();
       browser?.close();
       if (roomId) await media.endRoster(database, roomId).catch(() => undefined);
       hook.stop(true);
       media.close();
+      if (roomId) await rm(join(spool!, `ck-meeting-${roomId}`), { recursive: true, force: true });
       await rm(directory, { recursive: true, force: true });
     }
-  }), 60_000);
+  }), 75_000);

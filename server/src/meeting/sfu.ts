@@ -12,6 +12,7 @@ import {
 import { jwtVerify } from "jose";
 import { AccessToken, RoomServiceClient, TrackSource, type TrackInfo, type VideoGrant, type WebhookEvent } from "livekit-server-sdk";
 import { HttpError } from "../http-error";
+import type { TrackStartOutcome } from "./evidence-recording";
 
 const ROOM_PREFIX = "ck-meeting-";
 const ROOM_SECONDS = 2 * 60 * 60;
@@ -48,22 +49,23 @@ type Room = MeetingSfuRoom & {
   closing: boolean;
   managed: boolean;
   recording?: RoomRecording;
+  recordingWrites: Set<Promise<void>>;
   dailyRecording?: Awaited<ReturnType<DailyRecording>>;
-  dailyTracks?: Map<string, { at: number; payload: Parameters<RoomRecording["append"]>[3] }>;
+  publishedTracks: Map<string, { at: number; payload: Parameters<RoomRecording["append"]>[3] }>;
   locked: boolean;
   focus: RosterMeetingFocus;
   nextHand: number;
   participants: Map<string, SfuParticipant>;
   bySubject: Map<string, SfuParticipant>;
 };
+type RecordingPayload = { subject: string; name: string; role: string; track?: string; source?: number } | { track: string };
 export type RoomRecording = {
-  append: (id: string, kind: string, at: number, payload: {
-    subject: string; name: string; role: string; track?: string; source?: number;
-  }) => Promise<void>;
+  append: (id: string, kind: string, at: number, payload: RecordingPayload) => Promise<void>;
 };
 export type DailyRecording = (workspace: string, room: string, host: string, at: number) =>
   Promise<RoomRecording & { close(at: number): Promise<void>; canStop(): Promise<boolean>; stop(): Promise<void>; resume(): void }>;
-type PublishedTrackSink = (room: string, track: string, audio: boolean, at: number) => Promise<void>;
+type PublishedTrackSink = (room: string, track: string, audio: boolean, at: number) => Promise<TrackStartOutcome>;
+type ClosedRecording = { recording: RoomRecording; tracks: Set<string>; expiresAt: number };
 type SfuParticipant = MeetingSfuParticipant & {
   leaseUntil: number;
   pendingRemoval: boolean;
@@ -113,6 +115,7 @@ export function isSfuRoomId(id: string): boolean {
 
 export class PrivateMeetingSfu {
   private readonly rooms = new Map<string, Room>();
+  private readonly closedRecordings = new Map<string, ClosedRecording>();
   private readonly rosterPresence = new Map<string, Presence>();
   private readonly rosterEvents = new Map<string, RosterSfuEvent[]>();
   private readonly rosterDeliveries = new Map<string, Promise<void>>();
@@ -231,14 +234,27 @@ export class PrivateMeetingSfu {
   observeRecording(event: WebhookEvent) {
     const name = event.room?.name;
     if (!name?.startsWith(ROOM_PREFIX)) return;
-    const room = this.rooms.get(name.slice(ROOM_PREFIX.length));
-    if (!room?.recording) return;
-    return room.managed ? this.recordEvent(room, event) : this.serial(() => this.recordEvent(room, event));
+    const id = name.slice(ROOM_PREFIX.length);
+    const room = this.rooms.get(id);
+    if (!room?.recording) {
+      const closed = this.closedRecordings.get(id);
+      const track = event.track?.sid;
+      if (event.event !== "track_unpublished" || !track || !closed?.tracks.has(track) || closed.expiresAt <= this.now()) return;
+      return this.recordUnpublished(closed.recording, event, track);
+    }
+    if (!room.managed) return this.serial(() => this.recordEvent(room, event));
+    const write = this.recordEvent(room, event).finally(() => { room.recordingWrites.delete(write); });
+    room.recordingWrites.add(write);
+    return write;
   }
 
   private async recordEvent(room: Room, event: WebhookEvent) {
     const participant = event.participant;
     if (!room.recording || !participant) return;
+    if (event.event === "track_unpublished" && event.track?.sid) {
+      await this.recordUnpublished(room.recording, event, event.track.sid);
+      return;
+    }
     const person = room.participants.get(participant.identity);
     if (!person) return;
     const at = Number(event.createdAt) * 1000;
@@ -251,15 +267,28 @@ export class PrivateMeetingSfu {
     }
   }
 
+  private async recordUnpublished(recording: RoomRecording, event: WebhookEvent, track: string) {
+    const at = Number(event.createdAt) * 1000;
+    if (!Number.isSafeInteger(at) || at <= 0 || !event.participant?.sid) throw unavailable();
+    await recording.append(`${track}:unpublished`, "track-unpublished", at, { track });
+  }
+
   private async recordPublished(room: Room, person: SfuParticipant, track: TrackInfo, at: number) {
-    if (!this.recordTrack || !room.recording) throw unavailable();
-    const prior = room.dailyTracks?.get(track.sid);
+    const recording = room.recording;
+    if (!this.recordTrack || !recording) throw unavailable();
+    const prior = room.publishedTracks.get(track.sid);
     const payload = prior?.payload ??
       { subject: person.memberSubject, name: person.name, role: person.role, track: track.sid, source: track.source };
     if (prior) at = prior.at;
-    else room.dailyTracks?.set(track.sid, { at, payload });
-    await room.recording.append(`${track.sid}:published`, "track-published", at, payload);
-    await this.recordTrack(ROOM_PREFIX + room.id, track.sid, track.type === 0, at);
+    else room.publishedTracks.set(track.sid, { at, payload });
+    await recording.append(`${track.sid}:published`, "track-published", at, payload);
+    const outcome = await this.recordTrack(ROOM_PREFIX + room.id, track.sid, track.type === 0, at).catch(async (error: unknown) => {
+      await recording.append(`${track.sid}:egress-start-failed`, "track-egress-start-failed", at, { track: track.sid });
+      throw error;
+    });
+    if (outcome === "track-not-found") {
+      await recording.append(`${track.sid}:egress-not-found`, "track-egress-not-found", at, { track: track.sid });
+    }
   }
 
   private serial<T>(operation: () => Promise<T>): Promise<T> {
@@ -317,18 +346,32 @@ export class PrivateMeetingSfu {
     for (const participant of room.participants.values()) participant.closeSignal?.();
     const daily = room.recording && room.dailyRecording;
     await daily?.close(this.now());
-    if (daily) room.recording = undefined;
+    if (daily) this.closeRecording(room);
     try { await this.deleteRoom(ROOM_PREFIX + room.id); }
     finally { daily?.resume(); }
+    while (room.recordingWrites.size) await Promise.allSettled(room.recordingWrites);
+    this.closeRecording(room);
     const at = this.now();
     for (const participant of room.participants.values()) this.retireRoster(participant.id, at);
     this.rooms.delete(room.id);
+  }
+
+  private closeRecording(room: Room): void {
+    if (room.recording && room.publishedTracks.size) {
+      // LiveKit 可能在散会后才送达发布回调后排队的取消发布通知。
+      this.closedRecordings.set(room.id, { recording: room.recording, tracks: new Set(room.publishedTracks.keys()),
+        expiresAt: this.now() + WEBHOOK_GRACE_MS });
+    }
+    room.recording = undefined;
   }
 
   private async sweep(): Promise<void> {
     const now = this.now();
     for (const [identity, presence] of this.rosterPresence) {
       if (presence.retiredAt !== undefined && presence.retiredAt + WEBHOOK_GRACE_MS <= now) this.rosterPresence.delete(identity);
+    }
+    for (const [id, { expiresAt }] of this.closedRecordings) {
+      if (expiresAt <= now) this.closedRecordings.delete(id);
     }
     await Promise.all([...this.rooms.values()].map(async (room) => {
       if (room.closing || room.expiresAt <= now) {
@@ -367,7 +410,7 @@ export class PrivateMeetingSfu {
       const room: Room = {
         id, seats, topology: "sfu", workspace: actor.workspace, host: actor.subject,
         expiresAt: Math.min(endsAt, this.now() + ROOM_SECONDS * 1000), closing: false, managed, locked: false, focus: "auto",
-        nextHand: 0, participants: new Map(), bySubject: new Map(), recording,
+        nextHand: 0, participants: new Map(), bySubject: new Map(), recording, recordingWrites: new Set(), publishedTracks: new Map(),
       };
       this.addParticipant(room, actor.subject, actor.name, "host");
       // 先保留容量；若上游创建请求超时，后台删除可能已创建的房间后才释放。
@@ -443,7 +486,6 @@ export class PrivateMeetingSfu {
       const at = this.now();
       if (!room.dailyRecording) {
         room.recording = room.dailyRecording = await this.startDaily(room.workspace, room.id, actor.subject, at);
-        room.dailyTracks = new Map();
       }
       const participants = await this.upstream(() => this.admin.listParticipants!(ROOM_PREFIX + roomId));
       await Promise.all(participants.flatMap(({ identity, tracks }) => {
@@ -465,7 +507,7 @@ export class PrivateMeetingSfu {
             throw new HttpError(409, "meeting-sfu-recording-starting", "录制轨道正在启动，请稍后重试停止录制");
           }
           await daily.close(this.now());
-          room.recording = undefined;
+          this.closeRecording(room);
         }
         try { await this.upstream(() => daily.stop()); }
         finally { daily.resume(); }

@@ -80,6 +80,9 @@ jobs:
           # RUN_LOCAL_SURREALDB_TEST_SUBJECT_TESTS 门，否则全部 skip）。
           echo "RUN_LOCAL_SURREALDB_TEST_SUBJECT_TESTS=1" >> "$GITHUB_ENV"
 
+      - name: 安装存证回归使用的 FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
       - name: Test
         run: pnpm test
 

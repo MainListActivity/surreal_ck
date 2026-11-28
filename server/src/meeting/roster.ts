@@ -728,7 +728,8 @@ export class RosterMeetingService {
       const meeting = await this.requireMeeting(db, meetingId);
       const endedAt = toIsoDateTimeString(meeting.ended_at);
       if (!endedAt || meeting.status !== "closed") throw conflict();
-      const events = await evidence.events(workspace, meetingId);
+      // 取消发布凭据可晚到。可读产物使用已确定的录制结果，原始通知保留在账本。
+      const events = (await evidence.events(workspace, meetingId)).filter(({ kind }) => kind !== "track-unpublished");
       const converted = JSON.parse(JSON.stringify(await voteResults(db, meeting))) as EvidenceJson;
       const artifacts = new Map(media);
       const attendance = new Map<string, { name: string; subject: string; at: string }>();
@@ -791,15 +792,16 @@ export class RosterMeetingService {
     if (this.media?.flushRosterEvents && !await this.media.flushRosterEvents(room, 10_000)) {
       throw new Error("会议事件尚未写入");
     }
-    const events = await evidence.events(workspace, meetingId);
+    const readEvents = () => evidence.events(workspace, meetingId);
+    const events = await readEvents();
     if (!events.some(({ kind }) => kind === "recording-ended")) {
       await this.appendEvidence(workspace, meetingId, `${room}:end`, "recording-ended",
         Date.parse(endedAt), { actor, room });
     }
     const start = events.find(({ id, kind }) => id === room && kind === "recording-started");
     if (!start) throw new Error("会议缺少录制起始事件");
-    const expected = events.flatMap((event) => event.kind === "track-published" ? [event.id.slice(0, -":published".length)] : []);
-    const files = await recording.collect(room, meetingId, Date.parse(start.at), Date.parse(endedAt), expected);
+    const { files, skipped } = await recording.collect(room, meetingId, Date.parse(start.at), Date.parse(endedAt), readEvents);
+    for (const event of skipped) await evidence.append(workspace, meetingId, event);
     await this.sealEvidence(workspace, meetingId, files);
   }
 
