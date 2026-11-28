@@ -86,7 +86,7 @@ pub fn search_field(value: Signal<String>, placeholder: &'static str) -> impl In
 /// 手写桌面入口没有NSH打包器的asset_base，内嵌同一原始SVG以免品牌图消失。
 /// 由原生SVG图像解码器渲染，不使用WebView或网络资源。
 /// 预览入口改用 brand_mark；正式更新门闩仍使用此函数。
-#[cfg_attr(feature = "github-manual-updates", allow(dead_code))]
+#[cfg_attr(manual_update_preview, allow(dead_code))]
 pub fn brand() -> ImageSrc {
     ImageSrc::svg_markup(include_str!("../../assets/brand.svg"))
 }
@@ -128,7 +128,7 @@ pub fn note(content: impl Fn() -> String + 'static) -> impl IntoElement {
         .text_color(move || theme().muted_foreground)
 }
 
-#[cfg_attr(not(feature = "github-manual-updates"), allow(dead_code))]
+#[cfg_attr(not(manual_update_preview), allow(dead_code))]
 /// 单选项：只改变选择，不触发任何网络请求。文字前缀标明选中状态，不只依赖颜色。
 pub fn radio(
     label: &'static str,

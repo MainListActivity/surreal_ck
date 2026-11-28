@@ -53,7 +53,7 @@ class DesktopMediaPackageTests(unittest.TestCase):
         builder.seal(out)
         sealed = json.loads((out.parent / 'desktop-package-evidence.json').read_text(encoding='utf-8'))
         self.assertEqual(sealed['media_runtime']['sealed_inventory_validation'], 'passed')
-        self.assertFalse(sealed['release_eligible'])
+        self.assertNotIn('release_eligible', sealed)
         self.assertEqual(sealed['runtime_validation'], 'not-run')
 
     @unittest.skipIf(os.name == 'nt', 'Mach-O fixture needs POSIX executable mode bits; real validation is unchanged')

@@ -23,7 +23,7 @@ pub const NO_LIVE_MEETINGS_HINT: &str = "会话里有人发起会议时，会显
 
 /// 当前构建是否为手动更新的实验预览（GitHub 预览渠道）。
 pub const fn is_preview() -> bool {
-    cfg!(feature = "github-manual-updates")
+    cfg!(manual_update_preview)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -494,8 +494,17 @@ mod tests {
     }
 
     #[test]
-    fn preview_flag_follows_manual_update_channel() {
-        assert_eq!(is_preview(), cfg!(feature = "github-manual-updates"));
+    fn preview_channel_requires_absence_of_mandatory_updates() {
+        assert_eq!(
+            is_preview(),
+            cfg!(feature = "github-manual-updates")
+                && !cfg!(any(
+                    feature = "macos-auto-update",
+                    feature = "windows-auto-update",
+                    feature = "android-auto-update"
+                ))
+                && option_env!("SURREAL_UPDATE_CONFIG_JSON").is_none()
+        );
     }
 
     #[test]

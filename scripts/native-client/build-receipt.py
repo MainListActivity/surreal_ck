@@ -53,6 +53,11 @@ def main():
         p = assets[0]
         receipt = before | dict(platform=target, filename=p.name, sha256=digest(p), size=p.stat().st_size,
                                validation='packaging-only; OS launch and update service not verified')
+        if target in ('macos', 'windows'):
+            evidence = out / 'desktop-package-evidence.json'
+            if not evidence.is_file():
+                raise SystemExit('Missing sealed desktop package evidence')
+            receipt['desktop_package_evidence_sha256'] = digest(evidence)
         (out/'build-receipt.json').write_text(json.dumps(receipt, indent=2)+'\n')
     else: raise SystemExit('Use begin or finish')
 
