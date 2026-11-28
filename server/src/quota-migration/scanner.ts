@@ -204,6 +204,7 @@ export type LegacyQuotaInventoryRead = Readonly<{
 }>;
 
 const SAFE_LEGACY_ENTITY_TABLE = /^ent_[a-z0-9_]{1,58}$/u;
+const SAFE_TEMPLATE_TABLE = /^[a-z][a-z0-9_]{0,63}$/u;
 
 function isMissingTableError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
@@ -216,6 +217,7 @@ export class SurrealLegacyQuotaInventoryReader {
   async read(database: string): Promise<LegacyQuotaInventoryRead> {
     let result: unknown;
     let hasSheetTable = true;
+    let hasLegacyQuotaTables = true;
     try {
       result = await this.db.query(
         `
@@ -235,6 +237,7 @@ export class SurrealLegacyQuotaInventoryReader {
       );
     } catch (error) {
       if (!isMissingTableError(error)) throw error;
+      hasLegacyQuotaTables = false;
       // Post-v21 workspaces no longer carry legacy quota plan/counter tables;
       // still inspect sheet + ent_* tables for any remaining legacy events.
       let sheetRows: unknown = [];
@@ -284,7 +287,9 @@ export class SurrealLegacyQuotaInventoryReader {
     const anomalies: QuotaMigrationAnomaly[] = [];
     const unsafeTables = [...tableBySheet.values()].filter(
       (table): table is string =>
-        table !== null && !SAFE_LEGACY_ENTITY_TABLE.test(table),
+        table !== null
+        && !SAFE_LEGACY_ENTITY_TABLE.test(table)
+        && !(hasLegacyQuotaTables === false && SAFE_TEMPLATE_TABLE.test(table)),
     );
     for (const table of unsafeTables) {
       anomalies.push({

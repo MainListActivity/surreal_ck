@@ -120,7 +120,7 @@ export type QuotaMigrationWorkspace = Readonly<{
 
 export type QuotaMigrationPlanRevision = Readonly<{
   id: StringRecordId;
-  templateKind: "commercial" | "contract";
+  templateKind: "commercial" | "contract" | "trial" | "retention";
   rules: readonly ProductQuotaRule[];
 }>;
 
@@ -332,7 +332,12 @@ export class SurrealQuotaMigrationStore {
         row.template_kind,
         "plan template kind",
       );
-      if (templateKind !== "commercial" && templateKind !== "contract") {
+      if (
+        templateKind !== "commercial"
+        && templateKind !== "contract"
+        && templateKind !== "trial"
+        && templateKind !== "retention"
+      ) {
         continue;
       }
       const id = requiredRecordId(row.id, "plan revision");
@@ -368,7 +373,12 @@ export class SurrealQuotaMigrationStore {
     const row = statementRows(result)[0];
     if (!row) return undefined;
     const templateKind = requiredString(row.template_kind, "template kind");
-    if (templateKind !== "commercial" && templateKind !== "contract") {
+    if (
+      templateKind !== "commercial"
+      && templateKind !== "contract"
+      && templateKind !== "trial"
+      && templateKind !== "retention"
+    ) {
       return undefined;
     }
     return Object.freeze({
