@@ -14,7 +14,7 @@
 - 在现有 Cloudflare 账户准备 widget，允许 `l.maplayer.top` 和 `www.maplayer.top`。生产 GitHub Environment Variable 为 `VITE_TURNSTILE_SITEKEY`。预览和测试使用单独 widget 或 Cloudflare 测试密钥。
 - 生产 GitHub Environment Secrets 用 `ORIGIN_ENV_TURNSTILE_SECRET`、`ORIGIN_ENV_TURNSTILE_HOSTNAMES`、`ORIGIN_ENV_EDGE_PROXY_SECRET` 下发。最后一项与现有 Worker secret 同值，源站仅接受认证代理设置的客户端 IP。确认 Worker 使用的限流 namespace `27904` 与 `27905` 在同账户内独占。
 - 官网试用配置 `ORIGIN_ENV_TRIAL_REQUEST_ORIGIN=https://www.maplayer.top` 和 `ORIGIN_ENV_TRIAL_FEEDBACK_URL`，使用公司现有反馈入口的完整 `https://…/api/feedback/<project>` 地址。反馈策略须允许该来源；联系人和联系方式发往已有 `contact` 字段。
-- 旧版原生名册客户端不能提供 Turnstile 令牌。发布前须与泳道 1 落实原生核验衔接，或由产品明确接受只在浏览器完成新名册会话。现有名册 Web 入口可直接打开专属参会链接。
+- 旧版原生名册客户端不能提供 Turnstile 令牌。2026-11-28 UTC 产品（老板）已明确确认：首期试点阶段外部名册核验统一只在 Web 浏览器端完成（现有名册 Web 入口可直接打开专属参会链接并完成 Turnstile 校验），原生客户端衔接移交主线 1（M-08）。
 
 ## 独立验收
 

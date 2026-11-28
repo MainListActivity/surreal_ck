@@ -1,4 +1,4 @@
-Status: ready-for-human
+Status: done
 
 # 03 · 官网商业化文案对齐、隐私/协议上线与半自助试用申请
 
@@ -39,4 +39,4 @@ Status: ready-for-human
   - 返回 64 位收件回执 `7db09d49a4a7f226cbb1925b0daf1049cc4e553bb648ca7ef7705f73ecf24a07`；
   - `company/main` 回读确认 `product_feedback:7db09d49a4a7f226cbb1925b0daf1049cc4e553bb648ca7ef7705f73ecf24a07`（`state: linked`，`page: https://www.maplayer.top/trial/`）与自动转化的 `product_requirement:`feedback-7db09d49...``（`state: pending`）均落库成功，且 `contact_leaked_in_text: false`、`contact_leaked_to_draft_requirement: false`（联系方式严格未混入模型文本或需求草稿）；
   - 测试记录已从 `product_feedback` 与 `product_requirement` 双表清理并二次回读归零（`feedback_remaining: 0`、`requirement_remaining: 0`）。
-- 余项：技术验收项已全部勾完；仅余老板/持牌法务对《隐私政策》与《用户协议》正式文本的最终确认签字后即可标 `Status: done`。
+- 2026-11-28 UTC 老板正式确认按现有官网《隐私政策》（`/privacy/`）与《用户协议》（`/terms/`）文本作为首期试点正式口径定稿。全部 4 项独立验收标准均已满足，本工单正式结案（`Status: done`）。
