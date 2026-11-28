@@ -375,12 +375,12 @@ export class LegacyQuotaMigrationConductor {
       let physical: QuotaMigrationPhysicalScan | null = null;
       try {
         const session = await this.workspaceSession(workspace.database);
-        const [legacyRead, physicalRead] = await Promise.all([
-          new SurrealLegacyQuotaInventoryReader(session).read(
-            workspace.database,
-          ),
-          new SurrealQuotaPhysicalScanner(session).scan(),
-        ]);
+        const legacyRead = await new SurrealLegacyQuotaInventoryReader(
+          session,
+        ).read(workspace.database);
+        const physicalRead = await new SurrealQuotaPhysicalScanner(
+          session,
+        ).scan();
         legacy = legacyRead.evidence;
         physical = physicalRead;
         anomalies.push(...legacyRead.anomalies);

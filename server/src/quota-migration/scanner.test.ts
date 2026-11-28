@@ -143,4 +143,27 @@ describe("quota migration scanners", () => {
       details: { table: "orders; REMOVE TABLE sheet" },
     });
   });
+
+  test("handles post-v21 workspaces without legacy quota tables while still checking sheet events", async () => {
+    const reader = new SurrealLegacyQuotaInventoryReader({
+      async query(sql) {
+        if (sql.includes("FROM resource_quota_plan")) {
+          throw new Error("The table 'resource_quota_plan' does not exist");
+        }
+        if (sql === "SELECT id, table_name FROM sheet ORDER BY id;") {
+          return [[{ id: "sheet:case", table_name: "ent_case" }]];
+        }
+        return [false];
+      },
+    });
+
+    const result = await reader.read("ws_post_v21");
+    expect(result.evidence.plans).toEqual([]);
+    expect(result.evidence.plan_binding).toBeNull();
+    expect(result.evidence.event_targets).toEqual([
+      { table: "sheet", event_present: false },
+      { table: "ent_case", event_present: false },
+    ]);
+    expect(result.anomalies.some((a) => a.severity === "blocker")).toBe(false);
+  });
 });
