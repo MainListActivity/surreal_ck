@@ -37,9 +37,26 @@ Status: ready-for-human
 
 | 核对项 | 结论与依据 |
 | --- | --- |
-| 权责与直连 | Bun 负责准入和会控，私有 LiveKit 执行媒体权限，TURN 负责中继。普通工作簿读写、LIVE 和管理员 DDL 沿用 [前端直连](../../../docs/adr/frontend-direct-connect.md)、[workspace database](../../../docs/adr/workspace-as-database.md) 的边界。日常 V2 使用 [origin 专用 RECORD](../../../server/src/routes/meeting-v2-store.ts)。[名册服务](../../../server/src/meeting/roster.ts)及[归档](../../../server/src/meeting/roster-archive.ts)、[存证投影](../../../server/src/meeting/evidence-archive.ts)仍有 root 业务调用偏差。[名册管理入口](../../../server/src/routes/meeting-roster.ts)须补当前成员和配额资格复核。 |
+| 权责与直连 | Bun 负责准入和会控，私有 LiveKit 执行媒体权限，TURN 负责中继。普通工作簿读写、LIVE 和管理员 DDL 沿用 [前端直连](../../../docs/adr/frontend-direct-connect.md)、[workspace database](../../../docs/adr/workspace-as-database.md) 的边界。日常 V2 使用 [origin 专用 RECORD](../../../server/src/routes/meeting-v2-store.ts)。复核发现名册业务使用 root、管理入口缺少当前资格复核两处偏差。闭环证据见下节。 |
 | 外部身份 | 日常访客经限时链接和等候室，名册主体经个人令牌、访问码和单活租约。两个公开入口只授予同场权限，均不创建 `user` 或发放数据库凭证。等候态无媒体与成员目录权限。核对了 [V2 入口](../../../server/src/routes/meeting-v2.ts)、[名册入口](../../../server/src/routes/meeting-roster.ts)和 [SFU 控制面](../../../server/src/routes/meeting-sfu.ts)。 |
 | 升级、互通与术语 | [069](../../../shared/sql/workspace-template/069-native-meeting.surql) 保留成员信令。[070](../../../shared/sql/workspace-template/070-meeting-v2.surql) 增加日常 V2，[071](../../../shared/sql/workspace-template/071-roster-meeting.surql)、[072](../../../shared/sql/workspace-template/072-roster-meeting-records.surql) 增加名册及账本，[073](../../../shared/sql/workspace-template/073-meeting-evidence-projection.surql) 增加归档投影。查验 [CONTEXT](../../../CONTEXT.md)、上述迁移、会议服务、Web 和原生会议入口，未发现平台会议模型或流程的行业硬编码。ADR 已同步四席 Mesh、独立 SFU、HTTPS 快照轮询、协办人权限和首期 Web 名册范围。 |
 | 存证与 E2EE | 服务端轨道录制需要媒体平面读取轨道。录制模式使用传输加密和封存加密，与 E2EE 互斥。[SFU](../../../server/src/meeting/sfu.ts)、[Track Egress](../../../server/src/meeting/evidence-recording.ts)和[归档](../../../server/src/meeting/evidence-archive.ts)的现状已写入 ADR。录制告知闭环、暂存加密和独立不可变留存仍需验收。工作区 Owner 可经 DDL 改动工作区投影，独立存证域负责可信根核验。 |
 
-工程与安全复核已记录，联合验收仍保留 `ready-for-human`。工程侧待收口名册服务最小权限、管理员资格复核，以及 ADR §6 列出的录制和协议差距。产品侧待负责人确认日常录制启用条件、正式会议的告知与留存策略，以及从已定的首期 Web 名册入口扩展到原生端的上线范围。
+### 2026-11-28 M-01 工程偏差闭环
+
+- [x] 074 自动升级已部署工作区，网关凭据、数据与权限按 workspace database 隔离。管理员以本人数据库会话创建会议和绑定表，受限 RECORD 执行名册核验、单活租约、表决/签到回写及存证投影。真实 fork 验证重复执行、跨库、DDL、无关表读写、绑定越界、配额原子回滚以及账本和投影改删负例。[074 迁移](../../../shared/sql/workspace-template/074-roster-meeting-gateway.surql) · [集成测试](../../../server/src/meeting/roster.integration.test.ts)
+- [x] 名册管理逐请求复核两个数据库中的当前成员和管理员身份，并校验现行配额与服务模式。真实签名、未过期的旧 JWT 在工作区用户或成员索引降权或移除后均收到 403。实测账本失信和保留模式拒绝、宽限模式可用，以及公开入口缺失、伪造或重放挑战时拒绝发放会话。[ADR §6](../../../docs/adr/meeting-architecture-and-evidence.md#6-现行实现与上线条件) · [集成测试](../../../server/src/meeting/roster.integration.test.ts)
+
+联测使用 `~/.surrealdb/surreal` 的公司 fork `4.0.1-native-quota.1`，制品 SHA-256 为 `a7e26e79edf7fa44a8ee437882c700a77bf9076bd16bd90987c9f00552569a4c`。使用回环网络和合成数据。媒体夹具为 LiveKit 1.9.9 与 Track Egress 1.15.0，覆盖真实会控、重新入会、表决异议、加密封存、离线校验及篡改检出。Turnstile 联测使用 Siteverify 测试替身验证 action、hostname 和重放限制。
+
+| 验证范围 | 通过 | 失败 | 跳过 |
+| --- | ---: | ---: | ---: |
+| 服务端会议、公开入口、工作簿模板契约 | 49 | 0 | 0 |
+| 服务端工作区鉴权、调用者会话、迁移执行器与相关路由 | 87 | 0 | 0 |
+| 真实 fork 工作区创建 | 5 | 0 | 0 |
+| Web 会议 | 49 | 0 | 0 |
+| 共享工作区模板和模板包 | 61 | 0 | 0 |
+
+`pnpm lint` 零错误、零警告。`pnpm typecheck` 通过，Svelte 报告既有 12 条警告。会议套件首轮有一项既有 LiveKit 信令用例收到 503，完整重跑时 49 项均通过。
+
+联合验收保留 `ready-for-human`。录制和协议上线条件见 ADR §6。待产品负责人确认日常录制启用条件、正式会议告知及留存策略，以及原生名册入口的上线范围。

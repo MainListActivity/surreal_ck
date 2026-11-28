@@ -4,15 +4,18 @@ import { isIP } from "node:net";
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { z } from "zod";
+import { createCallerSession } from "../ai/caller-session";
 import { env } from "../env";
 import type { AppBindings } from "../hono-types";
 import { HttpError } from "../http-error";
 import { MAX_ROSTER_BATCH, rosterDenied, RosterMeetingService } from "../meeting/roster";
 import { archiveConfigSchema } from "../meeting/roster-archive";
 import type { MeetingEvidenceArchive } from "../meeting/evidence-archive";
+import type { RosterQuery } from "../meeting/roster-gateway";
 import { renderVoteReceipt } from "../meeting/roster-receipt-pdf";
 import { castVoteSchema, openPollSchema } from "../meeting/roster-votes";
 import { requireOidc } from "../middleware/oidc";
+import type { WorkspaceScopeModule } from "../workspaces/workspace-scope";
 
 const adminPath = "/api/workspaces/:slug/roster-meetings";
 const publicPath = "/api/meeting/roster";
@@ -50,6 +53,8 @@ const moderationBody = z.discriminatedUnion("action", [
 ]);
 
 type Options = {
+  workspaceScope: Pick<WorkspaceScopeModule, "hasCurrentAdminScope">;
+  openCallerSession?: typeof createCallerSession;
   protection?: typeof publicProtection;
   service?: RosterMeetingService;
   origin?: string;
@@ -114,7 +119,7 @@ function param(c: Context<AppBindings>, name: "slug" | "meeting" | "pass" | "pol
   return value;
 }
 
-export function createMeetingRosterRoutes(options: Options = {}) {
+export function createMeetingRosterRoutes(options: Options) {
   const app = new Hono<AppBindings>();
   const protection = options.protection ?? publicProtection;
   const service = options.service ?? new RosterMeetingService();
@@ -129,16 +134,27 @@ export function createMeetingRosterRoutes(options: Options = {}) {
   };
   const dbs = new WeakMap<Request, string>();
   const admin: MiddlewareHandler<AppBindings> = async (c, next) => {
-    const database = await service.workspaceDb(param(c, "slug"));
-    const raw = c.var.user.raw;
-    if (raw.db !== database || raw.ac !== "admin") {
+    const { db, ac } = c.var.user.raw;
+    if (typeof db !== "string" || !db || ac !== "admin" || !await options.workspaceScope.hasCurrentAdminScope({
+      subject: c.var.user.subject, workspaceSlug: param(c, "slug"), dbName: db,
+    })) {
       throw new HttpError(403, "meeting-roster-admin-required", "需要目标工作区的管理员身份");
     }
     service.assertEnabled();
-    dbs.set(c.req.raw, database);
+    dbs.set(c.req.raw, db);
     await next();
   };
   const database = (c: Context<AppBindings>) => dbs.get(c.req.raw)!;
+  const withCaller = async <T>(c: Context<AppBindings>, run: (db: RosterQuery) => Promise<T>) => {
+    const db = await (options.openCallerSession ?? createCallerSession)(c.var.user.rawToken, { logQueries: false }).catch(() => {
+      throw new HttpError(403, "meeting-roster-admin-required", "需要目标工作区的管理员身份");
+    });
+    try {
+      return await run(db);
+    } finally {
+      await db.close().catch(() => undefined);
+    }
+  };
   const hostActor = (c: Context<AppBindings>) => {
     const { exp, name } = c.var.user.raw;
     if (typeof exp !== "number" || !Number.isFinite(exp) || exp * 1000 <= Date.now()) throw rosterDenied();
@@ -230,7 +246,10 @@ export function createMeetingRosterRoutes(options: Options = {}) {
     } });
   });
   app.get(adminPath, headers, oidc, admin, async (c) => c.json({ meetings: await service.list(database(c)) }));
-  app.post(adminPath, headers, oidc, admin, async (c) => c.json(await service.create(database(c), c.var.user.subject, await input(c, createBody)), 201));
+  app.post(adminPath, headers, oidc, admin, async (c) => {
+    const body = await input(c, createBody);
+    return c.json(await withCaller(c, (db) => service.create(db, c.var.user.subject, body)), 201);
+  });
   app.get(adminPath + "/:meeting/passes", async (c) => c.json({
     passes: await service.passes(database(c), param(c, "meeting")),
   }));
@@ -264,8 +283,10 @@ export function createMeetingRosterRoutes(options: Options = {}) {
     c.json(await service.openPoll(hostActor(c), param(c, "meeting"), await input(c, openPollSchema, 8192)), 201));
   app.get(adminPath + "/:meeting/archive-config", async (c) =>
     c.json(await service.archiveConfig(database(c), param(c, "meeting"))));
-  app.put(adminPath + "/:meeting/archive-config", async (c) =>
-    c.json(await service.bindArchive(database(c), param(c, "meeting"), await input(c, archiveConfigSchema))));
+  app.put(adminPath + "/:meeting/archive-config", async (c) => {
+    const body = await input(c, archiveConfigSchema);
+    return c.json(await withCaller(c, (db) => service.bindArchive(database(c), db, param(c, "meeting"), body)));
+  });
   app.post(adminPath + "/:meeting/archive", async (c) =>
     c.json(await service.archive(hostActor(c), param(c, "meeting"))));
   app.get(adminPath + "/:meeting/waiting", async (c) => c.json({

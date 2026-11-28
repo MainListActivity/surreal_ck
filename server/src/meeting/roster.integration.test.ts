@@ -1,15 +1,24 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ENTITY_TABLE_MEMBER_PERMISSIONS } from "@surreal-ck/shared";
 import { loadTemplateScripts } from "@surreal-ck/shared/workspace-template";
+import { extractNativeQuotaError } from "@surreal-ck/shared/native-quota";
+import { PUBLIC_ACTION } from "@surreal-ck/shared/public-entry";
 import { Hono } from "hono";
 import { EgressClient } from "livekit-server-sdk";
-import { SignJWT, exportJWK, generateKeyPair } from "jose";
-import { DateTime, RecordId, Surreal, Table } from "surrealdb";
+import { SignJWT, exportJWK, generateKeyPair, jwtVerify } from "jose";
+import { DateTime, RecordId, Surreal, Table, type SurrealSession } from "surrealdb";
+import { createCallerSession } from "../ai/caller-session";
+import { migrateAllWorkspaces } from "../db/migration-runner";
+import { SurrealNativeQuotaClient } from "../db/native-quota/client";
+import { materializeWorkspaceMigrationSql } from "../db/workspace-migration-execution";
 import { handleError } from "../middleware/error";
+import { createPublicProtection, createSiteverify } from "../public-entry/protection";
 import { createMeetingRosterRoutes } from "../routes/meeting-roster";
 import { createMeetingSfuRoutes } from "../routes/meeting-sfu";
+import { createWorkspaceScopeModule } from "../workspaces/workspace-scope";
 import { MeetingEvidenceArchive } from "./evidence-archive";
 import { recordingBrowser } from "./evidence-browser-fixture";
 import { privateEvidenceDirectory } from "./evidence-filesystem";
@@ -17,6 +26,7 @@ import { MeetingEvidenceLedger, verifyEvidenceArtifact } from "./evidence-ledger
 import { MeetingTrackRecording } from "./evidence-recording";
 import { EvidenceVault, deriveEvidenceWorkspaceKey } from "./evidence-vault";
 import { RosterMeetingService } from "./roster";
+import { callRosterGateway, RosterMeetingGateway } from "./roster-gateway";
 import { PrivateMeetingSfu, type RosterSfuEvent, type SfuActor } from "./sfu";
 
 const binary = process.env.SURREAL_BINARY;
@@ -27,7 +37,33 @@ const admin = `/api/workspaces/${slug}/roster-meetings`;
 const pub = "/api/meeting/roster";
 const pepper = "x".repeat(32);
 
-async function withFork(run: (fixture: { root: Surreal; member: Surreal; owner: Surreal; login: () => Promise<void> }) => Promise<void>) {
+type ForkFixture = {
+  root: Surreal; member: Surreal; owner: Surreal; url: string;
+  gateway: RosterMeetingGateway;
+  rootSession: (database: string) => Promise<SurrealSession>;
+  login: () => Promise<void>;
+  adminToken: () => Promise<string>;
+  verifyToken: (token: string) => ReturnType<typeof jwtVerify>;
+};
+
+async function seedWorkspaceScope(system: SurrealSession) {
+  for (const file of ["001-init.surql", "004-quota-commercial-authority.surql", "005-quota-entitlement-reconciliation.surql",
+    "009-workspace-provisioning-migration-gates.surql", "048-remote-test-subjects.surql"]) {
+    await system.query(await readFile(new URL(`../../../shared/sql/system/${file}`, import.meta.url), "utf8")).collect();
+  }
+  await system.query(`
+    CREATE workspace:fixture SET db_name = $database, slug = $slug, owner_subject = 'fixture-admin', name = '会议', status = 'active',
+      desired_entitlement = resource_entitlement:fixture, applied_entitlement = resource_entitlement:fixture,
+      desired_quota_projection = quota_policy_projection:fixture, applied_quota_projection = quota_policy_projection:fixture;
+    CREATE user_workspace_index:admin SET subject = 'fixture-admin', db_name = $database, workspace = workspace:fixture, role = 'admin';
+    CREATE workspace_quota_runtime:fixture SET workspace = workspace:fixture, sync_state = 'in_sync', service_mode = 'standard',
+      quota_compliance = 'compliant', capacity_state = 'normal', ledger_state = 'ready', usage_trusted = true, last_native_audit_at = time::now();
+  `, { database, slug }).collect();
+}
+
+async function withFork(run: (fixture: ForkFixture) => Promise<void>) {
+  const version = await Bun.file(binary!).exists() && Bun.spawnSync([binary!, "version"]).stdout.toString();
+  if (!version || !version.startsWith("4.0.1-native-quota.1+")) throw new Error("名册联测需要 4.0.1-native-quota.1 公司 fork");
   const reserve = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
   const port = reserve.port;
   reserve.stop(true);
@@ -45,6 +81,23 @@ async function withFork(run: (fixture: { root: Surreal; member: Surreal; owner: 
   const member = new Surreal();
   const owner = new Surreal();
   const url = `ws://127.0.0.1:${port}/rpc`;
+  const adminToken = () => new SignJWT({
+    ns: "main", db: database, ac: "admin", RL: ["Owner"], email: "admin@example.test",
+  }).setSubject("fixture-admin").setIssuer(issuer).setExpirationTime("120s").setIssuedAt()
+    .setProtectedHeader({ alg: "ES256", kid: "fixture" }).sign(keys.privateKey);
+  const sessions = new Map<string, Promise<SurrealSession>>();
+  const openRootSession = async (database: string) => {
+    const db = await root.forkSession();
+    await db.use({ namespace: "main", database });
+    return db;
+  };
+  const rootSession = (database: string) => {
+    const session = sessions.get(database) ?? openRootSession(database);
+    sessions.set(database, session);
+    return session;
+  };
+  const gatewaySecret = crypto.randomUUID();
+  const gateway = new RosterMeetingGateway(() => gatewaySecret, { url, namespace: "main", credentialSession: rootSession });
   try {
     let ready = false;
     for (let i = 0; i < 100 && proc.exitCode === null; i++) {
@@ -54,7 +107,7 @@ async function withFork(run: (fixture: { root: Surreal; member: Surreal; owner: 
     if (!ready) throw new Error("公司 fork 未启动");
     await root.connect(url, { authentication: { username: "test", password }, namespace: "main", database });
     const migrations = await loadTemplateScripts({ oidcJwksUrl: `${issuer}/jwks` });
-    for (const migration of migrations) await root.query(migration.sql).collect();
+    for (const migration of migrations.filter(({ version }) => version <= 73)) await root.query(migration.sql).collect();
     await root.query(`
       UPDATE workspace_resource_quota:current SET plan = resource_quota_plan:max;
       CREATE workbook_template:fixture SET key = "fixture", label = "会议模板",
@@ -77,27 +130,175 @@ async function withFork(run: (fixture: { root: Surreal; member: Surreal; owner: 
           { key: "option" }, { key: "label" }, { key: "count", field_type: "number" }, { key: "weight", field_type: "number" },
           { key: "ballots" }];
       CREATE user:fixture SET email = "member@example.test", kind = "human", is_admin = false;
+      CREATE user:admin SET email = "admin@example.test", subject = "fixture-admin", kind = "human", is_admin = true;
       DEFINE ACCESS member_record ON DATABASE TYPE RECORD SIGNIN (SELECT * FROM user:fixture) DURATION FOR SESSION 1h;
+      DEFINE TABLE ent_unrelated SCHEMALESS PERMISSIONS FULL;
+      CREATE ent_unrelated:sample SET value = "fixture";
+      CREATE roster_meeting:legacy SET title = "已有会议", roster_sheet = sheet:roster,
+        display_field = 'name', admission = 'direct', created_by = 'fixture-admin', scheduled_at = time::now();
+      UPSERT schema_version:current SET version = 73;
     `).collect();
-    await run({ root, member, owner, async login() {
+    await seedWorkspaceScope(await rootSession("_system"));
+    const migrationOptions = { namespace: "main", loadScripts: async () => migrations };
+    const upgraded = await migrateAllWorkspaces(await rootSession("_system"), migrationOptions);
+    expect(upgraded.migrated).toEqual([expect.objectContaining({ dbName: database, fromVersion: 73, toVersion: 74 })]);
+    const rechecked = await migrateAllWorkspaces(await rootSession("_system"), migrationOptions);
+    expect(rechecked).toEqual({ total: 1, migrated: [] });
+    await run({ root, member, owner, url, rootSession, adminToken, gateway,
+      verifyToken: (token) => jwtVerify(token, keys.publicKey, { issuer }), async login() {
       await member.connect(url, { namespace: "main", database });
       await member.signin({ namespace: "main", database, access: "member_record", variables: {} });
       await owner.connect(url);
-      await owner.authenticate(await new SignJWT({
-        ns: "main", db: database, ac: "admin", RL: ["Owner"], email: "owner@example.test",
-      }).setSubject("evidence-owner").setIssuer(issuer).setExpirationTime("120s").setIssuedAt()
-        .setProtectedHeader({ alg: "ES256", kid: "fixture" }).sign(keys.privateKey));
+      await owner.authenticate(await adminToken());
       await owner.use({ namespace: "main", database });
     } });
   } finally {
+    gateway.close();
     await Promise.allSettled([member.close(), owner.close(), root.close()]);
     proc.kill();
+    await proc.exited;
     jwks.stop(true);
   }
 }
 
+test.skipIf(!binary)("真实 fork：旧管理员 JWT 无法绕过成员、配额和服务模式复核", () => withFork(async (fixture) => {
+  const { root, rootSession, adminToken, verifyToken, gateway } = fixture;
+  const system = await rootSession("_system");
+  const workspaceScope = createWorkspaceScopeModule({ getDbSession: rootSession, namespace: "main" });
+  const service = new RosterMeetingService({ getPepper: () => pepper, getSession: gateway.session.bind(gateway),
+    resolveWorkspace: async () => ({ dbName: database }) });
+  const app = new Hono().onError(handleError).route("/", createMeetingRosterRoutes({
+    service, workspaceScope, requireUser: () => async (c, next) => {
+      const rawToken = (c.req.header("authorization") ?? "").slice(7);
+      const { payload } = await verifyToken(rawToken);
+      c.set("user", { subject: payload.sub!, raw: payload, rawToken });
+      await next();
+    },
+  }));
+  const token = await adminToken();
+  const headers = { authorization: `Bearer ${token}` };
+  expect((await app.request(admin, { headers })).status).toBe(200);
+  const deny = async () => {
+    for (const path of [admin, admin + "/roster_meeting:fixture/passes", admin + "/roster_meeting:fixture/evidence/grant"]) {
+      const response = await app.request(path, { headers, method: path.endsWith("/grant") ? "POST" : "GET" });
+      expect(response.status).toBe(403);
+    }
+  };
+  await root.query("UPDATE user:admin SET is_admin = false;").collect();
+  await deny();
+  await root.query("UPDATE user:admin SET is_admin = true, disabled_at = time::now();").collect();
+  await deny();
+  await root.query("UPDATE user:admin SET disabled_at = NONE;").collect();
+  await system.query("UPDATE user_workspace_index:admin SET role = 'participant';").collect();
+  await deny();
+  await system.query("UPDATE user_workspace_index:admin SET role = 'admin', disabled_at = time::now();").collect();
+  await deny();
+  await system.query("UPDATE user_workspace_index:admin SET disabled_at = NONE; UPDATE workspace_quota_runtime:fixture SET usage_trusted = false;").collect();
+  await deny();
+  await system.query("UPDATE workspace_quota_runtime:fixture SET usage_trusted = true, service_mode = 'retention';").collect();
+  await deny();
+  await system.query("UPDATE workspace_quota_runtime:fixture SET service_mode = 'grace';").collect();
+  expect((await app.request(admin, { headers })).status).toBe(200);
+}), 30_000);
+
+test.skipIf(!binary)("真实 fork：工作区 A 的名册网关无法读取或更改工作区 B", () => withFork(async ({ root, rootSession, gateway }) => {
+  await root.query("DEFINE DATABASE ws_other_roster;").collect();
+  const other = await rootSession("ws_other_roster");
+  await other.query("DEFINE TABLE roster_meeting SCHEMALESS PERMISSIONS FULL; CREATE roster_meeting:legacy SET title = '工作区 B';").collect();
+  const session = await gateway.session(database);
+  expect(await session.query("SELECT VALUE title FROM roster_meeting:legacy;")).toEqual([["已有会议"]]);
+  await expect(session.query("USE NS main DB ws_other_roster; SELECT VALUE title FROM roster_meeting:legacy;")).rejects.toThrow(/permission|scope/iu);
+  await expect(session.query("USE NS main DB ws_other_roster; UPDATE roster_meeting:legacy SET title = '改动';")).rejects.toThrow(/permission|scope/iu);
+  expect(await other.query("SELECT VALUE title FROM roster_meeting:legacy;").collect()).toEqual([["工作区 B"]]);
+}), 30_000);
+
+test.skipIf(!binary)("真实 fork：名册网关仅可访问会议授权数据，守住 DDL、原生配额与只追加边界", () => withFork(async ({ root, gateway, member, login }) => {
+  const session = await gateway.session(database);
+  const meeting = new RecordId("roster_meeting", "legacy");
+  await expect(session.query("DEFINE TABLE roster_gateway_ddl_probe;")).rejects.toThrow(/permissions/iu);
+  await expect(session.query(`DEFINE QUOTA ON DATABASE ${database} RULE probe FOR RECORD MATCH EXACT ent_unrelated LIMIT 1;`)).rejects.toThrow(/permissions/iu);
+  expect(await session.query(`
+    SELECT id FROM user; SELECT id FROM workbook; SELECT id FROM sheet; SELECT id FROM ent_unrelated; SELECT id FROM test_roster;
+    CREATE ent_unrelated:other SET value = '新行'; UPDATE ent_unrelated:sample SET value = '改动'; DELETE ent_unrelated:sample;
+  `)).toEqual([[], [], [], [], [], [], [], []]);
+  await expect(session.query("SHOW CHANGES FOR TABLE user SINCE d'2000-01-01T00:00:00Z';")).rejects.toThrow(/permission/iu);
+  expect(await root.query("SELECT VALUE value FROM ent_unrelated:sample;").collect()).toEqual([["fixture"]]);
+  const migration = (await loadTemplateScripts()).find(({ version }) => version === 74)!;
+  const replay = await materializeWorkspaceMigrationSql(root, migration);
+  await root.query(replay).collect();
+  expect(await materializeWorkspaceMigrationSql(root, migration)).toBe(replay);
+  expect(await root.query("SELECT VALUE verifier != NONE FROM ONLY roster_meeting_gateway:origin;").collect()).toEqual([true]);
+  await root.query(`DEFINE TABLE ent_created_later SCHEMALESS ${ENTITY_TABLE_MEMBER_PERMISSIONS}; CREATE ent_created_later:fixture;`).collect();
+  expect(await session.query("SELECT id FROM ent_created_later;")).toEqual([[]]);
+  await login();
+  expect(await member.query("SELECT VALUE value FROM ent_unrelated:sample;").collect()).toEqual([["fixture"]]);
+  expect((await callRosterGateway(member, "rows", { meeting })).status).toBe(403);
+  expect(await callRosterGateway(session, "rows", { meeting, ids: [new RecordId("ent_unrelated", "sample")] })).toMatchObject({ status: 400 });
+  await session.query("UPDATE $meeting SET roster_sheet = sheet:attendance, display_field = 'weight';", { meeting });
+  expect(await root.query("SELECT VALUE roster_sheet FROM $meeting; SELECT VALUE display_field FROM $meeting;", { meeting }).collect())
+    .toEqual([[new RecordId("sheet", "roster")], ["name"]]);
+
+  await root.query("UPDATE $meeting SET attendance_sheet = sheet:attendance, vote_sheet = sheet:votes;", { meeting }).collect();
+  const binding = {
+    meeting, mode: "write", attendance: { id: new RecordId("sheet", "attendance"), table: "ent_test_attendance" },
+    vote: { id: new RecordId("sheet", "votes"), table: "ent_test_votes" },
+  };
+  const outside = await callRosterGateway(session, "archive", {
+    ...binding, entries: [{ id: new RecordId("ent_unrelated", "meeting_" + "a".repeat(64)), values: {} }],
+  });
+  expect(outside.status).toBe(409);
+  await root.query(`DEFINE QUOTA ON DATABASE ${database} RULE writeback_cap FOR RECORD MATCH EXACT ent_test_votes LIMIT 1;
+    CREATE ent_test_votes:existing;`).collect();
+  const quotaFailure = await callRosterGateway(session, "archive", {
+    ...binding, entries: [
+      { id: new RecordId("ent_test_attendance", "meeting_" + "a".repeat(64)), values: { name: "示例" } },
+      { id: new RecordId("ent_test_votes", "meeting_" + "b".repeat(64)), values: { title: "示例" } },
+    ],
+  }).catch((error: unknown) => error);
+  expect(extractNativeQuotaError(quotaFailure)?.code).toBe("quota_exceeded");
+  expect(await root.query("SELECT id FROM ent_test_attendance; SELECT VALUE id FROM ent_test_votes;").collect())
+    .toEqual([[], [new RecordId("ent_test_votes", "existing")]]);
+
+  await session.query(`CREATE roster_meeting_event:entry SET meeting = $meeting, subject = test_roster:first,
+    pass = roster_meeting_pass:fixture, kind = 'verified', actor = 'fixture';`, { meeting });
+  expect(await session.query(`UPDATE roster_meeting_event:entry SET actor = '改动';
+    DELETE roster_meeting_event:entry; SELECT VALUE actor FROM roster_meeting_event:entry;`)).toEqual([[], [], ["fixture"]]);
+}), 30_000);
+
+test.skipIf(!binary)("真实 fork：公开名册需要已通过 Turnstile 的浏览器会话", () => withFork(async ({ root, gateway, owner, login }) => {
+  await login();
+  const service = new RosterMeetingService({ getPepper: () => pepper, getSession: gateway.session.bind(gateway),
+    readQuota: (db) => new SurrealNativeQuotaClient(root).info(db), resolveWorkspace: async () => ({ dbName: database }) });
+  const meeting = await service.create(owner, "fixture-admin", { title: "公开入口", scheduled_at: new Date().toISOString(),
+    sheet_id: "sheet:roster", display_field: "name", admission: "direct" });
+  const [invitation] = await service.issue(database, slug, meeting.id, ["test_roster:first"], "fixture-admin");
+  const challenge = crypto.randomUUID();
+  const siteverify: typeof fetch = Object.assign(async (_request: RequestInfo | URL, init?: RequestInit) => {
+    const success = init?.body instanceof URLSearchParams && init.body.get("response") === challenge;
+    return Response.json({ success, hostname: new URL(origin).hostname, action: PUBLIC_ACTION.roster });
+  }, { preconnect: fetch.preconnect });
+  const protection = createPublicProtection({ enabled: true, verify: createSiteverify("fixture", [new URL(origin).hostname], siteverify) });
+  const app = new Hono().onError(handleError).route("/", createMeetingRosterRoutes({
+    origin, service, protection, workspaceScope: { async hasCurrentAdminScope() { return false; } },
+  }));
+  const verify = (site: string, turnstileToken?: string) => app.request(pub + "/verify", {
+    method: "POST", headers: { origin: site }, body: JSON.stringify({ pass: invitation!.pass, code: invitation!.code, turnstileToken }),
+  });
+  for (const response of [await verify("https://wrong.test", challenge), await verify(origin), await verify(origin, "invalid")]) {
+    expect(response.status).toBe(401);
+    expect(response.headers.has("Set-Cookie")).toBe(false);
+  }
+  const admitted = await verify(origin, challenge);
+  expect(admitted.status).toBe(200);
+  const cookie = admitted.headers.get("Set-Cookie")!;
+  expect(cookie).toMatch(/HttpOnly/u);
+  expect((await app.request(pub + "/session")).status).toBe(401);
+  expect((await app.request(pub + "/session", { headers: { cookie: cookie.split(";")[0]! } })).status).toBe(200);
+  expect((await verify(origin, challenge)).status).toBe(401);
+}), 30_000);
+
 test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等候、吊销与数据隔离",
-  () => withFork(async ({ root, member, owner, login }) => {
+  () => withFork(async ({ root, rootSession, member, owner, login, adminToken, url, gateway }) => {
     const drops: Array<{ room: string; subject: string }> = [];
     const rooms = new Set<string>();
     const calls: SfuActor[] = [];
@@ -108,11 +309,13 @@ test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等�
     const service = new RosterMeetingService({
       resolveWorkspace: async (name) => name === slug ? { dbName: database } : null,
       getPepper: () => pepper,
+      readQuota: (db) => new SurrealNativeQuotaClient(root).info(db),
       getSession: async (db) => {
         expect(db).toBe(database);
+        const session = await gateway.session(db);
         return { query: (sql, params) => {
           if (sql.includes("BEGIN TRANSACTION")) transactions++;
-          return root.query(sql, params).collect();
+          return session.query(sql, params);
         } };
       },
       media: {
@@ -141,10 +344,12 @@ test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等�
         },
       },
     });
+    const callerToken = await adminToken();
     const app = new Hono().onError(handleError).route("/", createMeetingRosterRoutes({
-      service, origin, sourceIp: (c) => c.req.header("x-fixture-ip") ?? "192.0.2.1",
+      service, origin, workspaceScope: createWorkspaceScopeModule({ getDbSession: rootSession, namespace: "main" }), sourceIp: (c) => c.req.header("x-fixture-ip") ?? "192.0.2.1",
+      openCallerSession: (token, options) => createCallerSession(token, { ...options, surrealUrl: url }),
       requireUser: () => async (c, next) => {
-        c.set("user", { subject: "admin", rawToken: "", raw: { db: database, ac: "admin", exp: Date.now() / 1000 + 600 } });
+        c.set("user", { subject: "fixture-admin", rawToken: callerToken, raw: { db: database, ac: "admin", exp: Date.now() / 1000 + 60 } });
         await next();
       },
     }));
@@ -435,7 +640,7 @@ test.skipIf(!binary)("真实 fork：名册会议事务、配额、代际、等�
   }), 30_000);
 
 test.skipIf(!binary)("真实 fork：会议存证投影拒绝改删且独立核验发现投影丢失",
-  () => withFork(async ({ root, member, owner, login }) => {
+  () => withFork(async ({ root, rootSession, member, owner, login, gateway }) => {
     await login();
     const objects = new Map<string, Uint8Array>();
     const vault = new EvidenceVault({
@@ -447,13 +652,13 @@ test.skipIf(!binary)("真实 fork：会议存证投影拒绝改删且独立核�
       },
     }, deriveEvidenceWorkspaceKey(crypto.getRandomValues(new Uint8Array(32))));
     const archive = new MeetingEvidenceArchive(vault, "fixture archive key", 90,
-      async () => ({ query: (sql, vars) => root.query(sql, vars).collect() }));
+      gateway.session.bind(gateway));
     const evidenceMeeting = "roster_meeting:⟨2fixture⟩";
     const evidenceStatus = await archive.seal(database, evidenceMeeting, new Date().toISOString(), {}, new Map());
     expect(evidenceStatus.root).toMatch(/^[0-9a-f]{64}$/u);
     const evidenceApp = new Hono().onError(handleError).route("/", createMeetingRosterRoutes({
       service: new RosterMeetingService({ getPepper: () => pepper, resolveWorkspace: async () => ({ dbName: database }) }),
-      evidence: archive, origin,
+      evidence: archive, origin, workspaceScope: createWorkspaceScopeModule({ getDbSession: rootSession, namespace: "main" }),
       requireUser: () => async (c, next) => {
         const [subject, db, ac] = (c.req.header("authorization") ?? "").split("|");
         c.set("user", { subject: subject ?? "", rawToken: "", raw: { db, ac } });
@@ -462,7 +667,7 @@ test.skipIf(!binary)("真实 fork：会议存证投影拒绝改删且独立核�
     }));
     const evidencePath = `${admin}/${encodeURIComponent(evidenceMeeting)}/evidence`;
     const grant = await evidenceApp.request(evidencePath + "/grant", {
-      method: "POST", headers: { authorization: `host|${database}|admin` },
+      method: "POST", headers: { authorization: `fixture-admin|${database}|admin` },
     });
     expect(grant.status).toBe(200);
     const { url: download } = await grant.json() as { url: string };
@@ -470,13 +675,16 @@ test.skipIf(!binary)("真实 fork：会议存证投影拒绝改删且独立核�
     for (const authorization of ["", `member|${database}|participant`, "host|other_workspace|admin"]) {
       expect((await evidenceApp.request(download, { headers: { authorization } })).status).toBe(403);
     }
-    const downloaded = await evidenceApp.request(download, { headers: { authorization: `host|${database}|admin` } });
+    const downloaded = await evidenceApp.request(download, { headers: { authorization: `fixture-admin|${database}|admin` } });
     expect(downloaded.status).toBe(200);
     expect(downloaded.headers.get("cache-control")).toBe("no-store");
     expect(downloaded.headers.get("content-type")).toBe("application/x-tar");
     const archives = new Table("meeting_evidence_archive");
     expect(await member.update(archives).merge({ meeting: "changed" })).toEqual([]);
     expect(await member.delete(archives)).toEqual([]);
+    const projectionSession = await gateway.session(database);
+    expect(await projectionSession.query("UPDATE meeting_evidence_archive SET meeting = 'changed'; DELETE meeting_evidence_archive;")).toEqual([[], []]);
+    expect(await archive.status(database, evidenceMeeting)).toEqual(evidenceStatus);
     for (const session of [owner, root]) {
       await expect(Promise.resolve(session.update(archives).merge({ meeting: "changed" }))).rejects.toThrow("readonly");
       await expect(Promise.resolve(session.delete(archives))).rejects.toThrow("append only");
@@ -490,10 +698,10 @@ const { M13_TEST_BROWSER: chrome, M13_TEST_WEBHOOK_PORT: hookPort, M13_TEST_ENDP
 
 test.skipIf(!binary || !chrome || !hookPort || !endpoint || !key || !secret || !spool)(
   "真实名册存证：共享屏幕、重新入会、点名、表决异议与视频时间轴相差不超过两秒",
-  () => withFork(async ({ root }) => {
+  () => withFork(async ({ root, owner, login, gateway }) => {
     const directory = await mkdtemp(join(tmpdir(), "meeting-alignment-"));
     const vault = new EvidenceVault(privateEvidenceDirectory(directory), deriveEvidenceWorkspaceKey(Buffer.alloc(32, 7)));
-    const query = async () => ({ query: (sql: string, vars?: Record<string, unknown>) => root.query(sql, vars).collect() });
+    const query = gateway.session.bind(gateway);
     const archive = new MeetingEvidenceArchive(vault, "fixture", 60, query);
     const recording = new MeetingTrackRecording(spool!, new EgressClient(endpoint!, key!, secret!));
     const signalUrl = "http://127.0.0.1:" + hookPort;
@@ -502,6 +710,7 @@ test.skipIf(!binary || !chrome || !hookPort || !endpoint || !key || !secret || !
     let service: RosterMeetingService;
     const jobs = archive.finalization((job) => service.finalizeEvidence(job));
     service = new RosterMeetingService({ media, evidence: archive, recording, evidenceJobs: jobs, getSession: query,
+      readQuota: (db) => new SurrealNativeQuotaClient(root).info(db),
       getPepper: () => pepper, resolveWorkspace: async () => ({ dbName: database }) });
     const routes = createMeetingSfuRoutes({ service: media,
       config: { NODE_ENV: "test", MEETING_SFU_PRIVATE_URL: endpoint!, MEETING_SFU_SIGNAL_URL: signalUrl,
@@ -523,7 +732,8 @@ test.skipIf(!binary || !chrome || !hookPort || !endpoint || !key || !secret || !
     try {
       browser = await recordingBrowser(chrome!, join(directory, "chrome"));
       const { evaluate } = browser;
-      const meeting = (await service.create(database, host.subject, { title: "存证时间轴", scheduled_at: new Date().toISOString(),
+      await login();
+      const meeting = (await service.create(owner, host.subject, { title: "存证时间轴", scheduled_at: new Date().toISOString(),
         sheet_id: "sheet:roster", display_field: "name", check_field: "check", check_mode: "suffix4", admission: "direct", concurrency: "replace" })).id;
       const room = await service.start(host, meeting);
       roomId = room.id;

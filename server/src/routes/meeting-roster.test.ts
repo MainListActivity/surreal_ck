@@ -15,6 +15,7 @@ function fixture(value: string | undefined, proxy = false) {
     getSession: async () => ({ query: async () => [[]] }),
   });
   return new Hono().onError(handleError).route("/", createMeetingRosterRoutes({
+    workspaceScope: { async hasCurrentAdminScope({ dbName }) { return dbName === "ws_fixture"; } },
     service, origin: site, trustedProxy: proxy, requireUser: () => async (c, next) => {
       c.set("user", { subject: "fixture", rawToken: "", raw: {
         db: c.req.header("workspace") ?? "ws_fixture", ac: c.req.header("access") ?? "admin",

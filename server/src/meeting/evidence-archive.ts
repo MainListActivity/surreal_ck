@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { DateTime, RecordId, SurrealError } from "surrealdb";
-import { getRootDatabaseSession } from "../db/root-connection";
 import { toIsoDateTimeString } from "../db/surreal-values";
 import { env } from "../env";
 import { HttpError } from "../http-error";
@@ -9,7 +8,8 @@ import { privateEvidenceDirectory } from "./evidence-filesystem";
 import { EvidenceJobs, type EvidenceJob } from "./evidence-jobs";
 import { MeetingEvidenceLedger, type EvidenceArtifact, type EvidenceEvent } from "./evidence-ledger";
 import { deriveEvidenceWorkspaceKey, evidenceHash, evidenceJson, EvidenceVault, type EvidenceJson } from "./evidence-vault";
-import { rows, type RosterQuery } from "./roster-votes";
+import { getRosterMeetingSession, type RosterQuery } from "./roster-gateway";
+import { rows } from "./roster-votes";
 
 const day = 86_400_000;
 const ticketTtl = 60_000;
@@ -27,7 +27,7 @@ export class MeetingEvidenceArchive {
     private readonly vault: EvidenceVault,
     private readonly signingKey: string,
     private readonly retentionDays: number,
-    private readonly dbFor: (workspace: string) => Promise<RosterQuery> = getRootDatabaseSession,
+    private readonly dbFor: (workspace: string) => Promise<RosterQuery> = getRosterMeetingSession,
     private readonly now = Date.now,
   ) { this.ledger = new MeetingEvidenceLedger(vault); }
 
