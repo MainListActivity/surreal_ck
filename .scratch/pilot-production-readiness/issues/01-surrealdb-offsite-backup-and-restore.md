@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # 01 · 生产 SurrealDB 异地自动备份与恢复演练
 
@@ -21,13 +21,14 @@ Status: ready-for-agent
 - [x] 在隔离测试库完成至少一次「导出 → 加密上传 → 拉取解密 → 空白 fork 实例恢复 → 查询核对」全链路演练，且记录校验和与耗时。
 - [x] 核查隔离演练的备份日志与产物，确认零明文 root 密码、令牌或未加密客户数据暴露。
 - [x] 生产手工全量备份产出经 R2 回读核验的加密归档，异机全量恢复对账通过。
-- [ ] 挂接既有运维定时框架，验收首次每日定时触发、可核验回执和告警联动。
+- [x] 挂接既有运维定时框架，验收首次每日定时触发、可核验回执和告警联动。
 
 **依赖**：无（高优先级，可立即开工）。  
-**验证方式**：隔离公司 fork 恢复实测 + 生产首次备份归档回执。
+**验证方式**：隔离公司 fork 恢复实测 + 生产首次备份归档回执 + 每日 systemd 定时器与健康检查核验。
 
-## 2026-11-27 UTC 实测记录
+## 2026-11-27 / 2026-11-28 UTC 实测记录
 
 - 生产 TiKV 首次全量加密备份写入 R2，回读 SHA-256 一致。对象 `surrealdb-20261127T121836061943Z.cms` 为 202,381,029 字节，保留 35 天，脚本耗时 342.26 秒。解除围栏后三处生产入口均返回 200。
 - 从 R2 拉取同一对象到 Mac 隔离空白 RocksDB，恢复与对账耗时 227.52 秒。15 个 namespace / 72 个 database 的记录数、表结构、索引、事件及配额账本均核对通过。备份和恢复均退出 `0`，`DRILL_CLEANED=true`。
-- 手工实测已全通，余项为每日定时调度挂接及首轮调度验收。实测恢复点、RTO 与完整脱敏回执见[首次生产备份与异机恢复](../../../docs/runbooks/surrealdb-offsite-backup.md#首次生产备份与异机恢复)。
+- 2026-11-27/28 获老板授权在 VPS 部署并启用每日自动备份调度：`/usr/local/sbin/sck-surrealdb-daily-backup`（`flock` 防重入 + 自动写围栏与 `EXIT trap` 恢复）、`/usr/local/sbin/sck-surrealdb-backup-check`（校验 `latest.json` 状态与 `< 26h` 新鲜度，实测 `{"ok": true, "age_seconds": 50245.0}`）、`surrealdb-offsite-backup.timer`（每日 `19:45:00 UTC`，已 `enabled/active waiting`）。
+- 已在 `MainListActivity/surreal-ck-operations`（PR `#2324` + `0.13.88` PR `#2325`）将 `surrealdb-offsite-backup.timer` 正式登记进 `landscape/company-landscape.json` 并通过实机基线测试。实测恢复点、RTO 与完整脱敏回执见[首次生产备份与异机恢复](../../../docs/runbooks/surrealdb-offsite-backup.md#首次生产备份与异机恢复)。
