@@ -25,6 +25,7 @@ function createWorkspaceScopeStub(workspaces: Awaited<ReturnType<WorkspaceScopeM
     async listWorkspaces() {
       return workspaces;
     },
+    async hasCurrentAdminScope() { return false; },
     async resolveCollaborationScope() {
       return { kind: "forbidden" };
     },
@@ -120,6 +121,7 @@ describe("session workspace list", () => {
           listCalled = true;
           return { workspaces: [], canCreate: false };
         },
+        async hasCurrentAdminScope() { return false; },
         async resolveCollaborationScope() {
           return { kind: "forbidden" };
         },
@@ -159,6 +161,7 @@ describe("session workspace switch", () => {
         async listWorkspaces() {
           return { workspaces: [], canCreate: false };
         },
+        async hasCurrentAdminScope() { return false; },
         async resolveCollaborationScope() {
           return { kind: "forbidden" };
         },
@@ -210,6 +213,7 @@ describe("session workspace switch", () => {
         async listWorkspaces() {
           return { workspaces: [], canCreate: false };
         },
+        async hasCurrentAdminScope() { return false; },
         async resolveCollaborationScope() {
           return { kind: "forbidden" };
         },
@@ -251,6 +255,7 @@ describe("session workspace switch", () => {
         async listWorkspaces() {
           return { workspaces: [], canCreate: false };
         },
+        async hasCurrentAdminScope() { return false; },
         async resolveCollaborationScope() {
           return { kind: "forbidden" };
         },
@@ -309,6 +314,7 @@ describe("session workspace switch", () => {
           async listWorkspaces() {
             return { workspaces: [], canCreate: false };
           },
+          async hasCurrentAdminScope() { return false; },
           async resolveCollaborationScope() {
             return { kind: "forbidden" };
           },
@@ -356,6 +362,7 @@ describe("session workspace switch", () => {
           async listWorkspaces() {
             return { workspaces: [], canCreate: false };
           },
+          async hasCurrentAdminScope() { return false; },
           async resolveCollaborationScope() {
             return { kind: "forbidden" };
           },
@@ -433,6 +440,7 @@ function collaborationApp(options: {
         switchCalls.push(input);
         return { kind: "switched", scope: { db: "ws_recent", ac: "admin" } };
       },
+      async hasCurrentAdminScope() { return false; },
       async resolveCollaborationScope(input) {
         resolveCalls.push(input);
         return options.result ?? { kind: "participant", scope: { db: "ws_recent", ac: "participant" } };

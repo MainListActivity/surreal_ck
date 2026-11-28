@@ -3,8 +3,8 @@ import { DateTime, isRetryableConflict, jsonify, RecordId, StringRecordId } from
 import { z } from "zod";
 import { toIsoDateTimeString } from "../db/surreal-values";
 import { HttpError } from "../http-error";
+import { rosterRowsApi, type RosterQuery } from "./roster-gateway";
 
-export type RosterQuery = { query(sql: string, vars?: Record<string, unknown>): Promise<unknown> };
 const pollTable = "roster_meeting_poll";
 const headTable = "roster_meeting_ballot_head";
 const ballotTable = "roster_meeting_ballot";
@@ -143,7 +143,9 @@ export async function castVote(db: RosterQuery, meeting: VotingMeeting, pass: Id
           OR $deadline <= $now { THROW "poll-closed"; };
         IF !(SELECT VALUE id FROM $pass WHERE meeting = $meeting AND roster_row = $subject
           AND status = "active" AND lease_state = "admitted" AND lease_generation = $generation
-          AND lease_expires_at > $now AND expires_at > $now)[0] OR !record::exists($subject) { THROW "poll-identity-denied"; };
+          AND lease_expires_at > $now AND expires_at > $now)[0] { THROW "poll-identity-denied"; };
+        LET $roster = api::invoke('${rosterRowsApi}', { method: 'post', body: { meeting: $meeting, ids: [$subject], poll: $poll } });
+        IF $roster.status != 200 OR array::len($roster.body) != 1 { THROW "poll-identity-denied"; };
         LET $old = (SELECT VALUE ballot FROM $head)[0];
         LET $current = (SELECT * FROM $old)[0];
         LET $retry = (SELECT * FROM $ballot)[0];
@@ -152,7 +154,7 @@ export async function castVote(db: RosterQuery, meeting: VotingMeeting, pass: Id
         } ELSE IF $current = NONE OR $current.choice != $choice OR $current.note != $note OR ($request AND $allow) {
           IF $current != NONE AND !$allow { THROW "poll-ballot-locked"; };
           LET $weight = IF $current != NONE { $current.weight } ELSE IF $weightKey = NONE { 1dec } ELSE {
-            LET $rawWeight = (SELECT VALUE $this[$weightKey] FROM $subject)[0];
+            LET $rawWeight = $roster.body[0].weight;
             IF type::is_number($rawWeight) AND $rawWeight >= 0 { <decimal>$rawWeight } ELSE { 0dec }
           };
           CREATE $ballot SET meeting = $meeting, poll = $poll, subject = $subject, name = $name,

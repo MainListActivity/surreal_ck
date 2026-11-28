@@ -492,7 +492,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     .route("/", createMeetingSfuRoutes({ workspaceScope, requireUser: options.requireUser, service: meetingSfu }))
     .route("/", createMeetingRosterRoutes({
       requireUser: options.requireUser, evidence: meetingEvidence,
-      service: roster,
+      service: roster, workspaceScope,
     }))
     .route("/", createMeetingV2Routes({ workspaceScope, requireUser: options.requireUser }))
     .route("/", createInternalAiIdentityRoutes({ db: async () => getRootDatabaseSession("_system"), requireUser: options.requireUser?.() }))

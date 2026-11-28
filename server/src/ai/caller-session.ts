@@ -12,6 +12,7 @@ import {
 export type CreateCallerSessionOptions = {
   /** SurrealDB RPC 地址；默认取 env.SURREAL_URL。 */
   surrealUrl?: string;
+  logQueries?: boolean;
   /** 注入点（测试用）：构造一个 Surreal 客户端。 */
   newSurreal?: () => Surreal;
   /** 注入既有诊断器（测试/复用路径）；缺省为本会话新建。 */
@@ -207,5 +208,5 @@ export async function createCallerSession(
   await diag.track({ name: "authenticate", phase: "connect" }, db.authenticate(rawToken), connectBound());
 
   instrumentSessionDiagnostics(db, diag);
-  return instrumentSurrealQuery(db, { source: "server:caller-session" });
+  return instrumentSurrealQuery(db, { source: "server:caller-session", enabled: options.logQueries });
 }
