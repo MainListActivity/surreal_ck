@@ -11,6 +11,7 @@ function createWorkspaceScopeStub(result: Awaited<ReturnType<WorkspaceScopeModul
     async listWorkspaces() {
       return [];
     },
+    async hasCurrentAdminScope() { return false; },
     async resolveCollaborationScope() {
       return { kind: "forbidden" };
     },

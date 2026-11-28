@@ -6,6 +6,8 @@ import {
   isSafeSheetTableName,
 } from "@surreal-ck/shared";
 import type { WorkspaceTemplateScript } from "@surreal-ck/shared/workspace-template";
+import { escapeIdent } from "surrealdb";
+import { z } from "zod";
 import {
   LEGACY_QUOTA_CLEANUP_MIGRATION_VERSION,
   LEGACY_QUOTA_GUARD_RESIDUAL_MIGRATION_VERSION,
@@ -17,6 +19,40 @@ export type WorkspaceMigrationExecutionClient = {
 
 const RECORD_UPDATE_ACTIVITY_MIGRATION_VERSION = 29;
 const ENTITY_MEMBER_PERMISSIONS_MIGRATION_VERSION = 43;
+const ROSTER_MEETING_GATEWAY_MIGRATION_VERSION = 74;
+const rosterGatewayTables = new Set([
+  "roster_meeting_gateway", "roster_meeting", "roster_meeting_pass", "roster_meeting_audit", "roster_meeting_event",
+  "roster_meeting_poll", "roster_meeting_ballot", "roster_meeting_ballot_head", "meeting_evidence_archive",
+]);
+const dml = ["select", "create", "update", "delete"] as const;
+const permission = z.union([z.boolean(), z.string().min(1)]);
+const tableCatalog = z.tuple([z.object({ tables: z.array(z.object({
+  name: z.string().min(1),
+  permissions: z.object({ select: permission, create: permission, update: permission, delete: permission }),
+})) })]);
+const gatewayGuard = "IF session::ac() = 'roster_meeting_gateway' { false } ELSE";
+
+async function restrictRosterGateway(db: WorkspaceMigrationExecutionClient, sql: string): Promise<string> {
+  const [{ tables }] = tableCatalog.parse(await db.query("INFO FOR DB STRUCTURE;"));
+  const alters = tables.flatMap(({ name, permissions }) => {
+    // STRUCTURE 返回数据库已解析并序列化的权限表达式，保留自定义表上其他身份的规则。
+    if (rosterGatewayTables.has(name) || dml.every((action) => permissions[action] === false)) return [];
+    const clauses = dml.map((action) => {
+      const existing = permissions[action];
+      if (existing === false) return `FOR ${action} NONE`;
+      const predicate = typeof existing === "string" && existing.startsWith(`(${gatewayGuard} `)
+        ? existing : `${gatewayGuard} { ${existing} }`;
+      return `FOR ${action} WHERE ${predicate}`;
+    });
+    return `ALTER TABLE ${escapeIdent(name)} PERMISSIONS ${clauses.join(" ")};`;
+  });
+  return `BEGIN TRANSACTION;
+${alters.join("\n")}
+${sql}
+INSERT INTO roster_meeting_gateway { id: roster_meeting_gateway:origin }
+  ON DUPLICATE KEY UPDATE verifier = verifier RETURN NONE;
+COMMIT TRANSACTION;`;
+}
 
 function stringRows(result: unknown): string[] {
   const rows = Array.isArray(result) ? result[0] : undefined;
@@ -58,6 +94,7 @@ export async function materializeWorkspaceMigrationSql(
   db: WorkspaceMigrationExecutionClient,
   script: WorkspaceTemplateScript,
 ): Promise<string> {
+  if (script.version === ROSTER_MEETING_GATEWAY_MIGRATION_VERSION) return restrictRosterGateway(db, script.sql);
   if (
     script.version !== LEGACY_QUOTA_CLEANUP_MIGRATION_VERSION
     && script.version !== LEGACY_QUOTA_GUARD_RESIDUAL_MIGRATION_VERSION

@@ -5,8 +5,6 @@ import { extractNativeQuotaError } from "@surreal-ck/shared/native-quota";
 import { isSafeSheetTableName } from "@surreal-ck/shared/resource-quota";
 import { z } from "zod";
 import { resolveWorkspaceBySlug } from "../../ai/office/employee-service";
-import { SurrealNativeQuotaClient } from "../db/native-quota/client";
-import { getRootDatabaseSession } from "../db/root-connection";
 import { dateTimeTimestamp, toIsoDateTimeString } from "../db/surreal-values";
 import { env } from "../env";
 import { HttpError } from "../http-error";
@@ -18,6 +16,7 @@ import { renderEvidenceSummary } from "./roster-receipt-pdf";
 import type { MeetingTrackRecording } from "./evidence-recording";
 import type { EvidenceJob, EvidenceJobs } from "./evidence-jobs";
 import type { EvidenceArtifact } from "./evidence-ledger";
+import { callRosterGateway, getRosterMeetingSession, readRosterMeetingQuota, rosterRowsApi, type RosterQuery } from "./roster-gateway";
 import { castVote, participantPolls, publishPoll, receipt, recordDigest, voteAgendaSchema, voteResults } from "./roster-votes";
 import { rosterRoomLocked, type PrivateMeetingSfu, type RosterSfuEvent, type SfuActor } from "./sfu";
 
@@ -49,14 +48,14 @@ const cookieSchema = z.strictObject({
 type Cookie = z.infer<typeof cookieSchema>;
 type Admission = z.infer<typeof admissionSchema>;
 type LeaseState = "waiting" | "admitted" | "kicked";
-type Query = { query(sql: string, vars?: Record<string, unknown>): Promise<unknown> };
+type Query = RosterQuery;
 type Media = Pick<PrivateMeetingSfu, "maxSeats" | "startRoster" | "endRoster" | "hasRosterRoom" | "rosterCredentials" | "dropRoster"
   | "isRosterLocked" | "rosterFocus" | "raiseRosterHand" | "rosterModeration" | "moderateRoster" | "assertRosterHost">
   & Partial<Pick<PrivateMeetingSfu, "setRosterEventSink" | "flushRosterEvents">>;
 type Deps = {
   getSession?: (db: string) => Promise<Query>;
   resolveWorkspace?: typeof resolveWorkspaceBySlug;
-  remaining?: (db: Query, database: string) => Promise<bigint | null>;
+  readQuota?: typeof readRosterMeetingQuota;
   getPepper?: () => string | undefined;
   media?: Media;
   evidence?: MeetingEvidenceArchive;
@@ -79,6 +78,7 @@ type Pass = {
   lease_generation: number; lease_session?: string; lease_expires_at?: unknown; lease_verified_at?: unknown; lease_state?: LeaseState;
 };
 type Sheet = { id: RecordId; workbook: RecordId; table_name: string; column_defs: unknown; template_sheet_key?: string };
+type RosterRow = { id: RecordId; name: unknown; check_value?: unknown };
 type Actor = SfuActor;
 type Create = {
   title: string; scheduled_at: string; ends_at?: string; sheet_id: string; display_field?: string;
@@ -189,7 +189,7 @@ export class RosterMeetingService {
   private readonly getSession: NonNullable<Deps["getSession"]>;
   private readonly resolveWorkspace: typeof resolveWorkspaceBySlug;
   private readonly getPepper: NonNullable<Deps["getPepper"]>;
-  private readonly remaining: NonNullable<Deps["remaining"]>;
+  private readonly readQuota: NonNullable<Deps["readQuota"]>;
   private readonly media?: Media;
   private readonly evidence?: MeetingEvidenceArchive;
   private readonly recording?: Deps["recording"];
@@ -200,7 +200,7 @@ export class RosterMeetingService {
   private readonly queues = new Map<string, Promise<unknown>>();
 
   constructor(deps: Deps = {}) {
-    this.getSession = deps.getSession ?? getRootDatabaseSession;
+    this.getSession = deps.getSession ?? getRosterMeetingSession;
     this.resolveWorkspace = deps.resolveWorkspace ?? resolveWorkspaceBySlug;
     this.getPepper = deps.getPepper ?? (() => env.MEETING_ROSTER_PEPPER);
     this.media = deps.media;
@@ -210,11 +210,7 @@ export class RosterMeetingService {
     this.requireEvidence = deps.requireEvidence ?? false;
     this.media?.setRosterEventSink?.((event) => this.recordSfuEvent(event));
     this.now = deps.now ?? Date.now;
-    this.remaining = deps.remaining ?? (async (db, database) => {
-      const quota = await new SurrealNativeQuotaClient(db).info(database);
-      const remaining = quota.usage?.tables.find((row) => row.table === PASS_TABLE)?.record.remaining;
-      return quota.ledger.usage_trusted && remaining != null ? BigInt(remaining) : null;
-    });
+    this.readQuota = deps.readQuota ?? readRosterMeetingQuota;
   }
 
   assertEnabled(): string {
@@ -229,12 +225,6 @@ export class RosterMeetingService {
     const cleanup = () => { if (this.queues.get(key) === result) this.queues.delete(key); };
     void result.then(cleanup, cleanup);
     return result;
-  }
-
-  async workspaceDb(slug: string): Promise<string> {
-    const row = slugPattern.test(slug) && await this.resolveWorkspace(slug);
-    if (!row) throw new HttpError(404, "workspace-not-found", "找不到可用的工作区");
-    return row.dbName;
   }
 
   private async meeting(db: Query, id: string | RecordId): Promise<Meeting | undefined> {
@@ -286,9 +276,8 @@ export class RosterMeetingService {
     return sheet;
   }
 
-  async create(database: string, subject: string, input: Create) {
+  async create(db: Query, subject: string, input: Create) {
     this.assertEnabled();
-    const db = await this.getSession(database);
     const sheet = await this.sheet(db, record("sheet", input.sheet_id));
     const preset = input.preset_key && await this.preset(db, sheet, input.preset_key);
     const display = input.display_field ?? (preset || undefined)?.display_key;
@@ -352,15 +341,17 @@ export class RosterMeetingService {
       const db = await this.getSession(database);
       const meeting = await this.requireMeeting(db, meetingId);
       if (!this.open(meeting)) throw conflict();
-      const sheet = await this.sheet(db, meeting.roster_sheet);
+      const sheet = (await this.boundSheets(db, meeting)).find(({ id }) => String(id) === String(meeting.roster_sheet));
+      if (!sheet) throw missing();
       const ids = rows.map((row) => record(sheet.table_name, row));
       if (new Set(ids.map(String)).size !== rows.length) throw invalid();
-      const remaining = await this.remaining(db, database);
-      if (remaining !== null && remaining < BigInt(rows.length)) throw quotaError();
-      const roster = statement<Record<string, unknown>>(await db.query("SELECT * FROM $ids;", { ids }));
+      const quota = await this.readQuota(database);
+      const remaining = quota.usage?.tables.find((row) => row.table === PASS_TABLE)?.record.remaining;
+      if (quota.ledger.usage_trusted && remaining != null && BigInt(remaining) < BigInt(rows.length)) throw quotaError();
+      const roster = await this.rosterRows(db, meeting, ids);
       if (roster.length !== ids.length) throw missing();
       const entries = roster.map((row) => {
-        const name = fieldText(row[meeting.display_field]);
+        const name = fieldText(row.name);
         if (!name || (meeting.check_field && !this.checkValue(meeting, row))) throw invalid();
         const pass = `${slug}.${generateToken()}`;
         const code = String(randomInt(100_000, 1_000_000));
@@ -377,8 +368,9 @@ export class RosterMeetingService {
           IF !(SELECT VALUE id FROM $meeting WHERE status = "open" AND (ends_at = NONE OR ends_at > time::now()))[0] {
             THROW "roster-pass-conflict";
           };
+          LET $roster = api::invoke('${rosterRowsApi}', { method: 'post', body: { meeting: $meeting, ids: $ids } });
+          IF $roster.status != 200 OR array::len($roster.body) != array::len($ids) { THROW "roster-row-missing"; };
           FOR $entry IN $entries {
-            IF !(SELECT VALUE id FROM $entry.row LIMIT 1)[0] { THROW "roster-row-missing"; };
             IF $replace {
               LET $retired = UPDATE roster_meeting_pass SET status = "revoked", lease_generation += 1
                 WHERE meeting = $meeting AND roster_row = $entry.row AND status = "active" RETURN id;
@@ -394,7 +386,7 @@ export class RosterMeetingService {
           COMMIT TRANSACTION;
         `, {
           entries: entries.map(({ row, id, passHash, codeHash }) => ({ row, id, passHash, codeHash })),
-          meeting: meeting.id, expires: new DateTime(new Date(expires)), replace, actor,
+          meeting: meeting.id, ids, expires: new DateTime(new Date(expires)), replace, actor,
         });
       } catch (cause) { writeError(cause); }
       if (meeting.room_id && this.media) {
@@ -406,8 +398,8 @@ export class RosterMeetingService {
     });
   }
 
-  private checkValue(meeting: Meeting, row: Record<string, unknown>): string {
-    const raw = meeting.check_field ? fieldText(row[meeting.check_field]) : "";
+  private checkValue(meeting: Meeting, row: RosterRow): string {
+    const raw = fieldText(row.check_value);
     return meeting.check_mode === "suffix4" ? (raw.length >= 4 ? raw.slice(-4) : "") : raw;
   }
 
@@ -415,13 +407,24 @@ export class RosterMeetingService {
     return statement<Pass>(await db.query("SELECT * FROM $id;", { id }))[0];
   }
 
-  private async row(db: Query, pass: Pass, meeting: Meeting): Promise<Record<string, unknown> | undefined> {
-    const sheet = await this.sheet(db, meeting.roster_sheet).catch((cause: unknown) => {
-      if (cause instanceof HttpError && cause.status === 404) return undefined;
-      throw cause;
-    });
-    if (!sheet || !String(pass.roster_row).startsWith(`${sheet.table_name}:`)) return;
-    return statement<Record<string, unknown>>(await db.query("SELECT * FROM $row;", { row: pass.roster_row }))[0];
+  private async boundSheets(db: Query, meeting: Meeting): Promise<Sheet[]> {
+    const result = await callRosterGateway<Sheet[]>(db, "sheets", { meeting: meeting.id });
+    if (result.status !== 200) throw unavailable();
+    return result.body.filter((sheet) => isSafeSheetTableName(sheet.table_name));
+  }
+
+  private async rosterRows(db: Query, meeting: Meeting, ids?: (RecordId | StringRecordId)[]): Promise<RosterRow[]> {
+    const result = await callRosterGateway<RosterRow[]>(db, "rows", { meeting: meeting.id, ids });
+    if (result.status === 400 || result.status === 404) {
+      if (!ids) throw missing();
+      return [];
+    }
+    if (result.status !== 200) throw unavailable();
+    return result.body;
+  }
+
+  private async row(db: Query, pass: Pass, meeting: Meeting): Promise<RosterRow | undefined> {
+    return (await this.rosterRows(db, meeting, [pass.roster_row]))[0];
   }
 
   private async audit(db: Query, action: string, target: RecordId, actor: string) {
@@ -471,7 +474,7 @@ export class RosterMeetingService {
         && meeting && this.open(meeting, now) && await this.row(db, pass, meeting);
       const salt = pass?.code_hash.split(".")[0] || "invalid";
       const correct = safeTextEqual(codeDigest(input.code, pepper, salt), pass?.code_hash ?? "invalid");
-      const name = row && meeting && fieldText(row[meeting.display_field]);
+      const name = row && fieldText(row.name);
       const expectedCheck = row && meeting && this.checkValue(meeting, row);
       if (!pass || !meeting || !row || !name || !correct
         || (meeting.check_field && (!expectedCheck || !safeTextEqual(expectedCheck, input.check?.trim() ?? "")))) {
@@ -555,7 +558,7 @@ export class RosterMeetingService {
       const meeting = pass && String(pass.meeting) === cookie.meeting && await this.meeting(db, pass.meeting);
       if (!pass || !meeting || cookie.exp <= this.now()) throw rosterDenied();
       const row = await this.row(db, pass, meeting);
-      const name = row && fieldText(row[meeting.display_field]);
+      const name = row && fieldText(row.name);
       let state: LeaseState | "replaced" | "revoked";
       if (!this.open(meeting) || pass.status !== "active" || dateTimeTimestamp(pass.expires_at) <= this.now() || !name) state = "revoked";
       else if (pass.lease_session !== cookie.session) state = "replaced";
@@ -657,9 +660,8 @@ export class RosterMeetingService {
     };
   }
 
-  bindArchive(database: string, meetingId: string, input: z.infer<typeof archiveConfigSchema>) {
+  bindArchive(database: string, db: Query, meetingId: string, input: z.infer<typeof archiveConfigSchema>) {
     return this.withWorkspace(database, async () => {
-      const db = await this.getSession(database);
       const meeting = await this.requireMeeting(db, meetingId);
       if (meeting.archived_at && (String(meeting.attendance_sheet) !== input.attendanceSheet
         || String(meeting.vote_sheet) !== input.voteSheet)) {
@@ -671,18 +673,19 @@ export class RosterMeetingService {
         this.sheet(db, record("sheet", input.voteSheet)),
       ]);
       verifyArchiveSheets(roster, attendance, vote, input.weightField);
-      await db.query("UPDATE $id SET attendance_sheet = $attendance, vote_sheet = $vote, vote_weight_key = $weight;", {
-        id: meeting.id, attendance: attendance.id, vote: vote.id, weight: input.weightField,
-      });
+      try {
+        const updated = statement<RecordId>(await db.query(`
+          UPDATE $id SET attendance_sheet = $attendance, vote_sheet = $vote, vote_weight_key = $weight
+          WHERE roster_sheet = $roster AND (archived_at = NONE OR (attendance_sheet = $attendance AND vote_sheet = $vote)) RETURN VALUE id;
+        `, { id: meeting.id, roster: roster.id, attendance: attendance.id, vote: vote.id, weight: input.weightField }));
+        if (updated.length !== 1) throw conflict();
+      } catch (cause) { writeError(cause); }
       return this.archiveConfig(database, meetingId);
     });
   }
 
-  private async snapshotRoster(db: Query, meeting: Meeting, roster: Sheet): Promise<ExpectedSubject[]> {
-    const subjects = statement<{ id: RecordId; name: unknown }>(await db.query(
-      "SELECT id, $this[$display] AS name FROM type::table($table) ORDER BY id LIMIT $limit;",
-      { display: meeting.display_field, table: roster.table_name, limit: MAX_ARCHIVE_ROSTER + 1 },
-    ));
+  private async snapshotRoster(db: Query, meeting: Meeting): Promise<ExpectedSubject[]> {
+    const subjects = await this.rosterRows(db, meeting);
     if (subjects.length > MAX_ARCHIVE_ROSTER) {
       throw new HttpError(409, "meeting-archive-roster-limit", "此会议名册超过归档人数上限，请缩小名册范围");
     }
@@ -697,13 +700,15 @@ export class RosterMeetingService {
     if (meeting.room_id && this.media?.flushRosterEvents && !await this.media.flushRosterEvents(meeting.room_id)) {
       throw new HttpError(503, "meeting-archive-timeline-pending", "会议流水尚未保存完成，请稍后重试归档");
     }
-    const [roster, attendance, vote] = await Promise.all([
-      this.sheet(db, meeting.roster_sheet), this.sheet(db, meeting.attendance_sheet), this.sheet(db, meeting.vote_sheet),
-    ]);
+    const sheets = new Map((await this.boundSheets(db, meeting)).map((sheet) => [String(sheet.id), sheet]));
+    const roster = sheets.get(String(meeting.roster_sheet));
+    const attendance = sheets.get(String(meeting.attendance_sheet));
+    const vote = sheets.get(String(meeting.vote_sheet));
+    if (!roster || !attendance || !vote) throw missing();
     verifyArchiveSheets(roster, attendance, vote);
-    const subjects = meeting.roster_snapshot ?? await this.snapshotRoster(db, meeting, roster);
+    const subjects = meeting.roster_snapshot ?? await this.snapshotRoster(db, meeting);
     const cutoff = Math.min(this.now(), dateTimeTimestamp(meeting.ended_at) || Infinity, dateTimeTimestamp(meeting.ends_at) || Infinity);
-    return archiveMeeting(db, database, meeting, { attendance, vote }, subjects, cutoff);
+    return archiveMeeting(db, meeting, { attendance, vote }, subjects, cutoff, await this.readQuota(database));
   }
 
   archive(actor: Actor, meetingId: string) {
@@ -849,7 +854,7 @@ export class RosterMeetingService {
     if (!this.open(meeting)) return [];
     return Promise.all(entries.map(async (pass) => {
       const row = await this.row(db, pass, meeting);
-      return { id: String(pass.id), generation: pass.lease_generation, name: row ? fieldText(row[meeting.display_field]) : "" };
+      return { id: String(pass.id), generation: pass.lease_generation, name: fieldText(row?.name) };
     }));
   }
 
@@ -899,8 +904,8 @@ export class RosterMeetingService {
       const db = await this.getSession(actor.workspace);
       const meeting = await this.requireMeeting(db, meetingId);
       if (!this.open(meeting) || (meeting.room_id && (this.evidence || media.hasRosterRoom(actor.workspace, meeting.room_id)))) throw conflict();
-      const sheet = await this.sheet(db, meeting.roster_sheet);
-      const snapshot = meeting.roster_snapshot ?? await this.snapshotRoster(db, meeting, sheet);
+      if (!(await this.boundSheets(db, meeting)).some(({ id }) => String(id) === String(meeting.roster_sheet))) throw missing();
+      const snapshot = meeting.roster_snapshot ?? await this.snapshotRoster(db, meeting);
       if (this.evidence) {
         if (!this.recording) throw unavailable();
         await this.recording.ready();

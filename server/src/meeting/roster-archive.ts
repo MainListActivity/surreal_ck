@@ -1,10 +1,10 @@
 import { DateTime, isRetryableConflict, jsonify, RecordId } from "surrealdb";
 import { z } from "zod";
-import { extractNativeQuotaError } from "@surreal-ck/shared/native-quota";
-import { SurrealNativeQuotaClient } from "../db/native-quota/client";
+import { extractNativeQuotaError, type NativeQuotaInfo } from "@surreal-ck/shared/native-quota";
 import { dateTimeTimestamp, toIsoDateTimeString } from "../db/surreal-values";
 import { HttpError } from "../http-error";
-import { recordDigest, rows, voteResults, type Ballot, type RosterQuery } from "./roster-votes";
+import { callRosterGateway, rosterArchiveApi, type RosterQuery } from "./roster-gateway";
+import { recordDigest, rows, voteResults, type Ballot } from "./roster-votes";
 
 export const archiveConfigSchema = z.strictObject({
   attendanceSheet: z.string().min(7).max(512),
@@ -27,6 +27,8 @@ export type TimelineEvent = {
 const configError = () => new HttpError(400, "meeting-archive-config-invalid",
   "请选择同一工作簿内符合字段要求的独立签到表和表决表，权重须绑定名册的数值列");
 const quotaError = () => new HttpError(409, "meeting-archive-quota", "会议归档记录配额不足，签到与表决均未写入");
+const archiveConflict = () => new HttpError(409, "meeting-archive-conflict", "归档工作表已改变，请刷新后重试");
+const archiveUnavailable = () => new HttpError(503, "meeting-archive-unavailable", "会议归档暂不可写入");
 
 function columns(sheet: ArchiveSheet): Map<string, string> {
   const parsed = z.array(z.object({ key: z.string(), field_type: z.string().optional() })).safeParse(sheet.column_defs);
@@ -44,7 +46,7 @@ export function verifyArchiveSheets(roster: ArchiveSheet, attendance: ArchiveShe
   }
 }
 
-function attendanceRow(meetingId: string, subject: ExpectedSubject, events: TimelineEvent[], cutoff: number) {
+function attendanceRow(subject: ExpectedSubject, events: TimelineEvent[], cutoff: number) {
   const connections = new Map<string, { joined?: number; left?: number; pass: string }>();
   const detachments = new Map<string, number[]>();
   let name = subject.name;
@@ -78,7 +80,7 @@ function attendanceRow(meetingId: string, subject: ExpectedSubject, events: Time
     duration += Math.max(0, left - Math.max(last, joined));
     last = Math.max(last, left);
   }
-  return { meeting_id: meetingId, subject_id: subject.subject, name, attended: intervals.length > 0,
+  return { subject_id: subject.subject, name, attended: intervals.length > 0,
     duration_ms: duration, timeline: JSON.stringify(timeline),
     segments: JSON.stringify(intervals.map(({ id, joined, left, estimated }) => ({
       id, joined: new Date(joined).toISOString(), left: new Date(left).toISOString(), estimated,
@@ -90,9 +92,9 @@ function exportBallot(ballot: Ballot) {
     revision: ballot.revision, weight: jsonify(ballot.weight) };
 }
 
-export async function archiveMeeting(db: RosterQuery, database: string, meeting: ArchiveMeeting, targets: {
+export async function archiveMeeting(db: RosterQuery, meeting: ArchiveMeeting, targets: {
   attendance: ArchiveSheet; vote: ArchiveSheet;
-}, subjects: ExpectedSubject[], cutoff: number) {
+}, subjects: ExpectedSubject[], cutoff: number, quota: NativeQuotaInfo) {
   const meetingId = String(meeting.id);
   const events = rows<TimelineEvent>(await db.query(
     "SELECT * FROM roster_meeting_event WHERE meeting = $meeting AND at <= $cutoff ORDER BY at, id;",
@@ -109,7 +111,7 @@ export async function archiveMeeting(db: RosterQuery, database: string, meeting:
   }
   const attendance = [...expected.values()].map((subject) => ({
     id: new RecordId(targets.attendance.table_name, "meeting_" + recordDigest(meetingId, subject.subject)),
-    values: attendanceRow(meetingId, subject, history.get(subject.subject) ?? [], cutoff),
+    values: attendanceRow(subject, history.get(subject.subject) ?? [], cutoff),
   }));
   const ballots = rows<Ballot>(await db.query(
     "SELECT * FROM roster_meeting_ballot WHERE meeting = $meeting ORDER BY revision, id;", { meeting: meeting.id },
@@ -126,13 +128,17 @@ export async function archiveMeeting(db: RosterQuery, database: string, meeting:
   }
   const votes = (await voteResults(db, meeting)).flatMap((poll) => poll.results.map((result) => ({
     id: new RecordId(targets.vote.table_name, "meeting_" + recordDigest(meetingId, poll.id, result.key)),
-    values: { meeting_id: meetingId, poll_id: poll.id, title: poll.title, version: poll.version,
+    values: { poll_id: poll.id, title: poll.title, version: poll.version,
       option: result.key, label: result.label, count: result.count, weight: result.weight,
       ballots: JSON.stringify([...(ballotsByPoll.get(poll.id) ?? [])].flatMap(([subject, revisions]) =>
         revisions.at(-1)?.choice === result.key ? [{ subject, revisions: revisions.map(exportBallot) }] : [])) },
   })));
 
-  const quota = await new SurrealNativeQuotaClient(db).info(database);
+  const binding = {
+    meeting: meeting.id,
+    attendance: { id: targets.attendance.id, table: targets.attendance.table_name },
+    vote: { id: targets.vote.id, table: targets.vote.table_name },
+  };
   if (quota.policy) {
     if (!quota.ledger.usage_trusted || !quota.usage) {
       throw new HttpError(503, "meeting-archive-quota-unavailable", "暂时无法核实记录配额，未写入会议归档");
@@ -142,33 +148,32 @@ export async function archiveMeeting(db: RosterQuery, database: string, meeting:
       const usage = quota.usage.tables.find((row) => row.table === target.table_name)?.record;
       if (!usage) throw new HttpError(503, "meeting-archive-quota-unavailable", "暂时无法核实目标表配额，未写入会议归档");
       if (usage.limit.kind === "unlimited") continue;
-      const existing = rows<RecordId>(await db.query("SELECT VALUE id FROM $ids;", { ids: entries.map(({ id }) => id) }));
+      const existing = await callRosterGateway<RecordId[]>(db, "archive", {
+        ...binding, mode: "existing", entries: entries.map(({ id }) => ({ id })),
+      });
+      if (existing.status === 409) throw archiveConflict();
+      if (existing.status !== 200) throw archiveUnavailable();
       if (usage.remaining == null) throw new HttpError(503, "meeting-archive-quota-unavailable", "暂时无法核实目标表配额，未写入会议归档");
-      if (BigInt(usage.remaining) < BigInt(entries.length - existing.length)) throw quotaError();
+      if (BigInt(usage.remaining) < BigInt(entries.length - existing.body.length)) throw quotaError();
     }
   }
 
   try {
     await db.query(`
       BEGIN TRANSACTION;
-      IF !(SELECT VALUE id FROM $meeting WHERE attendance_sheet = $attendance AND vote_sheet = $vote)[0] {
-        THROW "archive-binding-changed";
-      };
-      FOR $row IN $entries {
-        LET $record = (SELECT * FROM $row.id)[0];
-        IF $record != NONE AND $record.meeting_id != $meetingId { THROW "archive-binding-changed"; };
-        UPSERT $row.id MERGE $row.values;
-      };
-      UPDATE $meeting SET archived_at = time::now(), roster_snapshot = roster_snapshot ?? $subjects;
+      LET $archive = api::invoke('${rosterArchiveApi}', { method: 'post', body: $body });
+      IF $archive.status = 409 { THROW "archive-binding-changed"; };
+      IF $archive.status != 200 { THROW "archive-write-failed"; };
       COMMIT TRANSACTION;
-    `, { meeting: meeting.id, meetingId, attendance: targets.attendance.id, vote: targets.vote.id, entries: [...attendance, ...votes], subjects });
+    `, { body: { ...binding, mode: "write", entries: [...attendance, ...votes], subjects } });
   } catch (error) {
     if (extractNativeQuotaError(error)?.code === "quota_exceeded" || (error instanceof Error && error.message.includes("quota-records-exceeded"))) {
       throw quotaError();
     }
     if (isRetryableConflict(error) || (error instanceof Error && error.message.includes("archive-binding-changed"))) {
-      throw new HttpError(409, "meeting-archive-conflict", "归档工作表已改变，请刷新后重试");
+      throw archiveConflict();
     }
+    if (error instanceof Error && error.message.includes("archive-write-failed")) throw archiveUnavailable();
     throw error;
   }
   return { attendanceSheet: String(targets.attendance.id), voteSheet: String(targets.vote.id) };
