@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: ready-for-human
 
 # 04 · 托管短时 STUN/TURN 凭据签发与跨网络公网互通
 
@@ -17,10 +17,16 @@ Status: ready-for-agent
 
 ## 独立验收标准
 
-- [ ] 未登录或会话已吊销的调用请求被 `401/403` 拒绝；合法会话拿到带有限过期时间的临时 `username`/`credential` 及 ICE 服务器列表。
+- [x] 未登录或会话已吊销的调用请求被 `401/403` 拒绝；合法会话拿到带有限过期时间的临时 `username`/`credential` 及 ICE 服务器列表（Bun 接口自动化）。
 - [ ] TURN 服务拒绝过期凭据与错误签名凭据，且配置禁止中继到私网/回环地址（SSRF 防护）。
 - [ ] 普通用户不填写任何网络参数即可在跨网络（如公司 Wi-Fi ↔ 手机 4G/5G 热点）稳定建立双人与三人音视频及屏幕共享。
 - [ ] 按 `docs/runbooks/native-meeting-evidence.md` 归档完整脱敏验收记录（区分直连与 relay 选中路径，含真实设备/网络代号，不含敏感地址与凭据）。
 
 **依赖**：`01`。  
 **验证方式**：后端签发与安全负例单测 + coturn 过期凭据负例 + 真实跨网络三端实测证据。
+
+## 本轮证据
+
+- `main` 已合入鉴权签发、原生自动配置、部署手册和同机中继对端配置修正。签发套件 6 项通过，覆盖未登录、成员撤权、跨工作区、过期、配置缺失及有效期边界。原生身份库的短期配置请求测试和 Web 直连失败回退状态机已过。[PR #305](https://github.com/MainListActivity/surreal_ck/pull/305) · [PR #306](https://github.com/MainListActivity/surreal_ck/pull/306) · [PR #307](https://github.com/MainListActivity/surreal_ck/pull/307) · [PR #318](https://github.com/MainListActivity/surreal_ck/pull/318)
+- 隔离 coturn 4.6.3 实测两端选中 relay 并双向收到音频包。有效、错签、过期短期认证三项实测符合预期。部署版本、准入对端策略及公网路径待另验。[本轮回执](12-meeting-e2e-and-pilot-acceptance.md#本地验收回执)
+- 等待在经授权的候选环境复核 coturn 过期和错签拒绝、对端允许清单及实际 TLS/UDP/TCP，完成同机三账号与至少双网络、对称 NAT 或热点的双向 RTP 和共享。按边记录选中路径、无授权回退负例、续租和分配回收。[TURN 手册](../../../docs/runbooks/meeting-turn.md) · [原生验收证据模板](../../../docs/runbooks/native-meeting-evidence.md)

@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: ready-for-human
 
 # 02 · 协同 APP 壳层与产品文案改版（v2 阶段一）
 
@@ -25,3 +25,8 @@ Status: ready-for-agent
 
 **依赖**：无（基于 `docs/design/collaboration-client-v2/README.md`，可立即开工）。  
 **验证方式**：Rust 单元测试 + headless UI 回归 + macOS 桌面构建实测截图。
+
+## 本轮证据
+
+- `main` 已合入首屏登录、工作区选择、四模块导航、标题栏状态和设置中的诊断入口。以 Rust 1.99.1 在 Apple Silicon 运行原生客户端单元与无界面交互测试，并通过同配置的 `cargo check`、`clippy`。[PR #319](https://github.com/MainListActivity/surreal_ck/pull/319) · [本轮命令与回执](12-meeting-e2e-and-pilot-acceptance.md#本地验收回执)
+- 上述五项按原验收口径保留未勾选。需在同版桌面候选包用真实账号回调，实扫空会话、离线、媒体单停与全停、诊断、指纹和更新门禁，并留关键页面脱敏截图。Windows 等其他目标平台的检查也需补证。
