@@ -205,12 +205,20 @@ export type LegacyQuotaInventoryRead = Readonly<{
 
 const SAFE_LEGACY_ENTITY_TABLE = /^ent_[a-z0-9_]{1,58}$/u;
 
+function isMissingTableError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /The table '[^']+' does not exist/u.test(message);
+}
+
 export class SurrealLegacyQuotaInventoryReader {
   constructor(private readonly db: QuotaMigrationWorkspaceQueryClient) {}
 
   async read(database: string): Promise<LegacyQuotaInventoryRead> {
-    const result = await this.db.query(
-      `
+    let result: unknown;
+    let hasSheetTable = true;
+    try {
+      result = await this.db.query(
+        `
         SELECT id, key, max_sheets, max_fields_per_sheet,
           max_records_per_sheet
         FROM resource_quota_plan
@@ -224,7 +232,23 @@ export class SurrealLegacyQuotaInventoryReader {
         FROM sheet
         ORDER BY id;
       `,
-    );
+      );
+    } catch (error) {
+      if (!isMissingTableError(error)) throw error;
+      // Post-v21 workspaces no longer carry legacy quota plan/counter tables;
+      // still inspect sheet + ent_* tables for any remaining legacy events.
+      let sheetRows: unknown = [];
+      try {
+        const sheetResult = await this.db.query(
+          "SELECT id, table_name FROM sheet ORDER BY id;",
+        );
+        sheetRows = statement(sheetResult, 0) ?? [];
+      } catch (sheetError) {
+        if (!isMissingTableError(sheetError)) throw sheetError;
+        hasSheetTable = false;
+      }
+      result = [[], null, [], sheetRows];
+    }
     const plans = rows(result, 0).flatMap((row) => {
       const id = recordString(row.id);
       const key = stringValue(row.key);
@@ -275,9 +299,13 @@ export class SurrealLegacyQuotaInventoryReader {
           table !== null && SAFE_LEGACY_ENTITY_TABLE.test(table),
       ),
     )].sort();
-    const eventTables = ["sheet", ...dynamicTables];
+    const eventTables = hasSheetTable
+      ? ["sheet", ...dynamicTables]
+      : dynamicTables;
     const native = new SurrealNativeQuotaClient(this.db);
-    const events = await native.readLegacyQuotaEvents(database, eventTables);
+    const events = eventTables.length > 0
+      ? await native.readLegacyQuotaEvents(database, eventTables)
+      : new Map<string, boolean>();
     const eventTargets = eventTables.map((table) => ({
       table,
       event_present: events.get(table) === true,
