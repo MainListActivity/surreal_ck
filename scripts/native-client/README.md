@@ -37,6 +37,8 @@ NSH 0.4 的 `package` 没有 `--features` 参数；前置 desktop binary 编译�
 
 生产 CI 在临时系统证书存储中导入已有 Developer ID 与 Windows 代码签名身份，并用既有 Apple API key 申请公证。批准后的桌面媒体运行时通过 `media-runtime.lock.json` 固定。启用前分别锁定三个目标的 `run_id` 和 `manifest_sha256`。同仓库 Actions 运行须保留名为 `approved-media-<平台>-<架构>` 的 artifact，其中包含批准的 `manifest.json` 和 `runtime/`。macOS 输入中的媒体程序须已完成签名。打包会检查完整运行时清单、原生测试回执和包内最终 SHA-256。
 
+正式桌面构建启用平台强制更新器且排除预览 feature。最终安装器回执包含静态包证据的 SHA-256。发布预检核对该证据与回执的源码、目标架构、更新配置、媒体清单和实际制品一致性，再核对平台签名状态与在线签名策略。早期桌面回执没有包证据 SHA-256，需从修复后的提交重新打包。
+
 ## 验证范围
 
 脚本语法、工作流结构及资产收集可在 Linux 静态测试；真实 macOS/Windows 编译与安装器执行必须由相应 GitHub runner 验证。只有生成包和 apksigner 检验通过并不代表 Android 真机/模拟器 UI 已启动，需要独立安装启动测试。工作流首次成功前不得声称安装产物已经可下载。

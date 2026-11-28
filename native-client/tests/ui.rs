@@ -1,11 +1,17 @@
 use nsh_engine::{EngineConfig, Root};
 use nsh_testing::Headless;
-#[cfg(not(feature = "github-manual-updates"))]
+#[cfg(any(
+    not(feature = "github-manual-updates"),
+    feature = "macos-auto-update",
+    feature = "windows-auto-update",
+    feature = "android-auto-update"
+))]
 #[test]
 fn production_entry_fails_closed() -> Result<(), String> {
     let mut app =
         Headless::start(EngineConfig::new(Root::of::<nsh_app_native_client::App>())).unwrap();
     app.wait_for("尚未配置可信更新服务，暂不能打开应用。")?;
+    assert!(!app.shows(SEARCH));
     assert!(!app.shows("创建邀请"));
     Ok(())
 }
@@ -102,7 +108,7 @@ fn first_screen_shows_message_chrome_and_honest_empty_state() -> Result<(), Stri
             !app.shows("停止全部媒体"),
             "未连接且没有媒体时不在首屏常驻停止按钮"
         );
-        if cfg!(feature = "github-manual-updates") {
+        if cfg!(manual_update_preview) {
             assert!(
                 !app.shows(PREVIEW_LABEL),
                 "完整预览说明不应在消息页做成通栏横幅"
@@ -188,7 +194,7 @@ fn window_resize_keeps_navigation_usable() -> Result<(), String> {
 fn preview_label_matches_build_channel() -> Result<(), String> {
     let mut app = collaboration(480.0, 800.0)?;
     assert!(!app.shows(PREVIEW_LABEL));
-    if cfg!(feature = "github-manual-updates") {
+    if cfg!(manual_update_preview) {
         app.press("设置")?;
         app.wait_for(PREVIEW_LABEL)?;
     } else {
@@ -253,7 +259,7 @@ fn scroll_to(app: &mut Headless, text: &str) -> Result<(), String> {
     app.wait_for(text)
 }
 
-#[cfg(not(feature = "github-manual-updates"))]
+#[cfg(not(manual_update_preview))]
 #[test]
 fn update_gate_can_scroll_and_retry_in_a_small_window() -> Result<(), String> {
     use nsh_core::prelude::{Size, px};
@@ -314,7 +320,7 @@ fn meeting_page_is_reachable_and_does_not_claim_a_live_session() -> Result<(), S
     Ok(())
 }
 
-#[cfg(feature = "github-manual-updates")]
+#[cfg(manual_update_preview)]
 #[test]
 fn manual_update_preview_opens_and_offers_sources() -> Result<(), String> {
     use nsh_core::prelude::{Size, px};

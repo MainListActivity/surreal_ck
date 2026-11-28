@@ -101,23 +101,31 @@ def match_asset(p, item, repository, tag):
     if item['platform']=='macos' and item.get('signing')!='developer-id-notarized':
         raise ValueError('macOS installer requires Developer ID signing and stapled notarization')
 
-def check_desktop_package(path, receipt, *, require_release_eligibility=True):
-    """Release admission is independent of the original build event/environment."""
+def check_desktop_package(path, receipt):
+    """Verify the exact package evidence bound to the final installer receipt."""
     if receipt.get('platform') not in ('windows', 'macos'):
         return
     evidence_path = path.with_name(path.name.removesuffix('-build-receipt.json') + '-package-evidence.json')
     if not evidence_path.is_file():
         raise ValueError('Missing desktop package evidence for production release')
-    package = policy.strict_json(evidence_path.read_bytes())
+    evidence = evidence_path.read_bytes()
+    if hashlib.sha256(evidence).hexdigest() != receipt.get('desktop_package_evidence_sha256'):
+        raise ValueError('Desktop package evidence does not match the final build receipt')
+    package = policy.strict_json(evidence)
     if package.get('platform') != receipt['platform'] or package.get('entrypoint') != 'native-client/src/main.rs':
         raise ValueError('Desktop release evidence identity mismatch')
+    identity_fields = ('commit', 'source_sha256', 'version', 'app_id', 'host_arch', 'update_config_sha256')
+    if any(not receipt.get(field) or package.get(field) != receipt[field] for field in identity_fields):
+        raise ValueError('Desktop package source or update configuration differs from the build receipt')
+    features = package.get('features')
+    if (not isinstance(features, list) or 'github-manual-updates' in features
+            or f"{receipt['platform']}-auto-update" not in features):
+        raise ValueError('Desktop package must enable mandatory platform updates without preview features')
     runtime = package.get('media_runtime')
     if not isinstance(runtime, dict) or runtime.get('status') != 'bundled':
         raise ValueError('Production desktop release requires approved bundled media')
     if runtime.get('development_only') is not False or runtime.get('release_approved') is not True:
         raise ValueError('Development-only or unapproved media cannot enter a production release')
-    if require_release_eligibility and package.get('release_eligible') is not True:
-        raise ValueError('Desktop package is not release eligible')
     if runtime.get('platform') != receipt['platform'] or runtime.get('arch') != receipt['host_arch']:
         raise ValueError('Desktop media inventory target differs from the build receipt')
     digest = runtime.get('manifest_sha256')
@@ -134,13 +142,13 @@ def check_desktop_package(path, receipt, *, require_release_eligibility=True):
         raise ValueError('Desktop media requires a sealed SHA256 inventory')
 
 
-def load_installers(root, *, commit, require_release_eligibility):
+def load_installers(root, *, commit, require_release_signing):
     receipts = sorted(root.glob('*-build-receipt.json'))
     if not receipts: raise ValueError('No build receipts; refusing unproven installers')
     seen, installers, versions, filenames = set(), [], set(), set()
     for path in receipts:
         receipt = policy.strict_json(path.read_bytes())
-        check_desktop_package(path, receipt, require_release_eligibility=require_release_eligibility)
+        check_desktop_package(path, receipt)
         if commit and (receipt.get('commit') != commit or receipt.get('dirty') is not False):
             raise ValueError('Installer was not built from the exact clean release commit')
         if receipt.get('update_config') != 'embedded-unverified':
@@ -164,11 +172,13 @@ def load_installers(root, *, commit, require_release_eligibility):
                 raise ValueError('Asset index differs from build receipt')
             target = (item['platform'],item['arch'])
             if target in seen: raise ValueError('Duplicate local platform target')
+            if item['platform'] in ('windows', 'macos') and item['arch'] != receipt['host_arch']:
+                raise ValueError('Desktop asset index architecture differs from the build receipt')
             expected_signing = REQUIRED_SIGNING.get(item['platform'])
             if expected_signing and item.get('signing') != expected_signing:
                 raise ValueError(f'{item["platform"]} installer requires signing status {expected_signing}')
             if item['platform'] == 'windows':
-                allowed_signing = ('authenticode',) if require_release_eligibility else ('unsigned', 'authenticode')
+                allowed_signing = ('authenticode',) if require_release_signing else ('unsigned', 'authenticode')
                 if item.get('signing') not in allowed_signing:
                     raise ValueError('Windows installer signing status must be ' + ' or '.join(allowed_signing))
             seen.add(target)
@@ -184,7 +194,7 @@ def check_release(root, repository, tag, *, commit=None, fetch=fetch_policy, ver
         raise ValueError('Exact repository and release tag required')
     fixed_now = now is not None
     now = int(time.time()) if now is None else now
-    installers, version = load_installers(root, commit=commit, require_release_eligibility=True)
+    installers, version = load_installers(root, commit=commit, require_release_signing=True)
     if commit and tag != 'v' + version:
         raise ValueError('Release tag differs from the installer version')
     cache, evidence, remote_checked = {}, [], set()
@@ -227,7 +237,7 @@ def main():
         if args.local_only:
             if not args.commit or args.repository or args.tag:
                 p.error('--local-only requires --commit without --repository or --tag')
-            _, version = load_installers(args.assets, commit=args.commit, require_release_eligibility=False)
+            _, version = load_installers(args.assets, commit=args.commit, require_release_signing=False)
             print(f'Verified production build inputs and installer receipts for {version}; final release eligibility pending')
         else:
             if not args.repository or not args.tag:

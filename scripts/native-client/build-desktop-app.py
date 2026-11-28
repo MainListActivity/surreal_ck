@@ -13,7 +13,9 @@ import sys
 spec = importlib.util.spec_from_file_location('desktop', Path(__file__).with_name('desktop-enterprise-preview.py'))
 desktop = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(desktop)
-FEATURES = {k: list(v) for k, v in desktop.FEATURES.items()}
+PREVIEW_FEATURE = 'github-manual-updates'
+FEATURES = {target: [feature for feature in features if feature != PREVIEW_FEATURE]
+            for target, features in desktop.FEATURES.items()}
 FEATURES['macos'].append('macos-auto-update')
 
 media_spec = importlib.util.spec_from_file_location('media_runtime', Path(__file__).with_name('prepare-media-runtime.py'))
@@ -77,6 +79,9 @@ def command(target, host):
 def stage(event, target, out, snapshot, host, runtime=None):
     if out.exists():
         raise ValueError('输出已存在；拒绝混用旧产物')
+    features = set(event['features'])
+    if PREVIEW_FEATURE in features or not set(FEATURES[target]).issubset(features):
+        raise ValueError('正式桌面入口必须启用平台更新器，且不得启用手动更新预览')
     runtime_report = dict(status='not-bundled', input_validation='not-configured',
         runtime_validation='not-run', device_permissions='unverified')
     if runtime is not None:
@@ -142,7 +147,7 @@ def stage(event, target, out, snapshot, host, runtime=None):
     report = snapshot | dict(schema=1, purpose='collaboration-installer-input', platform=target,
         rust_host=host, features=sorted(event['features']), entrypoint='native-client/src/main.rs',
         executable=installed.relative_to(out).as_posix(), compiled_executable_sha256=digest,
-        runtime_validation='not-run', dependency_closure='unverified', release_eligible=False,
+        runtime_validation='not-run', dependency_closure='unverified',
         media_runtime=runtime_report,
         updater='Sparkle SDK embedded by package.sh' if target == 'macos' else 'windows-auto-update helper in application binary')
     if icon is not None:

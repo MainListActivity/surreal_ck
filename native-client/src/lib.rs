@@ -21,7 +21,7 @@ mod enterprise_tools;
 mod file_dialogs;
 mod file_ui;
 mod first_screen;
-#[cfg(feature = "github-manual-updates")]
+#[cfg(manual_update_preview)]
 mod github_update_ui;
 mod identity_ui;
 #[cfg(feature = "experimental-enterprise-meeting")]
@@ -44,7 +44,7 @@ mod roster_media;
     feature = "experimental-native-roster-sfu"
 ))]
 mod roster_ui;
-#[cfg_attr(feature = "github-manual-updates", allow(dead_code))]
+#[cfg_attr(manual_update_preview, allow(dead_code))]
 mod startup;
 mod ui;
 mod verification_ui;
@@ -72,11 +72,11 @@ fn video_components(components: &surreal_ck_native_video_view::macos::Components
 fn video_components(components: &surreal_ck_native_video_view::windows::Components) {
     surreal_ck_native_video_view::windows::register(components);
 }
-#[cfg(feature = "github-manual-updates")]
+#[cfg(manual_update_preview)]
 fn update_panel() -> impl IntoElement {
     github_update_ui::github_update_panel()
 }
-#[cfg(not(feature = "github-manual-updates"))]
+#[cfg(not(manual_update_preview))]
 fn update_panel() -> impl IntoElement {
     view()
 }
@@ -1223,14 +1223,14 @@ fn status_color(failed: bool) -> AdaptiveColor {
     }
 }
 
-#[cfg(feature = "github-manual-updates")]
+#[cfg(manual_update_preview)]
 #[component]
 pub fn App() -> impl IntoElement {
     collaboration()
 }
 
 /// 发布入口：在验证并持久化可信更新策略之前，不创建协作会话或网络线程。
-#[cfg(not(feature = "github-manual-updates"))]
+#[cfg(not(manual_update_preview))]
 #[component]
 pub fn App() -> impl IntoElement {
     apply_theme();
@@ -1286,7 +1286,7 @@ pub fn App() -> impl IntoElement {
         .child(when(move || ready.get(), collaboration))
 }
 
-#[cfg(not(feature = "github-manual-updates"))]
+#[cfg(not(manual_update_preview))]
 fn check_update(ready: Signal<bool>, status: Signal<String>, can_retry: Signal<bool>) {
     ready.set(false);
     can_retry.set(false);

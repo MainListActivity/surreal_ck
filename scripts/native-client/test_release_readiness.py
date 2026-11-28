@@ -17,42 +17,82 @@ SCRIPT = pathlib.Path(__file__).with_name('check-release-readiness.py').resolve(
 spec=importlib.util.spec_from_file_location('readiness',SCRIPT)
 readiness=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(readiness)
+receipt_spec = importlib.util.spec_from_file_location('build_receipt', SCRIPT.with_name('build-receipt.py'))
+build_receipt = importlib.util.module_from_spec(receipt_spec)
+receipt_spec.loader.exec_module(build_receipt)
 # Deliberately nonproduction fixture. Never injected into a client build.
 GOOD = dict(trust=dict(public_key=list(range(1,33)), app_id='top.maplayer.collaboration', channel='stable', download_hosts=['github.com']), policy_urls=['https://updates.example.org/policy.json'], network_hosts=['updates.example.org'], linux_executable='Surreal Collaboration/SurrealCollaboration')
 
 class ReadinessTests(unittest.TestCase):
+    def write_final_desktop_receipt(self, root, package):
+        """Finish the real receipt contract using bytes and signing metadata from fixtures."""
+        snapshot = {field: package[field] for field in (
+            'host_arch', 'version', 'app_id', 'commit', 'source_sha256', 'update_config_sha256'
+        )}
+        config = copy.deepcopy(GOOD)
+        config['trust']['public_key'] = list(range(2, 34))
+        snapshot.update(dirty=False, update_config='embedded-unverified', update_config_public=config)
+        (root / 'build-input.json').write_text(json.dumps(snapshot), encoding='utf-8')
+        installer = root / 'SurrealCK-fixture.exe'
+        installer.write_bytes(b'fixture installer bytes')
+        evidence = root / 'desktop-package-evidence.json'
+        encoded = json.dumps(package).encode()
+        evidence.write_bytes(encoded)
+        with mock.patch.object(build_receipt, 'snapshot', return_value=snapshot), \
+             mock.patch.object(sys, 'argv', ['build-receipt.py', 'finish', str(root), 'windows']):
+            build_receipt.main()
+        receipt_path = root / 'windows-fixture-build-receipt.json'
+        receipt_path.write_bytes((root / 'build-receipt.json').read_bytes())
+        receipt = json.loads(receipt_path.read_bytes())
+        self.assertEqual(receipt['desktop_package_evidence_sha256'], hashlib.sha256(encoded).hexdigest())
+        final_evidence = root / 'windows-fixture-package-evidence.json'
+        final_evidence.write_bytes(encoded)
+        index = root / 'windows-fixture-assets.json'
+        item = {field: receipt[field] for field in ('platform', 'filename', 'version', 'sha256', 'size')}
+        index.write_text(json.dumps([item | dict(arch='x86_64', signing='authenticode')]), encoding='utf-8')
+        return receipt_path, final_evidence
+
     def test_desktop_development_artifacts_rejected_without_build_environment(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {}, clear=True):
             root = pathlib.Path(tmp)
             receipt_path = root / 'windows-test-build-receipt.json'
             receipt = dict(platform='windows', host_arch='x86_64')
             receipt_path.write_text(json.dumps(receipt), encoding='utf-8')
-            evidence = root / 'windows-test-package-evidence.json'
             with self.assertRaisesRegex(ValueError, 'Missing desktop'):
                 readiness.check_release(root, 'owner/repo', 'v1')
+            receipt_path.unlink()
             files = {'bin/ffmpeg.exe': 'ab' * 32, 'bin/ffplay.exe': 'cd' * 32}
-            base = dict(platform='windows', entrypoint='native-client/src/main.rs', release_eligible=True,
+            base = dict(platform='windows', entrypoint='native-client/src/main.rs',
+                        features=['desktop', 'windows-auto-update'], host_arch='x86_64',
+                        commit='ab' * 20, version='0.1.3', app_id=GOOD['trust']['app_id'],
+                        source_sha256='ca' * 32, update_config_sha256='bc' * 32,
                         media_runtime=dict(status='bundled', development_only=False, release_approved=True,
                                            platform='windows', arch='x86_64', manifest_sha256='ef' * 32,
                                            sealed_inventory_validation='passed', files=files, packaged_files=files))
-            for fields in ({'development_only': True}, {'release_approved': False}, {'release_approved': None}, {'development_only': None}):
-                evidence.write_text(json.dumps(base | {'media_runtime': base['media_runtime'] | fields}), encoding='utf-8')
-                with self.subTest(fields=fields), self.assertRaisesRegex(ValueError, 'unapproved media'):
+            receipt_path, evidence = self.write_final_desktop_receipt(root, base)
+            with mock.patch.object(readiness, 'EXPECTED_TARGETS', {('windows', 'x86_64')}):
+                _, version = readiness.load_installers(root, commit=base['commit'], require_release_signing=True)
+                self.assertEqual(version, base['version'])
+            evidence.write_bytes(evidence.read_bytes() + b' ')
+            with self.assertRaisesRegex(ValueError, 'does not match the final build receipt'):
+                readiness.check_desktop_package(receipt_path, json.loads(receipt_path.read_bytes()))
+            cases = [
+                ({'development_only': True}, 'unapproved media'),
+                ({'release_approved': False}, 'unapproved media'),
+                ({'release_approved': None}, 'unapproved media'),
+                ({'development_only': None}, 'unapproved media'),
+                ({'sealed_inventory_validation': None}, 'sealed SHA256'),
+                ({'manifest_sha256': ''}, 'sealed SHA256'),
+                ({'packaged_files': files | {'bin/ffplay.exe': '12' * 32}}, 'sealed SHA256'),
+                ({'arch': 'aarch64'}, 'target differs'),
+            ]
+            for fields, error in cases:
+                self.write_final_desktop_receipt(root, base | {'media_runtime': base['media_runtime'] | fields})
+                with self.subTest(fields=fields), self.assertRaisesRegex(ValueError, error):
                     readiness.check_release(root, 'owner/repo', 'v1')
-            evidence.write_text(json.dumps(base | {'release_eligible': False}), encoding='utf-8')
-            with self.assertRaisesRegex(ValueError, 'not release eligible'):
+            self.write_final_desktop_receipt(root, base | {'features': base['features'] + ['github-manual-updates']})
+            with self.assertRaisesRegex(ValueError, 'mandatory platform updates'):
                 readiness.check_release(root, 'owner/repo', 'v1')
-            readiness.check_desktop_package(receipt_path, receipt, require_release_eligibility=False)
-            for fields in ({'sealed_inventory_validation': None}, {'manifest_sha256': ''},
-                           {'packaged_files': files | {'bin/ffplay.exe': '12' * 32}}):
-                evidence.write_text(json.dumps(base | {'media_runtime': base['media_runtime'] | fields}), encoding='utf-8')
-                with self.subTest(fields=fields), self.assertRaisesRegex(ValueError, 'sealed SHA256'):
-                    readiness.check_release(root, 'owner/repo', 'v1')
-            evidence.write_text(json.dumps(base | {'media_runtime': base['media_runtime'] | {'arch': 'aarch64'}}), encoding='utf-8')
-            with self.assertRaisesRegex(ValueError, 'target differs'):
-                readiness.check_release(root, 'owner/repo', 'v1')
-            evidence.write_text(json.dumps(base), encoding='utf-8')
-            readiness.check_desktop_package(receipt_path, receipt)
 
     def test_valid_structure_is_not_service_verification(self):
         self.assertEqual(validate_config(copy.deepcopy(GOOD)), GOOD)
@@ -147,22 +187,25 @@ class OnlinePreflightTests(unittest.TestCase):
             identity = dict(platform='windows', filename=installer.name, version='0.1.3',
                             size=installer.stat().st_size, sha256=readiness.file_hash(installer))
             receipt = root / 'windows-build-receipt.json'
-            receipt.write_text(json.dumps(identity | dict(commit='a'*40, dirty=False,
+            receipt.write_text(json.dumps(identity | dict(commit='a'*40, dirty=False, host_arch='x86_64',
                                update_config='embedded-unverified', update_config_public=config)))
             index = root / 'windows-assets.json'
             asset = identity | dict(arch='x86_64', signing='unknown')
             index.write_text(json.dumps([asset]))
             with self.assertRaisesRegex(ValueError, 'exact clean release commit'):
-                readiness.load_installers(root, commit='b'*40, require_release_eligibility=False)
+                readiness.load_installers(root, commit='b'*40, require_release_signing=False)
             with self.assertRaisesRegex(ValueError, 'Windows installer signing status'):
-                readiness.load_installers(root, commit='a'*40, require_release_eligibility=False)
+                readiness.load_installers(root, commit='a'*40, require_release_signing=False)
             for signing in ('unsigned', 'authenticode'):
                 with self.subTest(signing=signing):
                     index.write_text(json.dumps([asset | dict(signing=signing)]))
-                    _, version = readiness.load_installers(root, commit='a'*40, require_release_eligibility=False)
+                    _, version = readiness.load_installers(root, commit='a'*40, require_release_signing=False)
                     self.assertEqual(version, '0.1.3')
-            desktop.assert_called_with(receipt, mock.ANY, require_release_eligibility=False)
-            readiness.load_installers(root, commit='a'*40, require_release_eligibility=True)
+            desktop.assert_called_with(receipt, mock.ANY)
+            readiness.load_installers(root, commit='a'*40, require_release_signing=True)
+            index.write_text(json.dumps([asset | dict(arch='aarch64', signing='authenticode')]))
+            with self.assertRaisesRegex(ValueError, 'architecture differs'):
+                readiness.load_installers(root, commit='a'*40, require_release_signing=True)
             index.write_text(json.dumps([asset | dict(signing='unsigned')]))
             with self.assertRaisesRegex(ValueError, 'must be authenticode'):
                 readiness.check_release(root, 'owner/repo', 'v0.1.3', commit='a'*40)

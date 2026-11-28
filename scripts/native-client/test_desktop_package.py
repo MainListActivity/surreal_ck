@@ -39,8 +39,21 @@ class DesktopPackageTests(unittest.TestCase):
         cmd = builder.command('macos', 'aarch64-apple-darwin')
         self.assertEqual(cmd[1], 'rustc')
         self.assertEqual(cmd[-3:], ['--', '-C', 'link-arg=-Wl,-rpath,@executable_path/../Frameworks'])
-        self.assertIn('macos-auto-update', cmd[cmd.index('--features') + 1])
+        features = cmd[cmd.index('--features') + 1].split(',')
+        self.assertIn('macos-auto-update', features)
+        self.assertNotIn('github-manual-updates', features)
+        self.assertIn('github-manual-updates', builder.desktop.FEATURES['macos'])
         with self.assertRaises(ValueError): builder.command('macos', 'x86_64-unknown-linux-gnu')
+
+    def test_formal_stage_rejects_an_artifact_with_preview_features(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            event = self.event(root, 'macos')
+            event['features'] = [*event['features'], 'github-manual-updates']
+            out = root / 'raw'
+            with self.assertRaisesRegex(ValueError, '手动更新预览'):
+                builder.stage(event, 'macos', out, {}, 'aarch64-apple-darwin')
+            self.assertFalse(out.exists())
 
     def test_macos_missing_sdk_or_existing_identity_fails_closed(self):
         with self.assertRaises(ValueError): builder.preflight('macos', {})
@@ -54,7 +67,7 @@ class DesktopPackageTests(unittest.TestCase):
             evidence = json.loads((root / 'desktop-package-evidence.json').read_text())
             self.assertEqual(evidence['executable'], 'SurrealCK/surreal-collaboration.exe')
             self.assertEqual(evidence['packaged_executable_sha256'], report['compiled_executable_sha256'])
-            self.assertFalse(evidence['release_eligible'])
+            self.assertNotIn('release_eligible', evidence)
             self.assertEqual(evidence['media_runtime']['status'], 'not-bundled')
             self.assertEqual(evidence['media_runtime']['input_validation'], 'not-configured')
             self.assertEqual(evidence['runtime_validation'], 'not-run')

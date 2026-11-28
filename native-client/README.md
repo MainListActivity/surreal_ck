@@ -2,15 +2,15 @@
 
 NSH 0.4.0 + Rust 原生界面，不使用 WebView。独立 Cargo workspace，不改变既有 Web 应用。
 
-## 最新打包状态（2026-11-11）
+## 最新打包状态（2026-11-28）
 
-正式打包脚本现在显式构建企业信令/媒体/文件与平台 updater，而不是仅交付 NSH 默认 runner：Android 合并实际 updater/SAF/OAuth/media DEX、manifest 和双 ABI host；Windows/macOS 使用手写 `src/main.rs`。Cargo 默认 features 仍为空，直接运行 `nsh package` 不是完整协同安装器流程。
+Windows 和 macOS 正式打包使用手写 `src/main.rs` 和平台 updater。Android 标准流程合并 updater、SAF、OAuth、媒体 DEX、manifest 和双 ABI host。Cargo 默认 features 仍为空，完整安装器走仓库打包脚本。正式 macOS 打包排除手动更新预览 feature，启用平台 updater 或嵌入更新配置时客户端始终进入强制更新门。桌面发布预检按最终安装器回执绑定的包证据、源码、更新配置、媒体清单和平台签名状态核验。
 
-提交 `079aed6` 的 Android 与 Windows 完整协同入口安装包已通过真实 CI 构建和最终包静态校验；macOS 两架构的企业/updater 原生验证通过，但正式 DMG 因缺生产更新公钥/feed/Developer ID 配置停止。每份最终包附独立内容证据，静态通过不等于安装或功能验收，也不消除下述媒体运行时缺口。
+[#319](https://github.com/MainListActivity/surreal_ck/pull/319) 与 [#327](https://github.com/MainListActivity/surreal_ck/pull/327) 的普通 CI 构建验证了 Windows 未签名安装器、Android 测试签名包及 macOS 双架构原生编译检查。正式 DMG 打包、公证与生产接收开关另有门禁。Windows 可生成未签名验收包，进入强制更新渠道仍要求应用与安装器通过 Authenticode。
 
-提交 `bfb036c` 的 macOS 两架构与 Windows 原生安全接收候选探针已全部通过，Windows 额外三项 symlink 攻击也实际执行通过。候选探针不等于完整传输验收；新增真实 Transfer/子进程中断检查仍须在原生 CI 运行，生产接收开关继续关闭。
+macOS 双架构与 Windows 的原生候选探针、真实 Transfer、子进程中断及生产禁用门测试均已通过，Windows 三个单独执行的 symlink 负例也通过。生产接收保持关闭。进程中断测试覆盖落盘提交边界和中断后新传输，自动回收遗留暂存、实际磁盘耗尽及跨用户隔离仍需独立验收。[原生接收 CI](https://github.com/MainListActivity/surreal_ck/actions/runs/45988018879)
 
-仍未完成：生产原生身份/更新服务配置；桌面媒体运行时可信供应链与实际合格输入（打包脚本已接入固定清单验证/复制）；Windows/macOS安全接收全部原生验收；真实登录、会议/屏幕/文件和升级重启测试。最新本地 Android 模拟器安装期间被系统终止，安装结果未知，不把它归为 APK 崩溃或安装成功。已增加 Android/Windows 隔离 CI 安装/启动 smoke 路径，不授予权限或绕过更新门，其结果必须单独等待。
+三种桌面媒体运行时候选已在原生 CI 构建，完成清空 PATH、VP8/Opus、ffplay 和设备后端的合成验证。正式锁仍未启用，须完成再分发审批、macOS 媒体二进制签名与固定清单，再验证正式包。生产身份注册、固定更新信任根与 feed、正式签名公证、干净设备安装和升级仍待回执。[媒体候选 CI](https://github.com/MainListActivity/surreal_ck/actions/runs/45790178370) · [M-11 审计](../.scratch/meeting-and-collaboration/issues/11-native-client-release-signing-pipeline.md)
 
 下文保留开发阶段的历史边界和证据，涉及“默认包/实验宿主”的旧描述以本节和实际打包脚本为准。完整包目标尚未交付。
 
@@ -121,6 +121,7 @@ Android SAF 最终销毁取消的后续源码修复尚未重打入已有 APK；c
 
 ## 预览渠道手动更新（github-manual-updates）
 
+- 此入口只在启用预览 feature 且没有平台强制更新器和嵌入更新配置的构建中启用。
 - 入口在「设置 → 软件更新」，不在首屏。显示本地版本、远端版本、安装方式与最近一次结果。
 - 「下载来源：GitHub / 第三方代理」是单选，只决定安装包字节从哪里下载，切换不联网；「检查更新」是独立按钮，真正请求 GitHub API。
 - 版本号、官方资产地址与 SHA-256 只来自 `api.github.com`（TLS + 主机白名单）。第三方代理（ghfast.top）只承载字节，大小与 SHA-256 必须与 GitHub 官方摘要一致才保存；GitHub API 不可达时检查直接失败，不改信代理提供的版本或校验值。没有第一方可独立验证的清单前，不提供“代理元数据”线路。
