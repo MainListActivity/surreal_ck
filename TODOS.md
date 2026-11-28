@@ -46,12 +46,12 @@
 
 - `01-surrealdb-offsite-backup-and-restore`（`done`）：生产 R2 全量加密备份、异机恢复演练、VPS 每日 19:45 UTC 自动定时任务与健康检查及 `company-landscape.json` 登记均已验收完成
 - `02-vps-port-lockdown-and-retire-legacy`（`done`）：VPS IPv4/IPv6 端口收口持久化、Caddy `/sck-mcp/*` 移除（404）与宿主机残留 plist 清理均已验收完成
-- `03-marketing-commercial-and-legal-compliance`（`ready-for-human`）：官网与试用表单上线，`surreal-ck-operations 0.13.88` 修复反馈转发 502 后接口 5/5 全通；**2026-11-28T06:38:43Z 已由真人浏览器通过生产 Turnstile 完成提交、零隐私泄漏回读与双表清理（回执 `7db09d49...`）**；全部技术验收项已完成，仅余老板/持牌法务对正式隐私/协议文本最终确认签字
-- `04-public-portal-turnstile-and-rate-limit`（`ready-for-agent`）：生产 Turnstile 拒绝路径、第 13 次 `429 + Retry-After` 限流及官网试用表单真人浏览器 Turnstile 提交（`7db09d49...`）均已实测通过；余项为外部门户浏览器复测（并入 `06`）与原生名册客户端衔接决策
+- `03-marketing-commercial-and-legal-compliance`（`done`）：官网商业文案、隐私/协议上线与试用漏斗全链路实测通过（回执 `7db09d49...`，零隐私泄漏、双表清理归零），2026-11-28 UTC 老板正式确认现行隐私/协议文本作为首期试点口径定稿
+- `04-public-portal-turnstile-and-rate-limit`（`ready-for-agent`）：生产 Turnstile 拒绝路径、第 13 次 `429 + Retry-After` 限流、官网真人浏览器 Turnstile 提交（`7db09d49...`）均已通过，老板已确认首期外部名册统一走 Web 端（原生移交 M-08）；唯一余项为外部门户浏览器复测（并入 `06`）
 - `05-native-quota-rollout-decision-and-cutover`（`ready-for-agent`）：老板已书面解冻，`synthetic_internal`（31/31 含 `442d` 移除 7 个旧事件）已于 `2026-11-28T03:53:29Z` 完成实装与物理扫描零差异对账，处于 24h 强制观察窗（`observe_until: 2026-11-29T03:53:29Z`），随后按 `one_percent → ten_percent → fifty_percent → remainder` 推进
 - `06-legacy-done-tickets-production-evidence`（`ready-for-agent`）：已派发独立生产 QA 任务 `17785c49`（`qa-claude-c4c68d` 已完成生产 `ops_login` 执行中），补齐 VER-06 / VO-04 / VO-06 / claims-vertical / external-collaborator-portal 实测证据与清理回执
 
-本次生产 TiKV 全量备份与每日定时调度已收口（15 ns / 72 db，异机恢复 227.52 秒零差异），VPS 端口与遗留面已锁闭；官网反馈通道经 `0.13.88` 修复后完成接口 5/5 与真人浏览器 Turnstile 提交全链路实测（回执 `7db09d49...`，零隐私泄漏、双表清理归零），公开入口 `429 + Retry-After` 实测通过；原生配额已按老板授权解冻并完成 `synthetic_internal` 31/31 切流（`in_sync: 9 → 35`，`native-audit` 零报错，24h 观察窗至 `2026-11-29T03:53:29Z`）；P-06 独立生产 QA 正在执行。[生产验真记录](docs/runbooks/pilot-production-acceptance.md)
+本次生产 TiKV 全量备份与每日定时调度（P-01）、VPS 端口与遗留面锁闭（P-02）、官网商业文案/法务口径与真人浏览器 Turnstile 试用闭环（P-03）均已结案 `done`；P-04 公开入口 `429 + Retry-After`、真人 Turnstile 提交与首期外部名册只走 Web 策略已落盘（仅余外部门户浏览器复测并入 P-06）；P-05 原生配额已完成 `synthetic_internal` 31/31 切流（`in_sync: 9 → 35`，`native-audit` 零报错，24h 观察窗至 `2026-11-29T03:53:29Z`）；P-06 独立生产 QA 正在执行。[生产验真记录](docs/runbooks/pilot-production-acceptance.md)
 
 ## 已经落地的底座（不再派发实现）
 
