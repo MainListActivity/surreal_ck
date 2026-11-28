@@ -30,3 +30,7 @@ Status: ready-for-human
 - `main` 已合入鉴权签发、原生自动配置、部署手册和同机中继对端配置修正。签发套件 6 项通过，覆盖未登录、成员撤权、跨工作区、过期、配置缺失及有效期边界。原生身份库的短期配置请求测试和 Web 直连失败回退状态机已过。[PR #305](https://github.com/MainListActivity/surreal_ck/pull/305) · [PR #306](https://github.com/MainListActivity/surreal_ck/pull/306) · [PR #307](https://github.com/MainListActivity/surreal_ck/pull/307) · [PR #318](https://github.com/MainListActivity/surreal_ck/pull/318)
 - 隔离 coturn 4.6.3 实测两端选中 relay 并双向收到音频包。有效、错签、过期短期认证三项实测符合预期。部署版本、准入对端策略及公网路径待另验。[本轮回执](12-meeting-e2e-and-pilot-acceptance.md#本地验收回执)
 - 等待在经授权的候选环境复核 coturn 过期和错签拒绝、对端允许清单及实际 TLS/UDP/TCP，完成同机三账号与至少双网络、对称 NAT 或热点的双向 RTP 和共享。按边记录选中路径、无授权回退负例、续租和分配回收。[TURN 手册](../../../docs/runbooks/meeting-turn.md) · [原生验收证据模板](../../../docs/runbooks/native-meeting-evidence.md)
+
+## Comments
+
+- 2026-11-28 本地验收。本轮真实 coturn 选中 relay 并双向收发 RTP，实验室 Rust 用例 2060 毫秒。日常 Web 访客的实际选中路径是 host/host UDP。跨公网、单边路径故障和授权部署端口核验仍待执行。[Web 与无证书原生本地验收](../../../docs/runbooks/meeting-pilot-web-verification.md)

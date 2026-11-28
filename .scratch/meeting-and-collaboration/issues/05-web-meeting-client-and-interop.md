@@ -32,3 +32,7 @@ Status: ready-for-human
 - `main` 已合入 Web 会议、直连查询响应解析、管理员使用本人参会票据、连接恢复后清除旧错误提示和主持人结束状态修正。Web 会议套件 49 项覆盖会前权限分类、共享停止、信令、主持人散会和媒体回收。原生信令夹具用完整模板及 069 前模板在公司 fork 实测通过。[PR #308](https://github.com/MainListActivity/surreal_ck/pull/308) · [PR #321](https://github.com/MainListActivity/surreal_ck/pull/321) · [PR #322](https://github.com/MainListActivity/surreal_ck/pull/322) · [PR #334](https://github.com/MainListActivity/surreal_ck/pull/334)
 - Mac 上 Rust 原生媒体对端与 Chrome 各发起一次连接，两轮均实收音频包与两路视频帧。媒体输入为合成信号，协商和 RTP 走本机真实连接。原生身份探测另修复 4.0.1 fork 对缺表查询返回空结果导致的误判。[本轮回执](12-meeting-e2e-and-pilot-acceptance.md#本地验收回执)
 - 待在固定候选包和真实浏览器执行双向建会与入会、音视频/共享/聊天以及 3 秒同步，确认拒绝摄像头后纯音频及退出前设备灯熄灭。需覆盖 Chrome、Safari、手机和对应的原生候选端。
+
+## Comments
+
+- 2026-11-28 本地验收。编译 Web 已在隔离全栈完成日常访客媒体与消息，移动视口及微信 UA 引导已实测。原生三路 RTP 的两轮互通使用真实 Rust 传输对端。已装原生应用与完整 Web 的企业登录、消息和物理设备回收，以及实际手机和 Safari 仍待候选联测。[Web 与无证书原生本地验收](../../../docs/runbooks/meeting-pilot-web-verification.md)

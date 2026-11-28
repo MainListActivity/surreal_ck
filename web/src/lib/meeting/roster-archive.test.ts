@@ -43,3 +43,9 @@ test("归档 CSV 对公式型文本进行转义，保留数字和布尔值", () 
     { name: " =1+1", attended: false, duration_ms: 0 },
   ] })).toBe("\uFEFFname,attended,duration_ms\r\n' =1+1,false,0\r\n");
 });
+
+test("归档 CSV 转义名册中以全角公式字符开头的中文文本", () => {
+  const names = ["＝合成债权人", "　＋合成债权人", "－合成债权人", "＠合成债权人", "合成债权人"];
+  const csv = buildRosterArchiveCsv({ label: "签到", fields: ["name"], rows: names.map((name) => ({ name })) });
+  expect(csv).toBe("\uFEFFname\r\n'＝合成债权人\r\n'　＋合成债权人\r\n'－合成债权人\r\n'＠合成债权人\r\n合成债权人\r\n");
+});

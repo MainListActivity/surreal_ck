@@ -30,3 +30,7 @@ Status: ready-for-human
 
 - `main` 已合入首屏登录、工作区选择、四模块导航、标题栏状态和设置中的诊断入口。以 Rust 1.99.1 在 Apple Silicon 运行原生客户端单元与无界面交互测试，并通过同配置的 `cargo check`、`clippy`。[PR #319](https://github.com/MainListActivity/surreal_ck/pull/319) · [本轮命令与回执](12-meeting-e2e-and-pilot-acceptance.md#本地验收回执)
 - 上述五项按原验收口径保留未勾选。需在同版桌面候选包用真实账号回调，实扫空会话、离线、媒体单停与全停、诊断、指纹和更新门禁，并留关键页面脱敏截图。Windows 等其他目标平台的检查也需补证。
+
+## Comments
+
+- 2026-11-28 本地验收。Apple Silicon ad-hoc DMG 已挂载、严格验签并启动。预览窗口 1078 毫秒出现，缺更新信任配置的门禁窗口 1249 毫秒出现。headless 用例分别验证锁定入口和预览壳层。无证书自签版验收，不替代 Apple Developer ID / Authenticode 正式签名。正式设备登录、视觉取证及多平台签名仍待验收。[Web 与无证书原生本地验收](../../../docs/runbooks/meeting-pilot-web-verification.md)

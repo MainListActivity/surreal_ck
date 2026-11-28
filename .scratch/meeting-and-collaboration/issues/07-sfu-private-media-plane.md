@@ -30,3 +30,7 @@ Status: ready-for-human
 
 - 私有 LiveKit、按场限权、移出/散会和移动端纯音频选择已合入。隔离真实 LiveKit 覆盖签发校验、伪造/跨工作区拒绝、禁发轨道、旧凭据重放、信令关闭和超席位拒绝。房间管理口公网不可达仍需在获准候选环境复核。[PR #310](https://github.com/MainListActivity/surreal_ck/pull/310) · [PR #320](https://github.com/MainListActivity/surreal_ck/pull/320) · [部署与容量手册](../../../docs/runbooks/meeting-sfu.md)
 - 单房当前部署配置为最多 15 席、实例总预留 30 席。待隔离目标规格实例 30+ 连接持续 15 分钟的 CPU/RSS、出网、丢包、恢复及同期 Hono 健康对照，另待手机 Wi-Fi ↔ 蜂窝网重连与纯音频实测，以及真实媒体断流计时。没有生产压测回执。
+
+## Comments
+
+- 2026-11-28 本地验收。三个独立外部 Chrome 上下文在隔离 LiveKit 同时接入。测到真实 RTP 和只听权限，媒体 JWT 的工作区拒绝已复核。保持单场 15 席设置，30+ 并发容量、部署管理口可达性和手机跨网仍待测。[Web 与无证书原生本地验收](../../../docs/runbooks/meeting-pilot-web-verification.md)

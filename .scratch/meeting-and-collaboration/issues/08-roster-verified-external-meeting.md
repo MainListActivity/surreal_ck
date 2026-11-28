@@ -35,3 +35,7 @@ Status: ready-for-human
 
 - 已合入模板映射、一次性导出、补发/吊销、名册显示名、单活代际及审计。公司 fork 验证配额不足整批拒绝、唯一索引冲突整批回滚、两种准入及会话更换策略、越权拒绝和统一错误。真实 LiveKit 验证更换身份后旧信令和旧参与者关闭。Chrome 组件验证只读姓名、等候与知情确认门禁。[PR #313](https://github.com/MainListActivity/surreal_ck/pull/313) · [PR #317](https://github.com/MainListActivity/surreal_ck/pull/317) · [本轮回执](12-meeting-e2e-and-pilot-acceptance.md#本地验收回执)
 - 首期外部名册参会统一走 Web，原生用例另待发布准入。待获准环境在桌面及手机浏览器走真实核验，覆盖实体校对、两端互踢或拒绝并发、吊销退场和旧链接失效，并测量断流时间。[Web 首期决策 #339](https://github.com/MainListActivity/surreal_ck/pull/339)
+
+## Comments
+
+- 2026-11-28 本地验收。Chrome 已验 34 条一次性邀请、公式和中文 CSV、显示名只读、知情门禁、真实信令单活替换、第二场 409 拒并发及实际媒体 JWT 的成员目录和 fork 拒绝。单人吊销至媒体连接关闭 79 毫秒。首期外部名册从 Web 参会，真实手机和生产挑战仍待候选验收。[Web 与无证书原生本地验收](../../../docs/runbooks/meeting-pilot-web-verification.md)
