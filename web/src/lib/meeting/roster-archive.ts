@@ -59,7 +59,9 @@ function archiveText(value: unknown): string {
 
 function csvCell(value: unknown): string {
   let text = archiveText(value);
-  if (typeof value === "string" && /^[\s\uFEFF]*[=+@-]|^[\t\r\n]/.test(text)) text = "'" + text;
+  if (typeof value === "string" && (/^[\s\uFEFF]*[=+@－＝＋＠-]/u.test(text) || /^[\t\r\n]/u.test(text))) {
+    text = "'" + text;
+  }
   return /[",\n\r]/.test(text) ? '"' + text.replaceAll('"', '""') + '"' : text;
 }
 

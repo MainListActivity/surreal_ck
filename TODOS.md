@@ -20,25 +20,25 @@
 
 ### 主线 1 — 全场景保密协同与会议（`.scratch/meeting-and-collaboration/`）
 
-会议实现与本地证据已回写。四场候选实测和独立 QA 放行仍待完成，首期外部名册参会使用 Web。[会议 PRD](.scratch/meeting-and-collaboration/PRD.md) · [M-12 验收回执](.scratch/meeting-and-collaboration/issues/12-meeting-e2e-and-pilot-acceptance.md) · [管理人手册](docs/pilot/meeting-host-guide.md) · [外部参会指南](docs/pilot/external-participant-guide.md)
+首期债权人名单核验和参会使用 Web。隔离真实全栈、Chrome 和 Apple Silicon ad-hoc 预览的本轮回执已归档。正式签名、跨公网真机和独立 QA 放行仍待完成。[本轮本地验收](docs/runbooks/meeting-pilot-web-verification.md) · [会议 PRD](.scratch/meeting-and-collaboration/PRD.md) · [M-12 验收回执](.scratch/meeting-and-collaboration/issues/12-meeting-e2e-and-pilot-acceptance.md) · [管理人手册](docs/pilot/meeting-host-guide.md) · [外部参会指南](docs/pilot/external-participant-guide.md)
 
 - **波次 1（架构锁盘 + 原生客户端改版 + 公网互通）**：
   - `01-meeting-architecture-adr`（`ready-for-agent`）：全场景会议架构与外部参会安全 ADR（日常小会 P2P+托管TURN vs 外部正式大会私有 SFU、零注册/零 DB 凭证边界、隐私与录制红线）
-  - `02-native-client-ux-shell-v2`（`ready-for-human`）：UI v2 已合入，待候选包真实登录、设备状态和页面取证。
-  - `03-native-client-chat-files-prejoin-v2`（`ready-for-human`）：原生单元与无界面交互已验，待桌面文件、会前权限、共享及迷你条实测。
-  - `04-managed-turn-and-cross-network`（`ready-for-human`）：签发和本地 relay 已验，待授权 TURN 负例和三账号跨网取证。
+  - `02-native-client-ux-shell-v2`（`ready-for-human`）：Apple Silicon ad-hoc 预览与无信任配置门禁启动、壳层检查已过，待原生真实身份登录、物理设备状态和视觉取证。
+  - `03-native-client-chat-files-prejoin-v2`（`ready-for-human`）：原生库与无界面交互已验，传输夹具双向三路媒体已验，待已装包的桌面文件、会前权限、共享及迷你条实测。
+  - `04-managed-turn-and-cross-network`（`ready-for-human`）：签发与本地真实 coturn 双向 relay 已验，待授权公网 TURN 和三账号跨网取证。
 - **波次 2（免下载 Web 会议 + 日常外部访客）**：
-  - `05-web-meeting-client-and-interop`（`ready-for-human`）：Web 状态机和微信模拟引导已验，待实际候选包跨端联测与设备回收。
-  - `06-external-guest-join-and-waiting-room`（`ready-for-human`）：本地准入和访客隔离已验，待候选隐私浏览器放行、媒体互通及移出和散会时序。
+  - `05-web-meeting-client-and-interop`（`ready-for-human`）：实际 Web 与微信 UA 引导、同机原生传输 ↔ Chrome 已验，待已装原生应用与完整 Web 的身份、音视频、消息和设备回收联测。
+  - `06-external-guest-join-and-waiting-room`（`ready-for-human`）：本地隐私 Chrome 的免注册、等候、双向媒体/消息、共享、移出和原链接重入拒绝已验，待公网真人挑战与跨端复核。
 - **波次 3（私有 SFU + 受控外部正式会议闭环）**：
-  - `07-sfu-private-media-plane`（`ready-for-human`）：隔离 LiveKit 限权已验，待管理口边界、30+ 隔离容量基线与手机切网。
-  - `08-roster-verified-external-meeting`（`ready-for-human`）：名册事务、配额和代际已验，待桌面及手机真实核验、互踢和吊销。
-  - `09-host-order-controls-and-hand-raise`（`ready-for-human`）：会控权限和媒体限权已验，待三端语音、共享聚焦及收麦、散会计时。
-  - `10-meeting-attendance-voting-writeback`（`ready-for-human`）：真实 fork 已验签到去重、表决并发和幂等回写，待浏览器综合演练与导出抽检。
-  - `13-meeting-recording-and-evidence-bundle`（`ready-for-human`）：隔离直录、合成、独立验真及篡改拒绝已验，待候选全端存证、隔离容量和部署存证域验证。
+  - `07-sfu-private-media-plane`（`ready-for-human`）：隔离 LiveKit 和多上下文接入已验，待部署管理口边界、30+ 隔离容量基线与手机实际切网。
+  - `08-roster-verified-external-meeting`（`ready-for-human`）：隔离浏览器已验 34 条签发、移动视口、单活替换/拒并发及名册零 DB 权限，待实际手机和生产 Turnstile 挑战。
+  - `09-host-order-controls-and-hand-raise`（`ready-for-human`）：隔离浏览器已验举手排队、点名和撤麦、全员静音、共享聚焦及三端散会断流，待跨端与部署复核。
+  - `10-meeting-attendance-voting-writeback`（`ready-for-human`）：隔离浏览器已验两项表决、异议与 PDF、散会自动回写、多段签到去重和双 CSV 导出，待完整音视频轮及跨端回归。
+  - `13-meeting-recording-and-evidence-bundle`（`ready-for-human`）：隔离浏览器音频轮已验管理员下载、独立验真及篡改拒绝，待短发言封存修复、完整音视频时间轴、容量和部署存证域验证。
 - **波次 4（正式签名分发 + 综合验收）**：
   - `11-native-client-release-signing-pipeline`（`ready-for-human`，依赖 `02`、`03`、`04`）：macOS Developer ID 签名公证、生产更新信任根/feed、媒体供应链锁定与安全接收原生 CI
-  - `12-meeting-e2e-and-pilot-acceptance`（`ready-for-human`，依赖 `03`、`05`、`06`、`09`、`10`、`11`、`13`）：本地证据与两份手册已交付，待授权候选四场验收及产品、QA 独立复核。
+  - `12-meeting-e2e-and-pilot-acceptance`（`ready-for-human`，依赖 `03`、`05`、`06`、`09`、`10`、`11`、`13`）：本地隔离全栈与无证书测试回执已回写，候选公网、已装包跨端及产品和 QA 独立验收仍待完成。
 
 ### 主线 2 — 种子律所生产就绪与商业收口（`.scratch/pilot-production-readiness/`，可与主线 1 并行）
 

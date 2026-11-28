@@ -30,3 +30,7 @@ Status: ready-for-human
 
 - `main` 已合入举手顺序、仅给被点名者麦克风发布权限、全员静音、画面聚焦、锁房与散会。真实 LiveKit 检查麦克风授权/撤权、协办权限仅限本场共享，Bun 路由检查普通参会身份调用主持接口返回 `403`。当前名册等候室提供逐人准入，批量准入需单独确认交付范围。[PR #314](https://github.com/MainListActivity/surreal_ck/pull/314) · [本轮回执](12-meeting-e2e-and-pilot-acceptance.md#本地验收回执)
 - 待三端以上真机核对实名举手排序、语音发言及撤权/全员静音后 2 秒内断流、手机和桌面同步聚焦共享，以及散会 3 秒内离场和设备释放。原生主持席联测依赖相应候选功能开通。
+
+## Comments
+
+- 2026-11-28 本地验收。本地真实 Chrome 和 LiveKit 已验两人举手排序、点名后实际音频 RTP、撤麦、全静音、共享聚焦。连续音频轮收麦 59 毫秒，散会后三端断流最大 108 毫秒。实际手机和原生主持跨端仍待复核。[Web 与无证书原生本地验收](../../../docs/runbooks/meeting-pilot-web-verification.md)
