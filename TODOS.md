@@ -20,25 +20,25 @@
 
 ### 主线 1 — 全场景保密协同与会议（`.scratch/meeting-and-collaboration/`）
 
-依据：[`.scratch/meeting-and-collaboration/PRD.md`](.scratch/meeting-and-collaboration/PRD.md)，共 13 张可独立验证工单，按 4 个波次推进：
+会议实现与本地证据已回写。四场候选实测和独立 QA 放行仍待完成，首期外部名册参会使用 Web。[会议 PRD](.scratch/meeting-and-collaboration/PRD.md) · [M-12 验收回执](.scratch/meeting-and-collaboration/issues/12-meeting-e2e-and-pilot-acceptance.md) · [管理人手册](docs/pilot/meeting-host-guide.md) · [外部参会指南](docs/pilot/external-participant-guide.md)
 
 - **波次 1（架构锁盘 + 原生客户端改版 + 公网互通）**：
   - `01-meeting-architecture-adr`（`ready-for-agent`）：全场景会议架构与外部参会安全 ADR（日常小会 P2P+托管TURN vs 外部正式大会私有 SFU、零注册/零 DB 凭证边界、隐私与录制红线）
-  - `02-native-client-ux-shell-v2`（`ready-for-agent`）：协同 APP 壳层与产品文案改版（v2 阶段一，去“验收工具感”、登录前置首屏）
-  - `03-native-client-chat-files-prejoin-v2`（`ready-for-agent`，依赖 `02`）：消息分组、显式文件卡片、会议首页、会前检查与防递归共享（v2 阶段二）
-  - `04-managed-turn-and-cross-network`（`ready-for-agent`，依赖 `01`）：托管短时 STUN/TURN 凭据签发与三账号跨网公网互通验收
+  - `02-native-client-ux-shell-v2`（`ready-for-human`）：UI v2 已合入，待候选包真实登录、设备状态和页面取证。
+  - `03-native-client-chat-files-prejoin-v2`（`ready-for-human`）：原生单元与无界面交互已验，待桌面文件、会前权限、共享及迷你条实测。
+  - `04-managed-turn-and-cross-network`（`ready-for-human`）：签发和本地 relay 已验，待授权 TURN 负例和三账号跨网取证。
 - **波次 2（免下载 Web 会议 + 日常外部访客）**：
-  - `05-web-meeting-client-and-interop`（`ready-for-agent`，依赖 `01`、`04`）：Web 浏览器会议端与原生协同 APP 互通（含微信内置浏览器引导）
-  - `06-external-guest-join-and-waiting-room`（`ready-for-agent`，依赖 `01`、`04`、`05`）：日常办公外部访客免下载免注册入会、等候室放行、踢出禁重入与零 DB 隔离
+  - `05-web-meeting-client-and-interop`（`ready-for-human`）：Web 状态机和微信模拟引导已验，待实际候选包跨端联测与设备回收。
+  - `06-external-guest-join-and-waiting-room`（`ready-for-human`）：本地准入和访客隔离已验，待候选隐私浏览器放行、媒体互通及移出和散会时序。
 - **波次 3（私有 SFU + 受控外部正式会议闭环）**：
-  - `07-sfu-private-media-plane`（`ready-for-agent`，依赖 `01`、`04`、`05`）：自托管私有 SFU 媒体平面（支撑 50–200 人大会、移动端纯音频省流与容量压测）
-  - `08-roster-verified-external-meeting`（`ready-for-agent`，依赖 `01`、`07`）：名册核验型外部正式会议（支撑债权人会议，批量签发个人链接/访问码、单活互踢、单人吊销，法律术语留模板包）
-  - `09-host-order-controls-and-hand-raise`（`ready-for-agent`，依赖 `07`、`08`）：主持人秩序强控（服务端强制全员静音禁自开、举手排队点名发言、锁定共享、结束全体会议）
-  - `10-meeting-attendance-voting-writeback`（`ready-for-agent`，依赖 `08`、`09`）：精确签到与举手发言只追加流水、会中表决与异议、个人回执 PDF 及原子幂等回写工作簿
-  - `13-meeting-recording-and-evidence-bundle`（`ready-for-agent`，依赖 `01`、`07`、`09`、`10`）：存证知情确认门禁、私有 SFU 轻量轨道直录 + 异步合成带 UTC 水印视频与分轨音频、私有加密归档与 SHA-256 根哈希《会议存证包》（预留 32 字节 TSA 司法时间戳接口）
+  - `07-sfu-private-media-plane`（`ready-for-human`）：隔离 LiveKit 限权已验，待管理口边界、30+ 隔离容量基线与手机切网。
+  - `08-roster-verified-external-meeting`（`ready-for-human`）：名册事务、配额和代际已验，待桌面及手机真实核验、互踢和吊销。
+  - `09-host-order-controls-and-hand-raise`（`ready-for-human`）：会控权限和媒体限权已验，待三端语音、共享聚焦及收麦、散会计时。
+  - `10-meeting-attendance-voting-writeback`（`ready-for-human`）：真实 fork 已验签到去重、表决并发和幂等回写，待浏览器综合演练与导出抽检。
+  - `13-meeting-recording-and-evidence-bundle`（`ready-for-human`）：隔离直录、合成、独立验真及篡改拒绝已验，待候选全端存证、隔离容量和部署存证域验证。
 - **波次 4（正式签名分发 + 综合验收）**：
   - `11-native-client-release-signing-pipeline`（`ready-for-human`，依赖 `02`、`03`、`04`）：macOS Developer ID 签名公证、生产更新信任根/feed、媒体供应链锁定与安全接收原生 CI
-  - `12-meeting-e2e-and-pilot-acceptance`（`ready-for-agent`，依赖 `03`、`05`、`06`、`09`、`10`、`11`、`13`）：全场景端到端压测、存证包完整性验真与种子律所操作手册交付
+  - `12-meeting-e2e-and-pilot-acceptance`（`ready-for-human`，依赖 `03`、`05`、`06`、`09`、`10`、`11`、`13`）：本地证据与两份手册已交付，待授权候选四场验收及产品、QA 独立复核。
 
 ### 主线 2 — 种子律所生产就绪与商业收口（`.scratch/pilot-production-readiness/`，可与主线 1 并行）
 
@@ -61,7 +61,7 @@ Web pivot 的五个需求簇（A 仓库重组、B Hono 骨架、C workspace-as-d
 - **虚拟员工 runtime & 虚拟办公室**（`.scratch/virtual-employee-runtime/`、`.scratch/virtual-office/`）：VER-01..06、VO-01..06 全部 `Status: done`，实现已上 `main`。生产验收证据补齐见主线 2 工单 `06`。
 - **律师破产债权垂直簇**（`.scratch/claims-vertical/`）：01..06 均 `Status: done`，实现已上 `main`。生产复测收口见主线 2 工单 `06`。
 - **外部协作者门户**（`.scratch/external-collaborator-portal/`）：主干已合入（PR `#275` 等），生产验收记录见已合并的 PR `#278` 及主线 2 工单 `06`。
-- **原生协同客户端与内部 P2P 会议底座**（`native-client/`、`native-call/`、`062-native-signaling.surql`、`069-native-meeting.surql`）：双人信令与工作区内部成员会议骨架已合入 `main`；UI v2 改版、托管 TURN、Web 互通、外部免安装参会与私有 SFU 见主线 1。
+- **原生协同客户端与内部 P2P 会议底座**（`native-client/`、`native-call/`、`062-native-signaling.surql`、`069-native-meeting.surql`）：双人信令、工作区内部成员会议、UI v2、托管 TURN、Web 会议及私有媒体已合入 `main`，候选验收见主线 1。
 - **shadcn 迁移 / server-skeleton / 法律内容 MCP / 法律内容持续采集**：实现工单均标 `done`（其中法律内容真实来源授权与持续采集未生产就绪，运营侧 bootstrap 现状需在主线 2 工单 `06` 核实）。
 - **AI 产品层**（`.scratch/agentic-ai-product/`）：全部 done / wontfix，作为语义参考保留。
 

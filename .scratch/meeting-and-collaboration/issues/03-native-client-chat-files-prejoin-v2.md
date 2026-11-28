@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: ready-for-human
 
 # 03 · 协同 APP 消息分组、文件卡片与会前检查（v2 阶段二）
 
@@ -25,3 +25,8 @@ Status: ready-for-agent
 
 **依赖**：`02`。  
 **验证方式**：Rust 单元测试 + headless UI 测试 + 真实桌面端音视频/文件/共享手测录屏。
+
+## 本轮证据
+
+- `main` 已合入消息分组与草稿、文件确认卡片、会议首页与会前检查、共享控制及会议迷你条。原生客户端单元和无界面 UI 测试已通过，覆盖会议状态、权限提示和离场隐私告警。[PR #319](https://github.com/MainListActivity/surreal_ck/pull/319) · [本轮命令与回执](12-meeting-e2e-and-pilot-acceptance.md#本地验收回执)
+- 各项仍需真实桌面验证，含断网草稿和重试、实际文件接收/拒绝/进度/取消、两种入会入口与摄像头拒绝、共享源和停止采集、防递归，以及切回消息后媒体与迷你条操作。补齐目标平台的录屏和完整状态转换覆盖后再勾选。

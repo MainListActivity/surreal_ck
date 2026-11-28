@@ -159,7 +159,7 @@ impl SignalConnection {
         .await
         .map_err(|_| IdentityError::Network)??
         .map_err(|error| rpc_failure(&error))?;
-        if !statement_rows(probe)?.is_empty() {
+        if statement_rows(probe)? != [Value::Bool(true)] {
             return Err(IdentityError::SignalUnavailable);
         }
         session.ensure_current()?;
@@ -521,17 +521,29 @@ fn rpc_failure(error: &Value) -> IdentityError {
         IdentityError::SignalUnavailable
     }
 }
-/// 语句级 ERR：仅把「native_signal* 表不存在」识别为 062 未应用，其余保持不可用。
+/// 语句级 ERR：只在 062 的探测函数或信令表不存在时提示缺少迁移。
 fn statement_failure(statement: &Value) -> IdentityError {
     let details = statement.get("details");
-    let table = details
-        .filter(|d| d.get("kind").and_then(Value::as_str) == Some("Table"))
+    let kind = details.and_then(|d| d.get("kind")).and_then(Value::as_str);
+    let name = details
         .and_then(|d| d.get("details"))
         .and_then(|d| d.get("name"))
         .and_then(Value::as_str);
-    if statement.get("kind").and_then(Value::as_str) == Some("NotFound")
-        && table.is_some_and(|name| name.starts_with("native_signal"))
-    {
+    let missing_signal_schema = match (kind, name) {
+        (Some("Function"), Some("fn::signal_member_active")) => true,
+        (Some("Table"), Some(table)) => table.starts_with("native_signal"),
+        _ => false,
+    };
+    let error_kind = statement.get("kind").and_then(Value::as_str);
+    // 4.0.1 可将缺失函数包装为 Internal，且只在 result 中保留函数名。
+    let missing_probe = error_kind == Some("Internal")
+        && statement
+            .get("result")
+            .and_then(Value::as_str)
+            .is_some_and(|message| {
+                message.starts_with("Function 'fn::signal_member_active' not found:")
+            });
+    if missing_probe || (error_kind == Some("NotFound") && missing_signal_schema) {
         IdentityError::SignalSchemaMissing
     } else {
         IdentityError::SignalUnavailable

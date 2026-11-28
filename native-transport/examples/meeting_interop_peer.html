@@ -91,27 +91,35 @@ async function postDescription(description, byMid) {
   if (!response.ok) throw new Error(`POST /${type}：${response.status} ${await response.text()}`);
 }
 
-async function start() {
-  if (!['offerer', 'answerer'].includes(role)) throw new Error('需要 ?role=offerer 或 ?role=answerer');
-  const devices = await navigator.mediaDevices.getUserMedia({
-    audio: true, video: { width: 320, height: 240, frameRate: 15 },
-  });
+function syntheticVideo(label, hue) {
   const canvas = Object.assign(document.createElement('canvas'), { width: 320, height: 240 });
   const context = canvas.getContext('2d');
   let frame = 0;
   function draw() {
-    context.fillStyle = `hsl(${frame++ % 360} 85% 45%)`;
+    context.fillStyle = `hsl(${(hue + frame++) % 360} 85% 45%)`;
     context.fillRect(0, 0, canvas.width, canvas.height);
     context.fillStyle = '#fff';
     context.font = '24px sans-serif';
-    context.fillText(`Chrome screen ${frame}`, 16, 50);
+    context.fillText(`${label} ${frame}`, 16, 50);
   }
   draw();
   setInterval(draw, 1000 / 15);
+  return canvas.captureStream(15).getVideoTracks()[0];
+}
+
+async function start() {
+  if (!['offerer', 'answerer'].includes(role)) throw new Error('需要 ?role=offerer 或 ?role=answerer');
+  // 使用合成信号测量实际 WebRTC 收发，避免无界面浏览器等待设备权限。
+  const audio = new AudioContext();
+  const sink = audio.createMediaStreamDestination();
+  const tone = audio.createOscillator();
+  tone.connect(sink);
+  tone.start();
+  await audio.resume();
   const tracks = {
-    microphone: devices.getAudioTracks()[0],
-    camera: devices.getVideoTracks()[0],
-    screen: canvas.captureStream(15).getVideoTracks()[0],
+    microphone: sink.stream.getAudioTracks()[0],
+    camera: syntheticVideo('Chrome camera', 0),
+    screen: syntheticVideo('Chrome screen', 180),
   };
   const outgoing = new MediaStream(Object.values(tracks));
   const byMid = new Map();

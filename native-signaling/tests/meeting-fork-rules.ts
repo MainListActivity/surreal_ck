@@ -82,11 +82,12 @@ try {
   await root.signin({ username: "fixture", password: "local-only" });
   await root.query("DEFINE NAMESPACE local; USE NS local; DEFINE DATABASE main; DEFINE DATABASE other; DEFINE DATABASE old;");
   const scripts = await loadTemplateScripts({ oidcJwksUrl: "http://127.0.0.1:18737/jwks" });
-  assert.equal(scripts.at(-1)?.name, "069-native-meeting.surql");
+  const meetingMigration = scripts.find(({ name }) => name === "069-native-meeting.surql");
+  assert(meetingMigration, "工作区模板缺少 meeting_v1 迁移");
   for (const database of ["main", "other", "old"]) {
     await use(root, database);
     for (const script of scripts) {
-      if (database === "old" && script.version === 64) continue;
+      if (database === "old" && script.version >= meetingMigration.version) break;
       await root.query(script.sql);
     }
     await root.query(`
@@ -271,7 +272,7 @@ try {
   await root.query("UPDATE type::record('native_meeting_room', $id) SET expires_at = time::now() - 1s;", { id: hard.room.id });
   await denied(rpc(z, "join", hard.room.code, hex()), "expired");
   await denied(rpc(x, "renew", hard.room.id, hard.local_join), "expired");
-  console.log("PASS 001–069 真实 fork：SDP 清理与防重放、掉线超时、硬过期");
+  console.log("PASS 完整模板真实 fork：SDP 清理与防重放、掉线超时、硬过期");
 } finally {
   await Promise.allSettled(clients.map((client) => client.close()));
   child.kill();

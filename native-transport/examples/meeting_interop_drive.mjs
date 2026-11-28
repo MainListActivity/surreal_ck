@@ -21,8 +21,8 @@ const browser = await chromium.launch({
   executablePath: process.env.CHROME_BIN,
   headless: true,
   args: [
-    '--use-fake-device-for-media-stream',
-    '--use-fake-ui-for-media-stream',
+    '--autoplay-policy=no-user-gesture-required',
+    '--disable-background-timer-throttling',
     '--disable-features=WebRtcHideLocalIpsWithMdns',
   ],
 });
@@ -69,7 +69,11 @@ async function run() {
     const page = await browser.newPage();
     page.on('pageerror', error => console.error('浏览器：', error.message));
     await page.goto(`${base}/?role=${browserRole}`);
-    await page.evaluate(() => window.interopReady);
+    const ready = await Promise.race([
+      page.evaluate(() => window.interopReady).then(() => true),
+      done.then(() => false),
+    ]);
+    assert(ready, `浏览器尚未完成协商，原生进程已退出：${JSON.stringify(peerResult)}`);
     let report;
     while (!peerResult) {
       const snapshot = await page.evaluate(() => window.interopReport());
