@@ -82,6 +82,20 @@ fn database_failures_are_classified_without_echoing_messages() {
         statement_rows(missing),
         Err(IdentityError::SignalSchemaMissing)
     );
+    let missing_probe = json!([{"status":"ERR","kind":"NotFound","details":{
+        "kind":"Function","details":{"name":"fn::signal_member_active"}
+    }}]);
+    assert_eq!(
+        statement_rows(missing_probe),
+        Err(IdentityError::SignalSchemaMissing)
+    );
+    let wrapped = json!([{"status":"ERR","kind":"Internal",
+        "result":"Function 'fn::signal_member_active' not found: The function 'fn::signal_member_active' does not exist"
+    }]);
+    assert_eq!(
+        statement_rows(wrapped),
+        Err(IdentityError::SignalSchemaMissing)
+    );
     let other = json!([{"status":"ERR","kind":"NotFound","details":{"kind":"Table","details":{"name":"user"}},"result":"x"}]);
     assert_eq!(statement_rows(other), Err(IdentityError::SignalUnavailable));
     assert_eq!(
@@ -145,8 +159,8 @@ impl ForkFixture {
         let version = Command::new(binary).arg("version").output().unwrap();
         assert!(
             String::from_utf8_lossy(&version.stdout)
-                .contains("3.3.0-native-quota.1+sha.f30704bce914"),
-            "fixture requires the verified fork build"
+                .contains("4.0.1-native-quota.1+sha.eab8473e4d4e9f0bfecde6013862ff18a7a676a9"),
+            "夹具必须使用质量门禁认证的公司 fork 制品"
         );
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
@@ -216,7 +230,15 @@ impl ForkFixture {
             rpc(&mut root, root_id, "use", json!(["local", database]))
                 .await
                 .unwrap();
-            let setup="DEFINE TABLE user SCHEMAFULL PERMISSIONS FOR select FULL; DEFINE FIELD kind ON user TYPE string; DEFINE FIELD email ON user TYPE string; DEFINE FIELD subject ON user TYPE option<string>; DEFINE FIELD is_admin ON user TYPE bool; DEFINE FIELD disabled_at ON user TYPE option<datetime>; ";
+            let setup = "
+                DEFINE TABLE user SCHEMAFULL PERMISSIONS FOR select FULL;
+                DEFINE FIELD kind ON user TYPE string;
+                DEFINE FIELD email ON user TYPE string;
+                DEFINE FIELD subject ON user TYPE option<string>;
+                DEFINE FIELD is_admin ON user TYPE bool;
+                DEFINE FIELD disabled_at ON user TYPE option<datetime>;
+                DEFINE FIELD virtual_profile ON user TYPE option<object>;
+            ";
             root_id += 1;
             let result = rpc(&mut root, root_id, "query", json!([setup, {}]))
                 .await

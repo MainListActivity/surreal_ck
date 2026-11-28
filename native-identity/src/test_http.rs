@@ -30,6 +30,8 @@ pub(crate) fn serve(
                     Err(error) => panic!("fixture accept: {error}"),
                 }
             };
+            // macOS 上接受的连接可继承监听套接字的非阻塞模式。
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
