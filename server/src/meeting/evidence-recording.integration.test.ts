@@ -47,7 +47,7 @@ test.skipIf(!cli || !spool || !endpoint || !key || !secret)("真实 Track Egress
     const loadOutput = await videoOutput;
     if (subscribers !== "0") console.info(loadOutput.split("\n").filter((line) => line.includes("Total")).join("\n"));
     await api.deleteRoom(roomName);
-    const artifacts = await recording.collect(room, "m13-test", start, end, tracks.map(({ sid }) => sid));
+    const { files: artifacts } = await recording.collect(room, "m13-test", start, end);
     expect([...artifacts.keys()].filter((name) => name.includes("-audio."))).toHaveLength(1);
     expect([...artifacts.keys()].filter((name) => name.includes("-video."))).toHaveLength(1);
     expect((artifacts.get("archive.mp4") as Blob | undefined)?.size).toBeGreaterThan(1000);
@@ -85,7 +85,9 @@ test.skipIf(!cli || !spool || !endpoint || !key || !secret)("真实 Track Egress
     const mp4 = await Bun.file(join(folders, "archive.mp4")).bytes();
     mp4[mp4.length - 1] ^= 1;
     await Bun.write(join(folders, "archive.mp4"), mp4);
-    expect(Bun.spawnSync(["python3", "../scripts/verify-meeting-evidence.py", folders, "--trusted-root", root]).exitCode).not.toBe(0);
+    const tampered = Bun.spawnSync(["python3", "../scripts/verify-meeting-evidence.py", folders, "--trusted-root", root]);
+    expect(tampered.exitCode).toBe(1);
+    expect(tampered.stderr.toString()).toContain("archive.mp4");
     now += 2 * 86_400_000;
     expect((await archive.status(workspace, meeting)).backupReminder).toBe(true);
     projection!.retain_until = new DateTime(new Date(end));

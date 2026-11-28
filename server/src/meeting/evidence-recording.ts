@@ -1,17 +1,24 @@
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, realpath, rename, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { DirectFileOutput, EgressClient, EgressStatus } from "livekit-server-sdk";
+import { DirectFileOutput, EgressClient, EgressStatus, TwirpError, type EgressInfo } from "livekit-server-sdk";
 import { env } from "../env";
-import type { EvidenceArtifact } from "./evidence-ledger";
+import type { EvidenceArtifact, EvidenceEvent } from "./evidence-ledger";
 
 const trackPattern = /^TR_[\da-z]+$/iu;
 const roomPattern = /^ck-meeting-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/u;
 const active = (status: EgressStatus) => status < EgressStatus.EGRESS_COMPLETE;
+const incomplete = () => new Error("轨道录制未完整结束，不可封存");
+const trackNotFound = (message: string, track: string) => message === "track not found" || message === `track ${track} not found`;
+// LiveKit 生命周期 webhook 的时间戳精度为秒。
+const shortPublicationMs = 2_000;
+
+export type TrackStartOutcome = "track-not-found" | void;
 
 export class MeetingTrackRecording {
-  private readonly requests = new Map<string, Promise<unknown>>();
-  private readonly starts = new Map<string, number>();
+  private readonly requests = new Map<string, Promise<TrackStartOutcome>>();
+  private readonly requested = new Set<string>();
+  private readonly failedStarts = new Set<string>();
   private synthesis = Promise.resolve();
 
   constructor(private readonly directory: string, private readonly egress: EgressClient) {}
@@ -25,26 +32,36 @@ export class MeetingTrackRecording {
     await this.egress.listEgress({ active: true });
   }
 
-  start(room: string, track: string, audio: boolean, at: number): Promise<void> {
+  start(room: string, track: string, audio: boolean, at: number): Promise<TrackStartOutcome> {
     if (!roomPattern.test(room) || !trackPattern.test(track)) throw new Error("会议室或轨道标识无效");
     const key = `${room}/${track}`;
     if (!this.requests.has(key)) {
-      this.starts.set(key, at);
-      const request = (async () => {
+      this.requested.add(key);
+      const request = (async (): Promise<TrackStartOutcome> => {
         const folder = join(this.directory, room);
         await mkdir(folder, { recursive: true, mode: 0o2770 });
         await chmod(folder, 0o2770);
-        return this.egress.startTrackEgress(room,
-          new DirectFileOutput({ filepath: join(folder, `${track}-${at}${audio ? "-audio" : "-video"}`) }), track);
+        try {
+          await this.egress.startTrackEgress(room,
+            new DirectFileOutput({ filepath: join(folder, `${track}-${at}${audio ? "-audio" : "-video"}`) }), track);
+        } catch (error) {
+          if (error instanceof TwirpError && error.status === 404 && error.code === "not_found"
+            && trackNotFound(error.message, track)) return "track-not-found";
+          throw error;
+        }
       })();
       this.requests.set(key, request);
-      void request.catch(() => { this.requests.delete(key); });
+      void request.catch(() => {
+        // 即使写入独立账本失败，当前进程也保留这次起录故障。
+        this.failedStarts.add(key);
+        this.requests.delete(key);
+      });
     }
-    return this.requests.get(key)!.then(() => undefined);
+    return this.requests.get(key)!;
   }
 
-  collect(id: string, meeting: string, start: number, end: number, expected: readonly string[] = []): Promise<ReadonlyMap<string, EvidenceArtifact>> {
-    const operation = this.synthesis.then(() => this.synthesize(`ck-meeting-${id}`, meeting, start, end, expected));
+  collect(id: string, meeting: string, start: number, end: number, readEvents: () => Promise<readonly EvidenceEvent[]> = async () => []) {
+    const operation = this.synthesis.then(() => this.synthesize(`ck-meeting-${id}`, meeting, start, end, readEvents));
     this.synthesis = operation.then(() => undefined, () => undefined);
     return operation;
   }
@@ -64,7 +81,8 @@ export class MeetingTrackRecording {
   }
 
   private async stopTracks(room: string) {
-    const stopping = (status: EgressStatus) => active(status) && status !== EgressStatus.EGRESS_ENDING;
+    // 起录中的任务须先报告真实的订阅结果，主动中止会丢掉结果。
+    const stopping = (status: EgressStatus) => status === EgressStatus.EGRESS_ACTIVE;
     const tracks = await this.tracks(room);
     await Promise.all(tracks.filter(({ status }) => stopping(status))
       .map(({ egressId }) => this.egress.stopEgress(egressId).catch(async (error) => {
@@ -73,19 +91,61 @@ export class MeetingTrackRecording {
     return tracks;
   }
 
-  private async synthesize(room: string, meeting: string, start: number, end: number, expected: readonly string[]) {
+  private reconcileTracks(room: string, tracks: readonly EgressInfo[], requested: readonly string[], events: readonly EvidenceEvent[]) {
+    const published = new Map<string, string>();
+    const unpublished = new Map<string, string>();
+    const notFound = new Set<string>();
+    const startFailed = new Set<string>();
+    for (const { id, kind, at } of events) {
+      if (kind === "track-published") published.set(id.slice(0, -":published".length), at);
+      if (kind === "track-unpublished") unpublished.set(id.slice(0, -":unpublished".length), at);
+      if (kind === "track-egress-not-found") notFound.add(id.slice(0, -":egress-not-found".length));
+      if (kind === "track-egress-start-failed") startFailed.add(id.slice(0, -":egress-start-failed".length));
+    }
+    const endedBeforeRecording = (track: string) => {
+      const publishedAt = published.get(track);
+      const endedAt = unpublished.get(track);
+      if (!publishedAt || !endedAt || startFailed.has(track) || this.failedStarts.has(`${room}/${track}`)) return;
+      const duration = Date.parse(endedAt) - Math.floor(Date.parse(publishedAt) / 1000) * 1000;
+      if (duration >= 0 && duration <= shortPublicationMs) return { publishedAt, endedAt };
+    };
+    const completed: EgressInfo[] = [];
+    const completedIds = new Set<string>();
+    for (const item of tracks) {
+      const track = item.request?.case === "track" ? item.request.value.trackId : "";
+      if (!trackPattern.test(track)) throw incomplete();
+      if (item.status === EgressStatus.EGRESS_COMPLETE) {
+        completed.push(item);
+        completedIds.add(track);
+      } else {
+        // EgressInfo.startedAt 是任务创建时间。文件结果表示是否实际收到媒体。
+        if (item.status !== EgressStatus.EGRESS_FAILED || item.retryCount !== 0 || item.errorCode !== 404 || !trackNotFound(item.error, track)
+          || item.fileResults.some(({ startedAt, duration, size }) => startedAt !== 0n || duration !== 0n || size !== 0n)
+          || !endedBeforeRecording(track)) throw incomplete();
+        notFound.add(track);
+      }
+    }
+    const skipped: EvidenceEvent[] = [];
+    for (const track of new Set([...published.keys(), ...requested])) {
+      if (completedIds.has(track)) continue;
+      const ended = endedBeforeRecording(track);
+      if (!ended || !notFound.has(track)) throw incomplete();
+      skipped.push({
+        id: `${track}:recording-skipped`, kind: "track-recording-skipped", at: ended.endedAt,
+        payload: { track, publishedAt: ended.publishedAt, reason: "ended-before-recording" },
+      });
+    }
+    return { completed, skipped };
+  }
+
+  private async synthesize(room: string, meeting: string, start: number, end: number, readEvents: () => Promise<readonly EvidenceEvent[]>) {
     let tracks = await this.stopTracks(room);
     for (let retry = 0; retry < 30 && tracks.some(({ status }) => active(status)); retry++) {
       await Bun.sleep(1000);
-      tracks = await this.egress.listEgress({ roomName: room });
+      tracks = await this.stopTracks(room);
     }
-    const completed = tracks.filter(({ status }) => status === EgressStatus.EGRESS_COMPLETE);
-    const completedIds = new Set(completed.flatMap(({ request }) => request?.case === "track" ? [request.value.trackId] : []));
-    const requested = [...this.starts.keys()].filter((key) => key.startsWith(room + "/"));
-    if (tracks.length !== completed.length || expected.some((track) => !completedIds.has(track))
-      || requested.some((key) => !completedIds.has(key.slice(room.length + 1)))) {
-      throw new Error("轨道录制未完整结束，不可封存");
-    }
+    const requested = [...this.requested].filter((key) => key.startsWith(room + "/"));
+    const { completed, skipped } = this.reconcileTracks(room, tracks, requested.map((key) => key.slice(room.length + 1)), await readEvents());
     if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) throw new Error("录制起止时间无效");
     const folder = join(this.directory, room);
     await mkdir(folder, { recursive: true, mode: 0o2770 });
@@ -146,10 +206,11 @@ export class MeetingTrackRecording {
     await store(output, "archive.mp4");
     artifacts.set("media-index.json", Buffer.from(JSON.stringify(indexEntries)));
     for (const key of requested) {
-      this.starts.delete(key);
+      this.requested.delete(key);
+      this.failedStarts.delete(key);
       this.requests.delete(key);
     }
-    return artifacts;
+    return { files: artifacts, skipped };
   }
 }
 

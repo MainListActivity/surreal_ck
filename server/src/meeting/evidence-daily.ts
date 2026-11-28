@@ -30,11 +30,12 @@ export async function finalizeDaily(evidence: MeetingEvidenceArchive, recording:
     return;
   }
   await evidence.append(workspace, meeting, { id: `${room}:end`, kind: "recording-ended", at, payload: { actor, room } });
-  const events = await evidence.events(workspace, meeting);
-  const start = events.find(({ kind }) => kind === "recording-started");
+  const readEvents = () => evidence.events(workspace, meeting);
+  const start = (await readEvents()).find(({ kind }) => kind === "recording-started");
   if (!start) throw new Error("会议缺少录制起始事件");
-  const expected = events.flatMap(({ id, kind }) => kind === "track-published" ? [id.slice(0, -":published".length)] : []);
-  const files = new Map(await recording.collect(room, meeting, Date.parse(start.at), Date.parse(at), expected));
-  files.set("timeline.json", evidenceJson(events));
+  const { files, skipped } = await recording.collect(room, meeting, Date.parse(start.at), Date.parse(at), readEvents);
+  for (const event of skipped) await evidence.append(workspace, meeting, event);
+  const timeline = (await readEvents()).filter(({ kind }) => kind !== "track-unpublished");
+  files.set("timeline.json", evidenceJson(timeline));
   await evidence.seal(workspace, meeting, at, { title: "日常会议录制" }, files);
 }
