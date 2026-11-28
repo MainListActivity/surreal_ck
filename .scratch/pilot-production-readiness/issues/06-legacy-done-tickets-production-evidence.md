@@ -26,6 +26,7 @@ Status: ready-for-agent
 **依赖**：无（可与 `meeting-and-collaboration` 并行推进）。  
 **验证方式**：独立 QA 生产实测（使用 `ck-test-kit` 专用测试主体，测完清理）+ 脱敏验收记录归档。
 
-## 2026-11-27 核对记录
+## 2026-11-27 / 2026-11-28 UTC 核对记录
 
-已归档[生产基线、PR #278 历史证据和对外口径](../../../docs/runbooks/pilot-production-acceptance.md)。本次未获得专用运营测试会话，涉及登录和生产测试写入的验收仍待执行。
+- 已归档[生产基线、PR #278 历史证据和对外口径](../../../docs/runbooks/pilot-production-acceptance.md)。
+- 2026-11-28 UTC 已通过公司受控 QA 通道派发干净生产复验任务 `17785c49-637e-457e-bd28-a6ebda0a2274`（复用生产已登记测试账号，不调用 D1 建号）；QA 员工 `qa-claude-c4c68d` 已于 `03:49:05Z` 完成生产 `ops_login`（`sck-qa1`）并正在持续执行 `claims-vertical 01/05/06`、外部门户剩余项、`VO-04/VO-06/VER-06` 与法律内容边界实测，结案后补充完整脱敏证据与清理回执。

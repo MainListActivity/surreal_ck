@@ -59,7 +59,7 @@ python3 scripts/deploy/surrealdb-offsite-backup.py restore \
 
 - 本次验证的恢复点对应归档标识 `2026-11-27T12:18:36.061943Z`，恢复后与该围栏快照的记录数及关键定义对账零差异。日常 RPO 目标为 ≤ 24 小时，待每日连续归档后按相邻成功回执的恢复点间隔实测。
 - 实测全库恢复 RTO 为 227.52 秒，涵盖从 R2 拉取、校验、解密、导入及全库对账，达到 ≤ 4 小时目标。本次为隔离恢复计时，业务流量切换另行计时。
-- 手工生产备份和跨机恢复均已通过。每日调度待挂接既有运维定时框架，复用写围栏、互斥锁、失败告警及超出 24 小时未产生可核验回执的告警。挂接后以首次定时触发的真实回执验收。
+- 2026-11-27/28 已获老板授权在 VPS 部署并启用每日自动备份调度：`/usr/local/sbin/sck-surrealdb-daily-backup`（`flock` 互斥锁 + 自动写围栏与 `EXIT trap` 恢复）、`/usr/local/sbin/sck-surrealdb-backup-check`（校验 `latest.json` 状态与 `< 26h` 新鲜度，实测 `{"ok": true}`）、`surrealdb-offsite-backup.timer`（每日 `19:45:00 UTC`，已 `enabled/active waiting`），并通过 `surreal-ck-operations` PR `#2324` / `0.13.88` PR `#2325` 登记至 `landscape/company-landscape.json`。
 
 ## 隔离演练记录（合成数据）
 

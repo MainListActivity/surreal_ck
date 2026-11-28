@@ -1,6 +1,6 @@
 # 接下来要做
 
-更新于 2026-11-27 UTC，依据 `origin/main` 的 `c92bea36`（PR #332）及同日生产实测。
+更新于 2026-11-28 UTC，依据 `origin/main` 的 `38913c81`（PR `#335`）及同日生产实测。
 
 本文是仓库级的下一步工作索引。详细需求、验收条件和讨论记录仍放在 `.scratch/<feature>/issues/*.md`；这里只维护当前优先级、开工顺序和容易忘掉的跨主题风险。
 
@@ -44,14 +44,14 @@
 
 依据：[`.scratch/pilot-production-readiness/PRD.md`](.scratch/pilot-production-readiness/PRD.md)，共 6 张可独立验证工单：
 
-- `01-surrealdb-offsite-backup-and-restore`（`ready-for-agent`）：生产 R2 全量备份与异机恢复已验收，待挂接每日定时调度
-- `02-vps-port-lockdown-and-retire-legacy`（`ready-for-human`）：VPS 通配暴露端口收口（Grafana/Prometheus/Exporter/TiKV/PD）与退役 `sck-company-mcp` 清理
-- `03-marketing-commercial-and-legal-compliance`（`ready-for-agent`）：官网和试用表单已上线，公司反馈 CORS 预检通过。待人工提交并核对生产回执与落库
-- `04-public-portal-turnstile-and-rate-limit`（`ready-for-agent`）：生产 Turnstile Widget 已启用，官网与门户的拒绝路径已实测，待生产正向提交和原生名册客户端衔接
-- `05-native-quota-rollout-decision-and-cutover`（`needs-info`）：生产只读基线和 P-01 首份回执已归档，待负责人书面解冻后按 runbook 分批切流
-- `06-legacy-done-tickets-production-evidence`（`ready-for-agent`）：补齐 VER-06 / VO-04 / VO-06 / claims-vertical / external-collaborator-portal（PR `#278`）生产验收证据与工单簿记纠偏
+- `01-surrealdb-offsite-backup-and-restore`（`done`）：生产 R2 全量加密备份、异机恢复演练、VPS 每日 19:45 UTC 自动定时任务与健康检查及 `company-landscape.json` 登记均已验收完成
+- `02-vps-port-lockdown-and-retire-legacy`（`done`）：VPS IPv4/IPv6 端口收口持久化、Caddy `/sck-mcp/*` 移除（404）与宿主机残留 plist 清理均已验收完成
+- `03-marketing-commercial-and-legal-compliance`（`ready-for-agent`）：官网与试用表单上线，`surreal-ck-operations 0.13.88` 修复反馈转发 502 后线上 `202`/幂等/`409`/隐私隔离/清理 5/5 全通；仅余真人浏览器勾选 Turnstile 提交及正式法务签字
+- `04-public-portal-turnstile-and-rate-limit`（`ready-for-agent`）：生产 Turnstile Widget 拒绝路径与第 13 次请求 `429 + Retry-After` 限流均已实测通过；余项为真人浏览器 Turnstile 提交与原生名册客户端衔接
+- `05-native-quota-rollout-decision-and-cutover`（`ready-for-agent`）：老板已书面解冻，`synthetic_internal`（31/31 含 `442d` 移除 7 个旧事件）已于 `2026-11-28T03:53:29Z` 完成实装与物理扫描零差异对账，处于 24h 强制观察窗（`observe_until: 2026-11-29T03:53:29Z`），随后按 `one_percent → ten_percent → fifty_percent → remainder` 推进
+- `06-legacy-done-tickets-production-evidence`（`ready-for-agent`）：已派发独立生产 QA 任务 `17785c49`（`qa-claude-c4c68d` 已完成生产 `ops_login` 执行中），补齐 VER-06 / VO-04 / VO-06 / claims-vertical / external-collaborator-portal 实测证据与清理回执
 
-本次生产 TiKV 全量备份覆盖 15 个 namespace / 72 个 database，异机 RocksDB 恢复耗时 227.52 秒，核对零差异。官网、试用与公开入口实测已更新。生产原生配额的 5 个有策略库用量账本均可信，native-audit 在核对期间持续零报错。PR #59 已关闭且未合并，灰度切流待书面解冻。PR #278 已合并，业务复验见 P-06。[生产验真记录](docs/runbooks/pilot-production-acceptance.md)
+本次生产 TiKV 全量备份与每日定时调度已收口（15 ns / 72 db，异机恢复 227.52 秒零差异），VPS 端口与遗留面已锁闭；官网反馈通道经 `0.13.88` 修复后线上 `202`/幂等/`409`/隐私隔离实测全通，公开入口 `429 + Retry-After` 实测通过；原生配额已按老板授权解冻并完成 `synthetic_internal` 31/31 切流（`in_sync: 9 → 35`，`native-audit` 零报错，24h 观察窗至 `2026-11-29T03:53:29Z`）；P-06 独立生产 QA 正在执行。[生产验真记录](docs/runbooks/pilot-production-acceptance.md)
 
 ## 已经落地的底座（不再派发实现）
 
